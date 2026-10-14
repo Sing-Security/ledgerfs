@@ -243,7 +243,7 @@ fn test_integration_receive_verify_all_objects() -> TestResult<()> {
 // region:    --- W8 End-to-End Tests
 
 #[test]
-fn test_w8_integration_full_send_receive_roundtrip() -> TestResult<()> {
+fn test_integration_full_send_receive_roundtrip() -> TestResult<()> {
 	// -- Setup & Fixtures
 	let mut root = Root::new();
 	root.commit_seq = 1;
@@ -269,7 +269,7 @@ fn test_w8_integration_full_send_receive_roundtrip() -> TestResult<()> {
 }
 
 #[test]
-fn test_w8_integration_incremental_send_receive_roundtrip() -> TestResult<()> {
+fn test_integration_incremental_send_receive_roundtrip() -> TestResult<()> {
 	// -- Setup & Fixtures
 	let mut base_root = Root::new();
 	base_root.commit_seq = 1;
