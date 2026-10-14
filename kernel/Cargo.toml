@@ -56,9 +56,8 @@ spin = { version = "0.9", default-features = false, features = ["spin_mutex"], o
 log = { version = "0.4", default-features = false }
 
 # -- Transparent block encryption (no_std, optional — only with
-# `data-encryption`). A separate `aes` major version from the one the
-# CrucibleOS kernel uses for its encrypted IPC, and deliberately so: `xts-mode`
-# requires 0.9/cipher 0.5. Cargo keeps both in the graph independently; they
+# `data-encryption`). `xts-mode` 0.6 requires `aes` 0.9 / `cipher` 0.5; a
+# consumer that already has an older `aes` in its graph keeps both, and they
 # never need to interoperate.
 xts-mode = { version = "0.6", default-features = false, optional = true }
 aes = { version = "0.9", default-features = false, optional = true }

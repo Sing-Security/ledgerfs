@@ -2,7 +2,11 @@
 name = "ledgerfs-benchmarks"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+# Higher than the two published crates' 1.89, and deliberately: `redb` 4.4
+# declares 1.90. This crate is `publish = false` and is not part of anyone's
+# dependency graph, so the comparison engine sets the floor here rather than
+# the other way round.
+rust-version = "1.90"
 publish = false
 description = "The cross-engine comparison harness: LedgerFS against SQLite, redb, and a raw fsync'd file."
 license = "Apache-2.0"

@@ -1,3 +1,13 @@
+# Two published crates and one that is not:
+#
+#   kernel/      crucible-ledgerfs-kernel  — the on-disk format and CoW ops, no_std
+#   host/        crucible-ledgerfs-host    — the std volume layer over a BlockDevice
+#   benchmarks/  ledgerfs-benchmarks       — the comparison harness, publish = false
+#
+# They share a lockfile and a target directory and nothing else; each carries its
+# own metadata and its own version, because the kernel's is tied to the on-disk
+# format and the host's is not.
+
 [workspace]
 members = ["kernel", "host", "benchmarks"]
 resolver = "2"

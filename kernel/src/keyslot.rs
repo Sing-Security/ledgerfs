@@ -169,7 +169,7 @@ pub fn derive_kek(passphrase: &[u8], params: &KdfParams) -> Result<[u8; 32]> {
 	}
 
 	let mut hasher = blake3::Hasher::new();
-	hasher.update(b"CrucibleOS.VolumeKeyslot.KEK.v1");
+	hasher.update(b"LedgerFS.VolumeKeyslot.KEK.v1");
 	hasher.update(&params.salt);
 	hasher.update(passphrase);
 	let mut digest = *hasher.finalize().as_bytes();
@@ -231,7 +231,7 @@ mod wrap {
 /// Checksum of a plaintext master key, used to recognise a correct unwrap.
 fn master_key_checksum(key: &[u8; MASTER_KEY_LEN]) -> u64 {
 	let mut h = blake3::Hasher::new();
-	h.update(b"CrucibleOS.VolumeKeyslot.KeyCheck.v1");
+	h.update(b"LedgerFS.VolumeKeyslot.KeyCheck.v1");
 	h.update(key);
 	let d = h.finalize();
 	u64::from_le_bytes(d.as_bytes()[..8].try_into().unwrap())

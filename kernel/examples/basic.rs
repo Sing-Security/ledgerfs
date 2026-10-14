@@ -1,4 +1,4 @@
-//! Simple example demonstrating LedgerFS Phase 1 APIs
+//! Simple example demonstrating LedgerFS APIs
 //!
 //! This example shows basic usage of:
 //! - ObjectRecord encoding/decoding
@@ -15,7 +15,7 @@ use crucible_ledgerfs_kernel::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-	println!("LedgerFS v7 Phase 1 Example\n");
+	println!("LedgerFS example\n");
 
 	// Example 1: ObjectRecord
 	println!("=== Example 1: ObjectRecord ===");

@@ -1,0 +1,98 @@
+# .github/workflows/ci.yml
+#
+# The kernel crate is `no_std` with a feature matrix and the host crate is a
+# plain `std` consumer of it, so there are two shapes of breakage to catch:
+# a feature that only compiles in the all-on build, and a kernel change that
+# compiles here but not from the host crate's side. The matrix and the host job
+# cover the first; the lint job, which builds `--all-targets`, covers the second.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kernel:
+    name: kernel (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per declared feature, plus the empty and all-on builds.
+        # `reader` and `data-encryption` are the ones that bite: the first
+        # compiles ring-0 port I/O and only on x86_64, the second replaces the
+        # block device underneath the whole CoW object model.
+        include:
+          - { name: none,            flags: "--no-default-features" }
+          - { name: default,         flags: "" }
+          - { name: reader,          flags: "--no-default-features --features reader" }
+          - { name: std,             flags: "--no-default-features --features std" }
+          - { name: data-encryption, flags: "--no-default-features --features data-encryption" }
+          - { name: temper-sealing,  flags: "--no-default-features --features temper_sealing" }
+          - { name: all,             flags: "--all-features" }
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo test -p crucible-ledgerfs-kernel ${{ matrix.flags }}
+
+  host:
+    name: host
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo test -p crucible-ledgerfs-host
+
+  # The benchmark harness is not published, but it is the source of every number
+  # in BENCHMARKS.md, so a change that breaks it breaks the published claims.
+  # Build only — running it on a shared runner measures the runner.
+  benchmarks:
+    name: benchmarks build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo build -p ledgerfs-benchmarks --release
+
+  # A feature declared but compiled by no job is how breakage hides. Fail if one
+  # is added to the kernel manifest and not to the matrix above.
+  matrix-covers-every-feature:
+    name: every declared feature is in the matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -euo pipefail
+          declared=$(sed -n '/^\[features\]/,/^\[/p' kernel/Cargo.toml \
+                     | grep -oE '^[a-z0-9_-]+ = ' | sed 's/ = //' | sort -u)
+          covered=$(grep -oE -e '--features [a-z0-9_,-]+' -e '--all-features' .github/workflows/ci.yml \
+                    | tr ',' '\n' | grep -oE '[a-z0-9_-]+$' | sort -u)
+          exempt=$(printf 'default\nall-features\n')
+          missing=$(comm -23 <(echo "$declared") <(sort -u <(echo "$covered") <(echo "$exempt")))
+          if [ -n "$missing" ]; then
+            echo "::error::Declared but never compiled:"
+            echo "$missing" | sed 's/^/  - /'
+            exit 1
+          fi
+          echo "All declared features are covered."
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all --check
+      # --all-targets so the tests, examples and benches are linted too; without
+      # it clippy only sees the libraries. The kernel denies
+      # undocumented_unsafe_blocks in its own manifest, and this makes the same
+      # rule binding on the host crate, where unsafe is forbidden outright but
+      # the examples and benches are separate crates that could reintroduce it.
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings

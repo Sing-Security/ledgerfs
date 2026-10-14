@@ -246,13 +246,13 @@ pub fn cow_update_dir_entry<S: ObjectStore>(
 
 /// Remove `name` from the directory at `parent_dir_ref`.
 ///
-/// Ports the semantics fs-cbl's in-memory `Unlink` handler already
-/// established and tested this session: a missing source is an error (not
+/// Ports the semantics the runtime volume driver's in-memory `Unlink`
+/// handler already established and tested: a missing source is an error (not
 /// a silent no-op), and unlinking a directory is refused (POSIX
 /// semantics — use a dedicated `rmdir` for that, not implemented in this
 /// module).
 ///
-/// Unlike fs-cbl's old `BTreeMap`-based tree, there's no separate "free
+/// Unlike the runtime volume driver's old `BTreeMap`-based tree, there's no separate "free
 /// the node" step here: the removed inode simply becomes unreachable from
 /// the new root once this txn commits (nothing in `new_objects`
 /// references it), which is what makes it eligible for GC — there's no
@@ -302,7 +302,7 @@ pub fn unlink<S: ObjectStore>(store: &S, root: &Root, parent_dir_ref: ObjectRef,
 /// from `dir_inode_ref` (including `dir_inode_ref` itself)?
 ///
 /// Used by [`rename`]'s cycle guard. This content-addressed model has no
-/// `.parent` back-pointers (unlike fs-cbl's old in-memory tree, which
+/// `.parent` back-pointers (unlike the runtime volume driver's old in-memory tree, which
 /// could check "moving into own descendant" by walking *up* from the
 /// destination) — the only way to ask "is B inside A?" is to walk down
 /// from A looking for B. `depth_budget` is a defensive backstop against
@@ -342,14 +342,14 @@ fn dir_contains_inode<S: ObjectStore>(
 /// `new_parent_dir_ref` (pass the same ref for both for a same-directory
 /// rename).
 ///
-/// Ports the semantics fs-cbl's in-memory `Rename` handler already
-/// established and tested this session: a missing source is an error,
+/// Ports the semantics the runtime volume driver's in-memory `Rename`
+/// handler already established and tested: a missing source is an error,
 /// overwriting an existing destination is only permitted when neither side
 /// is a directory (the old destination node simply becomes unreachable —
 /// see [`unlink`]'s doc comment on why there's no separate free step), and
 /// moving a directory into itself or one of its own descendants is
-/// refused. The cycle check necessarily works differently than fs-cbl's
-/// old version — see [`dir_contains_inode`].
+/// refused. The cycle check necessarily works differently than the runtime
+/// volume driver's old version — see [`dir_contains_inode`].
 ///
 /// # `file_tree_root` caveat for cross-directory renames
 ///
@@ -992,7 +992,7 @@ mod tests {
 		let file_inode_objref = ObjectRef::from_id(file_inode_key);
 
 		// Write data.
-		let payload = b"CrucibleOS LedgerFS test payload";
+		let payload = b"LedgerFS test payload";
 		let write_txn = write(&store, &file_txn.new_root, file_inode_objref, 0, payload)?;
 		store.apply_txn(&write_txn);
 
