@@ -1,0 +1,10 @@
+[workspace]
+members = ["kernel", "host", "benchmarks"]
+resolver = "2"
+
+# The release profile the comparison harness and the crate benchmarks run under.
+# `debug` symbols stay on so a benchmark that lands can still be profiled
+# afterwards without a second build.
+[profile.bench]
+inherits = "release"
+debug = true

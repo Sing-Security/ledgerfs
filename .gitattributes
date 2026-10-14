@@ -1,0 +1,13 @@
+# Normalise line endings; this crate is built on Linux and Windows both.
+* text=auto
+
+*.rs    text diff=rust
+*.toml  text
+*.md    text
+
+# Keep the license verbatim.
+LICENSE text eol=lf
+
+# Binary fixtures, if any are ever added.
+*.bin   binary
+*.sig   binary
