@@ -15,7 +15,7 @@
 //! things, and restore it later. That is what "embeddable" buys — a real
 //! filesystem with a commit protocol, in a buffer.
 
-use crucible_ledgerfs_host::{Error, MemBlockDevice, Result, Store};
+use ledgerfs_host::{Error, MemBlockDevice, Result, Store};
 
 /// 4 MiB — enough for the reserved regions plus real object space.
 const BLOCKS: u64 = 1024;

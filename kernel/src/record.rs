@@ -1,6 +1,6 @@
 //! ObjectRecord framing with BLAKE3 verification
 //!
-//! Per §7 and §9 of ledgerfs-spec-v7.md:
+//! Per §7 and §9 of FORMAT.md:
 //! - ObjectRecord wraps all stored objects
 //! - Content-addressed using BLAKE3
 //! - 8-byte aligned with length prefix
@@ -15,7 +15,7 @@ use crate::{
 	},
 	nt_write::{nt_write_payload, sfence},
 };
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 /// Object type discriminator (§7.2)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,7 +462,10 @@ impl ObjectRecordWriter {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	// `vec!` is only used by this module's fixtures, so the macro is imported
+	// here rather than at the parent's scope.
 	use alloc::boxed::Box;
+	use alloc::vec;
 
 	type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
@@ -618,8 +621,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_record_compression_zstd() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -665,8 +668,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_record_compression_ratio_not_met() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -681,7 +684,7 @@ mod tests {
 		let written =
 			ObjectRecordWriter::write(&mut buf, ObjectType::Data, CompressionAlgorithm::Zstd, 0, &logical_data)?;
 
-		let (header, payload) = ObjectRecordReader::read(&buf[..written])?;
+		let (_header, payload) = ObjectRecordReader::read(&buf[..written])?;
 
 		// -- Check
 		// May or may not compress depending on actual ratio
@@ -693,8 +696,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_record_corrupted_compressed_data() -> TestResult<()> {
 		// -- Setup & Fixtures

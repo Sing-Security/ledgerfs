@@ -63,7 +63,7 @@ pub struct DirNode {
 }
 
 impl DirNode {
-	/// Maximum canonical size (128 KiB as per spec)
+	/// Maximum canonical size (128 KiB as per FORMAT.md)
 	pub const MAX_CANONICAL_SIZE: usize = 128 * 1024;
 
 	/// Approximate max entries to stay under MAX_CANONICAL_SIZE
@@ -168,17 +168,8 @@ impl DirNode {
 			(left_children, right_children)
 		};
 
-		let left = if self.is_leaf {
-			Self::new_internal(left_entries, left_children)
-		} else {
-			Self::new_internal(left_entries, left_children)
-		};
-
-		let right = if self.is_leaf {
-			Self::new_internal(right_entries, right_children)
-		} else {
-			Self::new_internal(right_entries, right_children)
-		};
+		let left = Self::new_internal(left_entries, left_children);
+		let right = Self::new_internal(right_entries, right_children);
 
 		Ok((left, right))
 	}
@@ -208,7 +199,6 @@ impl DirNode {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use alloc::vec;
 
 	type TestResult<T> = core::result::Result<T, alloc::boxed::Box<dyn core::error::Error>>;
 
@@ -276,7 +266,11 @@ mod tests {
 		let canonical = node.encode_canonical()?;
 
 		// -- Check
-		assert_eq!(node.object_id, ObjectId::from_content(&canonical), "object_id must equal blake3 of its own canonical encoding");
+		assert_eq!(
+			node.object_id,
+			ObjectId::from_content(&canonical),
+			"object_id must equal blake3 of its own canonical encoding"
+		);
 		let decoded = DirNode::decode_canonical(&canonical)?;
 		assert_eq!(decoded.object_id, node.object_id);
 		assert_eq!(decoded, node);

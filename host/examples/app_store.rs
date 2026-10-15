@@ -13,7 +13,7 @@
 //! is what I left on it". Nothing here is in-memory-only trivia: swap
 //! `MemBlockDevice` for `FileBlockDevice` and the same calls drive a disk.
 
-use crucible_ledgerfs_host::{Error, MemBlockDevice, Result, Store, rebuild_into};
+use ledgerfs_host::{Error, MemBlockDevice, Result, Store, rebuild_into};
 
 /// 8 MiB — room for the reserved regions plus real object space to watch fall.
 const BLOCKS: u64 = 2048;
@@ -30,7 +30,7 @@ fn run() -> Result<()> {
 	// clone is the way back to the bytes after `Store` takes ownership.
 	let device = MemBlockDevice::new(BLOCKS);
 	let mirror = device.clone();
-	let mut store = Store::format_app(Box::new(device), "bugs")?;
+	let mut store = Store::format_app(Box::new(device), "example")?;
 	println!(
 		"formatted a store for {:?} (contract {}), {} blocks",
 		store.app()?.unwrap_or_default(),
@@ -44,8 +44,16 @@ fn run() -> Result<()> {
 	// transcript costs gigabytes. A chunk that is written once and never touched
 	// again costs its own size and nothing more.
 	store.mkdir("/relay", 0o755)?;
-	store.write_new_file("/relay/transcript-000001.jsonl", b"{\"turn\":1,\"action\":\"recon\"}\n", 0o644)?;
-	store.write_new_file("/relay/transcript-000002.jsonl", b"{\"turn\":2,\"action\":\"probe\"}\n", 0o644)?;
+	store.write_new_file(
+		"/relay/transcript-000001.jsonl",
+		b"{\"turn\":1,\"action\":\"recon\"}\n",
+		0o644,
+	)?;
+	store.write_new_file(
+		"/relay/transcript-000002.jsonl",
+		b"{\"turn\":2,\"action\":\"probe\"}\n",
+		0o644,
+	)?;
 	println!(
 		"wrote 2 transcript chunks: {} bytes free",
 		store.free_bytes().unwrap_or(0)
@@ -60,15 +68,21 @@ fn run() -> Result<()> {
 	// half-written state file.
 	store.write_new_file("/relay/state.json.new", b"{\"phase\":\"stopped\"}\n", 0o644)?;
 	store.rename("/relay/state.json.new", "/relay/state.json")?;
-	println!("replaced /relay/state.json atomically: {:?}",
-		String::from_utf8_lossy(&store.read_file("/relay/state.json")?).trim());
+	println!(
+		"replaced /relay/state.json atomically: {:?}",
+		String::from_utf8_lossy(&store.read_file("/relay/state.json")?).trim()
+	);
 
 	// -- 5. Free space only falls — CoW frees nothing yet, so replacing a file
 	// leaves every previous version behind. Sixty state writes: the file is a
 	// few dozen bytes, and watch what it costs.
 	let before = store.free_bytes().unwrap_or(0);
 	for i in 0..60 {
-		store.write_file("/relay/state.json", format!("{{\"phase\":\"step-{i}\"}}\n").as_bytes(), 0o644)?;
+		store.write_file(
+			"/relay/state.json",
+			format!("{{\"phase\":\"step-{i}\"}}\n").as_bytes(),
+			0o644,
+		)?;
 	}
 	let after = store.free_bytes().unwrap_or(0);
 	println!(
@@ -80,8 +94,9 @@ fn run() -> Result<()> {
 
 	// -- 6. The way back is a rebuild: copy the live tree into a fresh volume
 	// and swap it in. Not in place — a volume has one writer, and the source has
-	// to survive until the copy has been checked. On disk this is `bugs compact`.
-	let mut compacted = Store::format_app(Box::new(MemBlockDevice::new(BLOCKS)), "bugs")?;
+	// to survive until the copy has been checked. A compaction pass is exactly
+	// this.
+	let mut compacted = Store::format_app(Box::new(MemBlockDevice::new(BLOCKS)), "example")?;
 	let stats = rebuild_into(&store, &mut compacted)?;
 	println!(
 		"rebuilt into a fresh volume: {} dirs, {} files, {} bytes of content; {} bytes free",
@@ -97,8 +112,7 @@ fn run() -> Result<()> {
 		return Err(Error::ContentMismatch {
 			path: "/".to_string(),
 			local: "the source tree".to_string(),
-			detail: "the rebuilt volume's tree differs; swapping it over the source would lose data"
-				.to_string(),
+			detail: "the rebuilt volume's tree differs; swapping it over the source would lose data".to_string(),
 		});
 	}
 	println!("the rebuild is entry-for-entry identical to the source");
@@ -115,13 +129,13 @@ fn run() -> Result<()> {
 
 	// -- 9. First question on any volume handed to us: is it mine?
 	match reopened.app()? {
-		Some(app) if app == "bugs" => {
+		Some(app) if app == "example" => {
 			println!("reopened a {app} store (contract {:?})", reopened.contract_version()?);
 		}
 		Some(other) => {
 			return Err(Error::MarkerUnreadable {
 				path: "/.ledgerfs/APP".to_string(),
-				detail: format!("expected \"bugs\", found {other:?}"),
+				detail: format!("expected \"example\", found {other:?}"),
 			});
 		}
 		None => {
@@ -136,12 +150,13 @@ fn run() -> Result<()> {
 	let chunk1 = reopened.read_file("/relay/transcript-000001.jsonl")?;
 	let chunk2 = reopened.read_file("/relay/transcript-000002.jsonl")?;
 	let state = reopened.read_file("/relay/state.json")?;
-	println!("restored log: {} bytes; state: {:?}", chunk1.len() + chunk2.len(),
-		String::from_utf8_lossy(&state).trim());
+	println!(
+		"restored log: {} bytes; state: {:?}",
+		chunk1.len() + chunk2.len(),
+		String::from_utf8_lossy(&state).trim()
+	);
 
-	if chunk1 != b"{\"turn\":1,\"action\":\"recon\"}\n"
-		|| chunk2 != b"{\"turn\":2,\"action\":\"probe\"}\n"
-	{
+	if chunk1 != b"{\"turn\":1,\"action\":\"recon\"}\n" || chunk2 != b"{\"turn\":2,\"action\":\"probe\"}\n" {
 		return Err(Error::ContentMismatch {
 			path: "/relay/transcript-000001.jsonl".to_string(),
 			local: "the chunks the app wrote".to_string(),

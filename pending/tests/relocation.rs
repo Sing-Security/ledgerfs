@@ -10,8 +10,8 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::format; // For format! macro in no_std
-use crucible_ledgerfs_kernel::dedupe::{DedupeIndex, PhysicalLocator, RelocationReason, StorageTier};
-use crucible_ledgerfs_kernel::object::ObjectId;
+use ledgerfs::object::ObjectId;
+use ledgerfs_pending::dedupe::{DedupeIndex, PhysicalLocator, RelocationReason, StorageTier};
 
 type Result<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 

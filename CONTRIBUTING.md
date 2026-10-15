@@ -6,13 +6,14 @@ The kernel crate is `no_std` with `alloc` and carries a feature matrix; a change
 that builds under `--all-features` has not been built. CI runs the same list:
 
 ```sh
-cargo test -p crucible-ledgerfs-kernel
-cargo test -p crucible-ledgerfs-kernel --no-default-features --features std
-cargo test -p crucible-ledgerfs-kernel --no-default-features --features reader
-cargo test -p crucible-ledgerfs-kernel --no-default-features --features data-encryption
-cargo test -p crucible-ledgerfs-kernel --no-default-features --features temper_sealing
-cargo test -p crucible-ledgerfs-kernel --all-features
-cargo test -p crucible-ledgerfs-host
+cargo test -p ledgerfs
+cargo test -p ledgerfs --no-default-features --features std
+cargo test -p ledgerfs --no-default-features --features reader
+cargo test -p ledgerfs --no-default-features --features data-encryption
+cargo test -p ledgerfs --no-default-features --features temper_sealing
+cargo test -p ledgerfs --all-features
+cargo test -p ledgerfs-host
+cargo test -p ledgerfs-pending
 cargo fmt --all --check
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 ```
@@ -21,6 +22,15 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 ring-0 ATA port I/O and only across `#[cfg(target_arch = "x86_64")]`; the second
 swaps the block device under the whole CoW object model. A change that compiles
 under neither is still broken.
+
+## Toolchain
+
+`rust-toolchain.toml` pins current stable, and says why it is not pinned to the
+floor. The floors are the `rust-version` key in each manifest: 1.89 for the two
+published crates and for the unpublished `pending/` crate, 1.90 for the
+benchmark harness. CI builds the 1.89 crates on 1.89, so a change that needs
+something newer than 1.89 in `kernel/`, `host/` or `pending/` fails there rather
+than in a user's build.
 
 ## Formatting
 
@@ -43,12 +53,19 @@ constraint:
 
 ## Ordering constraints
 
-The commit protocol's write order is load-bearing: objects, then the allocator
-snapshot, then the superblock copies, with a barrier between each stage. Swapping
-two stages still passes every test that does not inject a fault, and loses data
-on the first power cut. If you touch that path, test it with the fault injection
-in the durability suite, and prefer a test that fails when you remove the barrier
-to one that passes when you keep it.
+The commit protocol's write order is load-bearing: objects and the allocator
+snapshot, one barrier, then the superblock copies, then a second barrier that
+commits them. Swapping two stages still passes every test that does not inject a
+fault, and loses data on the first power cut. If you touch that path, test it
+with the fault injection in the durability suite, and prefer a test that fails
+when you remove the barrier to one that passes when you keep it.
+
+The barrier count is not the thing to optimise, and a barrier is not expensive
+in itself: one that follows no new dirty data costs nothing on any real device.
+What costs is a barrier that follows new data. Two that do are the floor for
+this protocol's design — one to get the objects on media before the superblock
+names them, one to commit — so a change that removes a barrier has to say which
+of those two it removed and why the ordering it established no longer matters.
 
 ## Tests
 

@@ -14,15 +14,14 @@
 //! tree has written, every hint below the root is zero.** The superblock
 //! persists only the root's placement, so the first lookup of anything else
 //! falls through to the scan, which walks the whole volume reading every
-//! block's header. Measured on a real `bugs` campaign: `read_dir("/")` on a
-//! 1.06 GiB volume costs **~0.8 s** cold, and ~50 µs once the map is warm. The
-//! operator console re-opened every campaign per poll, so that scan was the
-//! single hottest path in the UI.
+//! block's header. That scan is the whole cost of a cold `read_dir("/")` on a
+//! volume of any size, and it is paid again by every process that opens the
+//! volume; the build-side numbers are in `BENCHMARKS.md`.
 //!
 //! # Why a sidecar rather than a format change
 //!
 //! The map is a *pure cache*: every entry is re-verified against the block it
-//! names (`DiskObjectStore::block_holds`) before use, so a stale or wrong
+//! names (`DiskObjectStore::read_object`) before use, so a stale or wrong
 //! entry costs one block read and a fallback scan — never a wrong answer. That
 //! is what makes it safe to keep out of the volume entirely. Writing it into
 //! the volume would mean a format change with a compatibility story, and would
@@ -35,7 +34,7 @@
 //! The header carries the volume's identity — its size, and on unix its
 //! `(device, inode)` — and a load whose identity does not match is discarded.
 //! That covers the two ways a sidecar can go out from under its volume: a
-//! `compact`, which writes a whole new file and `rename`s it into place (a new
+//! rebuild, which writes a whole new file and `rename`s it into place (a new
 //! inode), and a re-format in place (handled at the source — `Store::format`
 //! removes the sidecar). Entries are re-verified on use regardless, so the
 //! identity check is an efficiency measure, not a correctness one.
@@ -43,7 +42,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crucible_ledgerfs_kernel::object::ObjectId;
+use ledgerfs::object::ObjectId;
 
 use crate::device::VolumeIdentity;
 
@@ -109,11 +108,7 @@ pub(crate) fn load(path: &Path, identity: VolumeIdentity) -> Option<HashMap<Obje
 /// same directory and is `rename`d into place, so an interrupted save leaves
 /// the previous cache (or nothing) rather than a half-file that would parse as
 /// a plausible wrong answer.
-pub(crate) fn save(
-	path: &Path,
-	identity: VolumeIdentity,
-	entries: &HashMap<ObjectId, u64>,
-) -> std::io::Result<()> {
+pub(crate) fn save(path: &Path, identity: VolumeIdentity, entries: &HashMap<ObjectId, u64>) -> std::io::Result<()> {
 	let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
 	let mut bytes = Vec::with_capacity(HEADER_LEN + entries.len() * ENTRY_LEN);
 	bytes.extend_from_slice(MAGIC);
@@ -158,7 +153,11 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	fn identity() -> VolumeIdentity {
-		VolumeIdentity { size_bytes: 4096 * 64, dev: 7, ino: 99 }
+		VolumeIdentity {
+			size_bytes: 4096 * 64,
+			dev: 7,
+			ino: 99,
+		}
 	}
 
 	fn temp(tag: &str) -> PathBuf {
@@ -203,7 +202,10 @@ mod tests {
 		other.ino += 1;
 		save(&path, identity(), &map(&[(1, 6)])).expect("save");
 		// -- Check
-		assert!(load(&path, other).is_none(), "an index for another volume must not load");
+		assert!(
+			load(&path, other).is_none(),
+			"an index for another volume must not load"
+		);
 		let _ = std::fs::remove_file(&path);
 	}
 

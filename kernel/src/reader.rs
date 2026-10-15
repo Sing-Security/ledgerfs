@@ -96,10 +96,9 @@ const START_BLOCK: u64 = crate::RESERVED_HEADER_BLOCKS;
 /// `NOT FOUND`, indistinguishable from corruption. Installing a 63 MB guest
 /// ISO put objects at block 22394 and broke it again.
 ///
-/// The real bound now comes from the superblock, which `forge-builder` sizes
-/// to the highest block it actually wrote (see its
-/// `fs_init::rewrite_superblock_limits`), so an image can no longer be built
-/// whose own reader cannot reach the end of it.
+/// The real bound now comes from the superblock, whose `max_scan_blocks` the
+/// writer sets to the highest block it actually wrote, so an image can no
+/// longer be built whose own reader cannot reach the end of it.
 const MAX_BLOCKS: u64 = 16384;
 
 /// ATA sectors per 4 KiB LedgerFS block (4096 / 512).
@@ -116,22 +115,20 @@ use crate::MAX_OBJECT_SIZE;
 /// Maximum in-kernel transfer per `read_range` / `read_file` (safety bound).
 ///
 /// Raised from 1 MiB → 8 MiB so that `ProcessCreateFromFd` can load
-/// larger ELF binaries (e.g. `temper-cbl` at ~4.2 MiB) in a single
+/// larger ELF binaries (e.g. a ~4.2 MiB userspace binary) in a single
 /// `read_range` / `read_file` pass without hitting `FileTooLarge`.
 const MAX_RANGE_READ: usize = 8 * 1024 * 1024; // 8 MiB
 
 // ── ATA PIO constants and shared primitives ─────────────────────────
 //
 // The port addresses, register offsets, status bits, `AtaError`, the
-// crate-level `ATA_LOCK`, and the raw `outb`/`inb`/`inw`/`outw` + wait
-// helpers all now live in `crate::ata_io` so the write path (`writer.rs`)
-// serializes through the exact same bus lock instead of a second, separate
-// one — see that module's doc comment for why two locks would be a real
-// correctness hazard, not just a style preference.
+// crate-level `ATA_LOCK`, the raw `inb`/`outb`, the two bulk transfers, and
+// the wait helpers all now live in `crate::ata_io`, so the write path
+// (`writer.rs`) serializes through the exact same bus lock instead of a
+// second, separate one — see that module's doc comment for why two locks
+// would be a real correctness hazard, not just a style preference.
 use crate::ata_io::{
-	ATA_DATA, ATA_DRIVE_HEAD, ATA_LBA_HIGH, ATA_LBA_LOW, ATA_LBA_MID, ATA_LOCK, ATA_PRIMARY_BASE, ATA_SECTOR_COUNT,
-	ATA_STATUS_BSY, ATA_STATUS_CMD, ATA_STATUS_DRQ, ATA_STATUS_ERR, AtaError, MAX_28BIT_LBA, SECTOR_SIZE, ata_wait_not_busy,
-	ata_wait_ready, inw, outb,
+	ATA_DATA, ATA_PRIMARY_BASE, ATA_STATUS_CMD, AtaError, SECTOR_SIZE, ata_wait_not_busy, ata_wait_ready, outb,
 };
 
 /// READ SECTORS command (28-bit LBA PIO). Read-specific, stays local.
@@ -142,14 +139,14 @@ const ATA_CMD_READ_SECTORS_EXT: u8 = 0x24;
 
 // ── Configurable operating limits ────────────────────────────────────
 //
-// This crate is a dependency of `forge`/`crucible-kernel`, not the other
-// way around — `reader.rs` cannot reach `ledgerfs_mount::get_mount()` (that
-// lives in the higher-level crate). Instead, whoever parses the superblock
-// (currently `forge-boot`'s `verify_superblock`, right where it also calls
-// `ledgerfs_mount::set_mount`) pushes the resolved limits down into this
-// module via `set_limits`. `None` (before boot, or in a test/example
-// context that never calls `set_limits`) resolves to the same hardcoded
-// values this module used before `LedgerFsLimits` existed.
+// This crate is a dependency of the consuming kernel, not the other way
+// around — `reader.rs` cannot reach the mount registry, which lives in the
+// higher-level crate. Instead, whoever parses the superblock and registers
+// the mount pushes the resolved limits down into this module via
+// `set_limits`. Nothing in this tree calls it: it is a seam for the
+// consumer. `None` (before boot, or in a test/example context that never
+// calls `set_limits`) resolves to the same hardcoded values this module used
+// before `LedgerFsLimits` existed.
 static LIMITS: spin::Mutex<Option<crate::superblock::LedgerFsLimits>> = spin::Mutex::new(None);
 
 // region:    --- Object-location index
@@ -175,9 +172,8 @@ struct ObjectIndex {
 	/// Note the bound is the *scan range* (`resolved_max_blocks()`), not the
 	/// store: an object written beyond that range is invisible to the sweep,
 	/// exactly as it was invisible to the un-indexed scan this replaces. The
-	/// builder now sizes `max_scan_blocks` to the image it wrote (see
-	/// `forge-builder`'s `rewrite_superblock_limits`), which is what makes
-	/// the two coincide.
+	/// writer sizes `max_scan_blocks` to the highest block it wrote, which is
+	/// what makes the two coincide.
 	complete: bool,
 }
 
@@ -215,10 +211,11 @@ fn index_install(entries: Vec<(u64, u64)>, complete: bool) {
 	// (it found its object and stopped) has seen strictly less than a full
 	// sweep, and overwriting with it would resurrect the rescan-on-miss cost
 	// this exists to remove.
-	if let Some(existing) = guard.as_ref() {
-		if existing.complete && !complete {
-			return;
-		}
+	if let Some(existing) = guard.as_ref()
+		&& existing.complete
+		&& !complete
+	{
+		return;
 	}
 
 	// Merge rather than replace. A sweep that exits early covers only
@@ -233,7 +230,10 @@ fn index_install(entries: Vec<(u64, u64)>, complete: bool) {
 		None => entries,
 	};
 
-	*guard = Some(ObjectIndex { entries: merged, complete });
+	*guard = Some(ObjectIndex {
+		entries: merged,
+		complete,
+	});
 }
 
 /// Merge two block-ordered `(id_prefix, block)` lists, `new` winning ties.
@@ -287,8 +287,8 @@ pub fn invalidate_object_index() {
 // endregion: --- Object-location index
 
 /// Publish the operating limits extracted from the mounted partition's
-/// superblock. Called once, from `forge-boot`'s superblock verification,
-/// right alongside `ledgerfs_mount::set_mount`.
+/// superblock. The caller is whoever verifies the superblock at mount, right
+/// alongside registering the mount; this tree has none.
 pub fn set_limits(limits: crate::superblock::LedgerFsLimits) {
 	*LIMITS.lock() = Some(limits);
 }
@@ -340,7 +340,7 @@ fn resolved_max_blocks() -> u64 {
 /// - `lba` + sector_count does not exceed drive capacity.
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn ata_pio_read(lba: u64, buf: &mut [u8]) -> Result<(), AtaError> {
-	if buf.len() % SECTOR_SIZE != 0 {
+	if !buf.len().is_multiple_of(SECTOR_SIZE) {
 		return Err(AtaError::InvalidBufferSize);
 	}
 
@@ -355,14 +355,9 @@ pub(crate) unsafe fn ata_pio_read(lba: u64, buf: &mut [u8]) -> Result<(), AtaErr
 	unsafe {
 		ata_wait_not_busy()?;
 
-// SAFETY: bus lock held; picks the 28- or 48-bit form and programs
+		// SAFETY: bus lock held; picks the 28- or 48-bit form and programs
 		// the taskfile accordingly.
-		let cmd = crate::ata_io::program_taskfile(
-			lba,
-			sector_count,
-			ATA_CMD_READ_SECTORS,
-			ATA_CMD_READ_SECTORS_EXT,
-		)?;
+		let cmd = crate::ata_io::program_taskfile(lba, sector_count, ATA_CMD_READ_SECTORS, ATA_CMD_READ_SECTORS_EXT)?;
 
 		// SAFETY: Issuing the read command to register 0x1F7.
 		outb(ATA_PRIMARY_BASE + ATA_STATUS_CMD, cmd);
@@ -375,11 +370,7 @@ pub(crate) unsafe fn ata_pio_read(lba: u64, buf: &mut [u8]) -> Result<(), AtaErr
 
 			// SAFETY: DRQ asserted, and `sector_buf` is exactly SECTOR_SIZE
 			// bytes, matching the word count passed here.
-			crate::ata_io::insw_bulk(
-				ATA_PRIMARY_BASE + ATA_DATA,
-				sector_buf.as_mut_ptr(),
-				SECTOR_SIZE / 2,
-			);
+			crate::ata_io::insw_bulk(ATA_PRIMARY_BASE + ATA_DATA, sector_buf.as_mut_ptr(), SECTOR_SIZE / 2);
 		}
 	}
 
@@ -437,7 +428,7 @@ unsafe fn try_read_block(
 	object_id: &ObjectId,
 ) -> Result<Vec<u8>, ReaderError> {
 	let mut block_buf = [0u8; BLOCK_SIZE];
-	let block_sector = (partition_start_lba as u64 + block_idx * SECTORS_PER_BLOCK as u64);
+	let block_sector = partition_start_lba as u64 + block_idx * SECTORS_PER_BLOCK as u64;
 
 	log::trace!(
 		"[ledgerfs-reader] try_read_block: block_idx={} sector={} expect_id={:02x}{:02x}{:02x}{:02x}...",
@@ -546,7 +537,7 @@ unsafe fn try_read_block(
 		block_buf[HEADER_SIZE..payload_end].to_vec()
 	} else {
 		// Multi-block path — payload spans consecutive blocks.
-		let extra_blocks = (total_record_len - BLOCK_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		let extra_blocks = (total_record_len - BLOCK_SIZE).div_ceil(BLOCK_SIZE);
 		log::debug!(
 			"[ledgerfs-reader] try_read_block: block {} multi-block record — stored_len={} total_blocks={}",
 			block_idx,
@@ -601,8 +592,7 @@ unsafe fn try_read_block(
 	// against the decompressed bytes. Getting this the wrong way round would
 	// reject every compressed object with a BLAKE3 mismatch.
 	let payload = if compression_algo != 0 {
-		let logical_len_bytes: [u8; 4] =
-			block_buf[LOGICAL_LEN_OFFSET..LOGICAL_LEN_OFFSET + 4].try_into().unwrap();
+		let logical_len_bytes: [u8; 4] = block_buf[LOGICAL_LEN_OFFSET..LOGICAL_LEN_OFFSET + 4].try_into().unwrap();
 		let logical_len = u32::from_le_bytes(logical_len_bytes) as usize;
 		if logical_len > resolved_max_object_bytes() {
 			log::warn!(
@@ -612,8 +602,8 @@ unsafe fn try_read_block(
 			);
 			return Err(ReaderError::NotFound);
 		}
-		let algo = crate::compression::CompressionAlgorithm::from_u8(compression_algo)
-			.map_err(|_| ReaderError::NotFound)?;
+		let algo =
+			crate::compression::CompressionAlgorithm::from_u8(compression_algo).map_err(|_| ReaderError::NotFound)?;
 		match crate::compression::decompress(&payload, algo, logical_len) {
 			Ok(d) => d,
 			Err(e) => {
@@ -773,8 +763,6 @@ pub unsafe fn read_object(
 	for block_idx in START_BLOCK..START_BLOCK + resolved_max_blocks() {
 		let mut block_buf = [0u8; BLOCK_SIZE];
 
-		let block_sector = (partition_start_lba as u64 + block_idx * SECTORS_PER_BLOCK as u64);
-
 		// SAFETY: Caller guarantees partition_start_lba is valid and ATA is accessible.
 		match unsafe { read_block_decrypted(partition_start_lba, block_idx, &mut block_buf) } {
 			Ok(()) => {}
@@ -801,9 +789,7 @@ pub unsafe fn read_object(
 		// capturing the sweep is the whole point.
 		{
 			let seen = &block_buf[OBJECT_ID_OFFSET..OBJECT_ID_OFFSET + 8];
-			let prefix = u64::from_le_bytes([
-				seen[0], seen[1], seen[2], seen[3], seen[4], seen[5], seen[6], seen[7],
-			]);
+			let prefix = u64::from_le_bytes([seen[0], seen[1], seen[2], seen[3], seen[4], seen[5], seen[6], seen[7]]);
 			found_entries.push((prefix, block_idx));
 		}
 
@@ -842,7 +828,7 @@ pub unsafe fn read_object(
 			block_buf[HEADER_SIZE..payload_end].to_vec()
 		} else {
 			// Multi-block: read consecutive continuation blocks.
-			let extra_blocks = (total_record_len - BLOCK_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+			let extra_blocks = (total_record_len - BLOCK_SIZE).div_ceil(BLOCK_SIZE);
 			log::debug!(
 				"[ledgerfs-reader] read_object: scan block {} is multi-block (stored_len={}, {} extra blocks)",
 				block_idx,
@@ -855,7 +841,6 @@ pub unsafe fn read_object(
 			let mut read_ok = true;
 			for i in 1..=(extra_blocks as u64) {
 				let next_block = block_idx + i;
-				let next_sector = (partition_start_lba as u64 + next_block * SECTORS_PER_BLOCK as u64);
 				let mut extra_buf = [0u8; BLOCK_SIZE];
 				// SAFETY: Caller guarantees partition_start_lba is valid.
 				match unsafe { read_block_decrypted(partition_start_lba, next_block, &mut extra_buf) } {
@@ -880,8 +865,7 @@ pub unsafe fn read_object(
 
 		// Decompress before hashing: the ObjectId is over the logical bytes.
 		let payload = if compression_algo != 0 {
-			let logical_len_bytes: [u8; 4] =
-				block_buf[LOGICAL_LEN_OFFSET..LOGICAL_LEN_OFFSET + 4].try_into().unwrap();
+			let logical_len_bytes: [u8; 4] = block_buf[LOGICAL_LEN_OFFSET..LOGICAL_LEN_OFFSET + 4].try_into().unwrap();
 			let logical_len = u32::from_le_bytes(logical_len_bytes) as usize;
 			if logical_len > resolved_max_object_bytes() {
 				continue;
@@ -1062,6 +1046,7 @@ pub unsafe fn walk_path(
 		current_ref.object_id.as_bytes()[3],
 		current_ref.hint.0,
 	);
+	// SAFETY: Caller guarantees partition_start_lba is valid.
 	let final_bytes = unsafe { read_object(partition_start_lba, &current_ref.object_id, hint_opt(&current_ref.hint)) }?;
 	let inode = decode_inode(&final_bytes)?;
 	log::debug!(
@@ -1096,8 +1081,7 @@ pub struct DirListEntry {
 /// inode too, so the caller can report `d` vs `f` per entry the same way
 /// `readdir(3)` callers expect — without that, every LedgerFS-backed
 /// directory listing has to fall back to a filesystem with no knowledge of
-/// this tree at all (see `forge/src/syscall/handlers.rs`'s `/system/`
-/// dispatch comment for why that fallback existed and what it broke).
+/// this tree at all.
 ///
 /// # Safety
 ///
@@ -1111,8 +1095,13 @@ pub unsafe fn read_dir_entries(
 	}
 
 	// SAFETY: caller guarantees partition_start_lba is valid.
-	let inode_bytes =
-		unsafe { read_object(partition_start_lba, &dir_inode_ref.object_id, hint_opt(&dir_inode_ref.hint)) }?;
+	let inode_bytes = unsafe {
+		read_object(
+			partition_start_lba,
+			&dir_inode_ref.object_id,
+			hint_opt(&dir_inode_ref.hint),
+		)
+	}?;
 	let inode = decode_inode(&inode_bytes)?;
 	if inode.kind != InodeKind::Directory {
 		return Err(ReaderError::TypeMismatch);
@@ -1132,8 +1121,7 @@ pub unsafe fn read_dir_entries(
 	for entry in &dir.entries {
 		let entry_ref = entry.inode_ref();
 		// SAFETY: caller guarantees partition_start_lba is valid.
-		let child_bytes =
-			unsafe { read_object(partition_start_lba, &entry_ref.object_id, hint_opt(&entry_ref.hint)) }?;
+		let child_bytes = unsafe { read_object(partition_start_lba, &entry_ref.object_id, hint_opt(&entry_ref.hint)) }?;
 		let child_inode = decode_inode(&child_bytes)?;
 		out.push(DirListEntry {
 			name: entry.name.clone(),
@@ -1184,12 +1172,11 @@ pub unsafe fn read_file(partition_start_lba: u32, file_inode_ref: &ObjectRef) ->
 	}?;
 	let extent_node = decode_extent_node(&extent_bytes)?;
 
-	let mut file_data = Vec::new();
-	file_data.resize(inode.size as usize, 0);
+	let mut file_data = alloc::vec![0u8; inode.size as usize];
 
 	for extent in extent_node.extents.iter() {
-		// SAFETY: Caller guarantees partition_start_lba is valid.
 		let chunk_hint = hint_opt(&extent.chunk_hint);
+		// SAFETY: Caller guarantees partition_start_lba is valid.
 		let chunk_bytes = unsafe { read_object(partition_start_lba, &extent.chunk_id, chunk_hint) }?;
 		let chunk_len = min(extent.length as usize, chunk_bytes.len());
 		let start = extent.logical_offset as usize;
@@ -1255,9 +1242,8 @@ pub unsafe fn load_extent_map(partition_start_lba: u32, file_inode_ref: &ObjectR
 			hint_opt(&file_inode_ref.hint),
 		)
 	}
-	.map_err(|e| {
+	.inspect_err(|e| {
 		log::error!("[ledgerfs-reader] load_extent_map: FAILED to read inode: {:?}", e);
-		e
 	})?;
 	let inode = decode_inode(&inode_bytes)?;
 
@@ -1284,13 +1270,15 @@ pub unsafe fn load_extent_map(partition_start_lba: u32, file_inode_ref: &ObjectR
 			hint_opt(&inode.content_ref.hint),
 		)
 	}
-	.map_err(|e| {
+	.inspect_err(|e| {
 		log::error!("[ledgerfs-reader] load_extent_map: FAILED to read extent node: {:?}", e);
-		e
 	})?;
 	let extent_node = decode_extent_node(&extent_bytes)?;
 
-	Ok(ExtentMap { file_size: inode.size, extents: extent_node.extents })
+	Ok(ExtentMap {
+		file_size: inode.size,
+		extents: extent_node.extents,
+	})
 }
 
 /// Read a byte range from a file using a previously loaded [`ExtentMap`].
@@ -1344,8 +1332,8 @@ pub unsafe fn read_range_cached(
 		}
 
 		let copy_len = (read_end - read_start) as usize;
-		// SAFETY: Caller guarantees partition_start_lba is valid.
 		let chunk_hint = hint_opt(&extent.chunk_hint);
+		// SAFETY: Caller guarantees partition_start_lba is valid.
 		let chunk_bytes = unsafe { read_object(partition_start_lba, &extent.chunk_id, chunk_hint) }?;
 		let chunk_offset = (read_start - extent.logical_offset + extent.chunk_offset) as usize;
 		let chunk_end = min(chunk_offset + copy_len, chunk_bytes.len());
@@ -1447,7 +1435,10 @@ mod object_index_tests {
 		let merged = merge_by_block(old, new);
 
 		// -- Check: still ascending by block, nothing dropped.
-		assert_eq!(merged, alloc::vec![(0xAA, 10), (0xDD, 15), (0xBB, 20), (0xEE, 25), (0xCC, 30)]);
+		assert_eq!(
+			merged,
+			alloc::vec![(0xAA, 10), (0xDD, 15), (0xBB, 20), (0xEE, 25), (0xCC, 30)]
+		);
 	}
 
 	#[test]
@@ -1481,8 +1472,16 @@ mod object_index_tests {
 		// outright here sent every object past block 20 back to scanning.
 		let ix = OBJECT_INDEX.lock();
 		let entries = &ix.as_ref().expect("index present").entries;
-		assert_eq!(entries.len(), 4, "entries were shrunk to the partial sweep: {:?}", entries);
-		assert!(entries.contains(&(4, 40)), "lost the entry beyond the partial sweep's reach");
+		assert_eq!(
+			entries.len(),
+			4,
+			"entries were shrunk to the partial sweep: {:?}",
+			entries
+		);
+		assert!(
+			entries.contains(&(4, 40)),
+			"lost the entry beyond the partial sweep's reach"
+		);
 	}
 
 	#[test]

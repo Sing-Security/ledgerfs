@@ -22,7 +22,7 @@
 mod common;
 
 use common::*;
-use crucible_ledgerfs_host::{Error, InodeKind, Store};
+use ledgerfs_host::{Error, InodeKind, Store};
 use std::collections::BTreeMap;
 
 // region:    --- Superblock copies
@@ -33,8 +33,8 @@ fn test_every_commit_persists_all_four_superblock_copies() -> Result<()> {
 	let mut store = store(BLOCKS)?;
 
 	// -- Exec: a handful of mutations, checking after each — a writer that
-	// maintained the primary copy only (which `fs-cbl`'s runtime writer does,
-	// per this crate's `lib.rs`) would fail this on the first assertion.
+	// maintained the primary copy only (which the runtime volume driver's writer
+	// does, per this crate's `lib.rs`) would fail this on the first assertion.
 	for step in 0..5 {
 		store.mkdir(&format!("/d{step}"), 0o755)?;
 
@@ -156,9 +156,9 @@ fn test_losing_both_leading_copies_is_a_named_mount_failure() -> Result<()> {
 #[test]
 fn test_a_volume_whose_copies_name_different_roots_mounts_the_newest() -> Result<()> {
 	// -- Setup & Fixtures: the state a single-copy writer leaves behind — the
-	// scenario `lib.rs` documents for the shipped `/data` partition. Built here
-	// by committing a mutation and then restoring the *trailing* copies from
-	// before it, so copy 0 is ahead of the rest.
+	// scenario `lib.rs` documents for the shipped data partition. Built here by
+	// committing a mutation and then restoring the *trailing* copies from before
+	// it, so copy 0 is ahead of the rest.
 	let device = mem(BLOCKS);
 	let watch = device.clone();
 	let mut store = Store::format(Box::new(device), BLOCKS)?;
@@ -195,7 +195,10 @@ fn test_a_volume_whose_copies_name_different_roots_mounts_the_newest() -> Result
 	// this is the audit signal an operator needs, and losing it would be worse
 	// than the disagreement itself.
 	let status = back.fs().volume.copy_status();
-	assert!(!status.is_healthy(), "three copies naming an older root is not a healthy volume");
+	assert!(
+		!status.is_healthy(),
+		"three copies naming an older root is not a healthy volume"
+	);
 	assert_eq!(status.decoded_count(), 4, "all four are readable");
 	assert_eq!(status.selected, 0, "the newest copy is the one read from");
 	let agrees = status.agree.iter().filter(|a| **a).count();
@@ -226,7 +229,10 @@ fn test_a_crash_between_the_snapshot_and_the_superblock_keeps_the_old_tree() -> 
 	store.write_new_file("/added/new.txt", b"new contents", 0o644)?;
 	let after = bytes(&watch);
 	drop(store);
-	assert_ne!(before, after, "the mutation has to have changed the bytes for this test to mean anything");
+	assert_ne!(
+		before, after,
+		"the mutation has to have changed the bytes for this test to mean anything"
+	);
 
 	let mut mid_crash = after;
 	for lba in copy_lbas(BLOCKS) {
@@ -242,13 +248,16 @@ fn test_a_crash_between_the_snapshot_and_the_superblock_keeps_the_old_tree() -> 
 	// is simply not there.
 	assert_eq!(back.commit_seq(), before_seq);
 	assert_eq!(back.read_file("/kept/old.txt")?, b"old contents");
-	assert!(is_no_such_file(&expect_err("read the uncommitted dir", back.stat("/added")), "/added"));
+	assert!(is_no_such_file(
+		&expect_err("read the uncommitted dir", back.stat("/added")),
+		"/added"
+	));
 	assert_eq!(names(&back.read_dir("/")?), vec!["kept".to_string()]);
 
 	// -- Check: and the allocator that ran ahead is still usable — the store
 	// must not have lost writability to the rollback, or a crash would cost the
 	// volume its ability to take writes.
-	assert_eq!(back.origin(), crucible_ledgerfs_host::Origin::ResumedWritable);
+	assert_eq!(back.origin(), ledgerfs_host::Origin::ResumedWritable);
 	let mut back = back;
 	back.mkdir("/added", 0o755)?;
 	assert_eq!(back.stat("/added")?.kind, InodeKind::Directory);
@@ -298,11 +307,21 @@ fn test_every_prefix_of_a_mutation_session_mounts_to_a_whole_tree() -> Result<()
 
 // region:    --- Commit sequence
 
+/// The per-verb cost, in commits, pinned as a contract.
+///
+/// A caller that reasons about how much a write costs — an append-only log, a
+/// rotation policy — needs these numbers to be stable. Every verb that puts
+/// content into a new file is now **one** commit: the create and the write are
+/// a single transaction, because the commit is this volume's durability point
+/// and a caller waiting for one small record should not be waiting on two.
+///
+/// The one verb that still costs more than one commit is `write_file`
+/// *replacing* an existing file, which is a remove followed by a create. That is
+/// a property of replace rather than of writing — see
+/// `test_replacing_a_file_has_a_window_where_it_is_empty`.
 #[test]
 fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
-	// -- Setup & Fixtures: a caller that reasons about how much a write costs
-	// (an append-only log, a rotation policy) needs these numbers to be stable,
-	// and `write_new_file` being *two* transactions is the one that surprises.
+	// -- Setup & Fixtures
 	let mut store = store(BLOCKS)?;
 
 	// -- Check: `format` is itself one commit — the genesis root.
@@ -320,36 +339,45 @@ fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	expect(&store, 3, "create_file");
 
 	store.write_new_file("/f", b"data", 0o644)?;
-	expect(&store, 5, "write_new_file (create + write)");
+	expect(&store, 4, "write_new_file (create with content, one transaction)");
 
 	store.append("/f", b"more", 0o644)?;
-	expect(&store, 6, "append");
+	expect(&store, 5, "append");
 
 	store.write_at("/f", 8, b"tail")?;
-	expect(&store, 7, "write_at");
+	expect(&store, 6, "write_at");
 
 	store.remove("/f")?;
-	expect(&store, 8, "remove");
+	expect(&store, 7, "remove");
 
 	store.write_new_file("/f", b"again", 0o644)?;
-	expect(&store, 10, "write_new_file on a now-free name");
+	expect(&store, 8, "write_new_file on a now-free name");
 
-	// -- Exec: replacing an existing file is remove + create + write
+	// -- Exec: replacing an existing file is remove, then create-with-content
 	store.write_file("/f", b"replaced", 0o644)?;
-	expect(&store, 13, "write_file over an existing file");
+	expect(&store, 10, "write_file over an existing file");
 
-	// -- Exec: creating a fresh one is create + write
+	// -- Exec: creating a fresh one is a single create-with-content
 	store.write_file("/g", b"fresh", 0o644)?;
-	expect(&store, 15, "write_file creating");
+	expect(&store, 11, "write_file creating");
+
+	// -- Exec: an append that has to create the file is the same one commit
+	store.append("/h", b"first", 0o644)?;
+	expect(&store, 12, "append creating the file");
 	Ok(())
 }
 
 #[test]
 fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
-	// -- Setup & Fixtures: the previous test pinned *that* replacing an existing
-	// file costs three commits — remove, create, write. This one pins what those
-	// three commits mean to a reader that arrives in the middle, and it is not
-	// what a caller replacing a file would expect.
+	// -- Setup & Fixtures: a replace is a remove followed by a create, and this
+	// pins what those two commits mean to a reader that arrives in the middle.
+	//
+	// Note that the window below is now reached only by driving the two verbs by
+	// hand. `write_file` no longer passes through it: its create carries the
+	// content already, so there is no commit at which the file exists and is
+	// empty. The window is still worth pinning, because the hand-driven sequence
+	// is what any caller doing remove-then-create gets, and because a future
+	// change that re-split the create from the write would reintroduce it here.
 	//
 	// A replace is not atomic. A crash — or in the embedding case, any other
 	// reader of a snapshot — between the remove and the create sees the file
@@ -376,7 +404,10 @@ fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
 	// -- Check: a reader of that state finds the name gone, which is honest
 	// and is what a caller can handle
 	assert!(
-		matches!(open_bytes(after_remove)?.read_file("/state"), Err(Error::NoSuchFile { .. })),
+		matches!(
+			open_bytes(after_remove)?.read_file("/state"),
+			Err(Error::NoSuchFile { .. })
+		),
 		"the remove must be visible as a missing file"
 	);
 
@@ -390,7 +421,11 @@ fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
 	// plausible-looking empty file, and anything that reads it as data reads
 	// nothing.
 	let mid = open_bytes(after_create)?;
-	assert_eq!(mid.read_file("/state")?, b"", "a crash between create and write leaves an empty file");
+	assert_eq!(
+		mid.read_file("/state")?,
+		b"",
+		"a crash between create and write leaves an empty file"
+	);
 	assert_eq!(mid.stat("/state")?.size, 0, "and the inode agrees it is empty");
 
 	// -- Exec: the third commit completes the replace
@@ -536,10 +571,13 @@ fn test_the_active_root_hint_is_published_and_survives_a_remount() -> Result<()>
 	let mut store = Store::format(Box::new(device), BLOCKS)?;
 
 	// -- Check: `format` publishes a hint, and it points past the reserved
-	// header (0 would mean "scan", which is the state every image built by
-	// `forge-builder` is in).
+	// header (0 would mean "scan", which is the state every image built by the
+	// image builder is in).
 	let at_format = store.fs().volume.active_root_hint();
-	assert!(at_format >= 6, "a hint of {at_format} means 'no hint' or a reserved block");
+	assert!(
+		at_format >= 6,
+		"a hint of {at_format} means 'no hint' or a reserved block"
+	);
 
 	// -- Exec
 	store.mkdir("/d", 0o755)?;
@@ -551,7 +589,11 @@ fn test_the_active_root_hint_is_published_and_survives_a_remount() -> Result<()>
 	assert_ne!(after_mutation, at_format, "the new root is at a new block");
 	let back = open_bytes(bytes(&watch))?;
 	assert_eq!(back.fs().volume.active_root_hint(), after_mutation);
-	assert_eq!(back.fs().volume.root_ref().hint.0, after_mutation, "the reference agrees with the superblock");
+	assert_eq!(
+		back.fs().volume.root_ref().hint.0,
+		after_mutation,
+		"the reference agrees with the superblock"
+	);
 	assert_eq!(back.fs().volume.root_ref(), back.persisted_root_ref());
 	Ok(())
 }
@@ -566,7 +608,11 @@ fn test_the_published_root_reference_is_the_one_the_volume_mounted_at() -> Resul
 	store.write_new_file("/d/f", b"x", 0o644)?;
 
 	let published = store.persisted_root_ref();
-	assert_eq!(store.fs().root_inode_ref, published, "the read half follows the write half");
+	assert_eq!(
+		store.fs().root_inode_ref,
+		published,
+		"the read half follows the write half"
+	);
 	assert_eq!(
 		open_bytes(bytes(&watch))?.persisted_root_ref(),
 		published,
@@ -598,7 +644,10 @@ fn test_a_commit_that_does_not_fit_leaves_the_previous_tree_intact() -> Result<(
 	let free = store.free_bytes().expect("free bytes");
 
 	// -- Exec
-	let e = expect_err("an oversized append", store.append("/d/keep.txt", &vec![0u8; 10_000_000], 0o644));
+	let e = expect_err(
+		"an oversized append",
+		store.append("/d/keep.txt", &vec![0u8; 10_000_000], 0o644),
+	);
 
 	// -- Check: refused on space
 	match e {
@@ -610,9 +659,21 @@ fn test_a_commit_that_does_not_fit_leaves_the_previous_tree_intact() -> Result<(
 	// they were. A failed commit must not have half-applied its allocations —
 	// that would leak blocks on every retry, and a caller that retried in a
 	// loop would walk the volume capacity down to nothing.
-	assert_eq!(store.read_file("/d/keep.txt")?, b"must survive", "a refused commit changed the file");
-	assert_eq!(store.commit_seq(), seq, "a refused commit must not advance the sequence");
-	assert_eq!(store.free_bytes().expect("free bytes"), free, "a refused commit must not leak space");
+	assert_eq!(
+		store.read_file("/d/keep.txt")?,
+		b"must survive",
+		"a refused commit changed the file"
+	);
+	assert_eq!(
+		store.commit_seq(),
+		seq,
+		"a refused commit must not advance the sequence"
+	);
+	assert_eq!(
+		store.free_bytes().expect("free bytes"),
+		free,
+		"a refused commit must not leak space"
+	);
 
 	// -- Exec & Check: and the volume is still perfectly usable
 	store.write_new_file("/d/small", b"fits", 0o644)?;
@@ -627,8 +688,8 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 	// it is "the write failed and the store never worked again". A failed commit
 	// used to leave the handle owning no allocator at all, so every later write —
 	// however small, however much room the volume had — was refused with "there
-	// is no allocator snapshot on the volume". For a long-lived embedder (the
-	// `bugs` relay is one) a single out-of-space write was therefore fatal for
+	// is no allocator snapshot on the volume". For a long-lived embedder (a
+	// relay process is one) a single out-of-space write was therefore fatal for
 	// the life of the process, and the message pointed at the volume rather than
 	// at the bug.
 	//
@@ -645,7 +706,10 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 	// take-once-and-forget handle; twice proves the handle recovers to a state
 	// that can be refused *again*, rather than recovering exactly once.
 	for attempt in 0..3 {
-		let e = expect_err("an oversized append", store.append("/d/keep.txt", &vec![0u8; 10_000_000], 0o644));
+		let e = expect_err(
+			"an oversized append",
+			store.append("/d/keep.txt", &vec![0u8; 10_000_000], 0o644),
+		);
 		match e {
 			Error::Format(e) => assert!(e.to_string().contains("space"), "attempt {attempt}: {e}"),
 			other => panic!("attempt {attempt}: expected an out-of-space refusal, got {other:?}"),
@@ -654,7 +718,7 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 
 	// -- Check: the handle has not talked itself out of writing. `is_writable` is
 	// the same answer `write_refusal` would give a caller that asked before
-	// trying, so this is the sentence `bugs` would log.
+	// trying, so this is the sentence the embedder would log.
 	assert!(
 		store.is_writable(),
 		"a refused commit left the store refusing everything: {:?}",
@@ -662,7 +726,7 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 	);
 	assert_eq!(
 		store.origin(),
-		crucible_ledgerfs_host::Origin::Formatted,
+		ledgerfs_host::Origin::Formatted,
 		"a refusal must not change how the volume was obtained"
 	);
 
@@ -670,7 +734,11 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 	// through, and the tree it lands in is the one from before the refusals.
 	store.write_new_file("/d/after.txt", b"still here", 0o644)?;
 	assert_eq!(store.read_file("/d/after.txt")?, b"still here");
-	assert_eq!(store.read_file("/d/keep.txt")?, b"must survive", "the refusals damaged the tree");
+	assert_eq!(
+		store.read_file("/d/keep.txt")?,
+		b"must survive",
+		"the refusals damaged the tree"
+	);
 
 	// -- Check: and the damage does not outlive the handle. A remount must see a
 	// volume that is intact *and* writable — the in-memory repair is only worth
@@ -748,9 +816,14 @@ fn test_filling_a_volume_exhausts_it_predictably_and_still_reads() -> Result<()>
 	// and the shortfall grows with every failed attempt until the store believes
 	// a volume with room to spare is full. The reading either side of the refusal
 	// must therefore be the same number, not merely both small.
-	let free_after = store.free_bytes().expect("an exhausted but writable volume still reports free space");
+	let free_after = store
+		.free_bytes()
+		.expect("an exhausted but writable volume still reports free space");
 	assert_eq!(free_after, free_at_wall, "a refused append must not leak space");
-	assert!(free_before_wall > free_at_wall, "the push toward the wall must actually consume space");
+	assert!(
+		free_before_wall > free_at_wall,
+		"the push toward the wall must actually consume space"
+	);
 
 	// -- Check: and an exhausted volume is a *full* volume, not a dead handle.
 	// Appending again fails, and it fails for the same reason as the first time:
@@ -775,7 +848,11 @@ fn test_free_space_never_rises_across_a_long_session() -> Result<()> {
 
 	// -- Exec
 	for i in 0..60u32 {
-		store.write_file("/state", format!("{{\"n\": {i}, \"pad\": \"{}\"}}", "x".repeat(100)).as_bytes(), 0o644)?;
+		store.write_file(
+			"/state",
+			format!("{{\"n\": {i}, \"pad\": \"{}\"}}", "x".repeat(100)).as_bytes(),
+			0o644,
+		)?;
 		store.append("/log", format!("event {i}\n").as_bytes(), 0o644)?;
 
 		let now = store.free_bytes().expect("free bytes");
@@ -832,7 +909,7 @@ impl Model {
 	}
 }
 
-fn check_against_model(store: &crucible_ledgerfs_host::Store, model: &Model, what: &str) -> Result<()> {
+fn check_against_model(store: &ledgerfs_host::Store, model: &Model, what: &str) -> Result<()> {
 	// -- Root listing: the one directory plus every top-level file
 	let mut want_root = model.names_in("/");
 	want_root.push("d".to_string());
@@ -840,7 +917,11 @@ fn check_against_model(store: &crucible_ledgerfs_host::Store, model: &Model, wha
 	assert_eq!(names(&store.read_dir("/")?), want_root, "{what}: root listing");
 
 	// -- The subdirectory
-	assert_eq!(names(&store.read_dir("/d")?), model.names_in("/d"), "{what}: /d listing");
+	assert_eq!(
+		names(&store.read_dir("/d")?),
+		model.names_in("/d"),
+		"{what}: /d listing"
+	);
 
 	// -- Every file, in full
 	for (path, content) in &model.files {
@@ -977,7 +1058,11 @@ fn test_the_same_bytes_mount_to_the_same_tree_every_time() -> Result<()> {
 	let b = open_bytes(raw.clone())?;
 	let c = open_bytes(raw)?;
 	for (name, mount) in [("a", &a), ("b", &b), ("c", &c)] {
-		assert_eq!(names(&mount.read_dir("/")?), vec!["d".to_string(), "g".to_string()], "mount {name}");
+		assert_eq!(
+			names(&mount.read_dir("/")?),
+			vec!["d".to_string(), "g".to_string()],
+			"mount {name}"
+		);
 		assert_eq!(mount.read_file("/d/f")?, b"stable", "mount {name}");
 		assert_eq!(mount.read_file("/g")?, vec![5u8; 3000], "mount {name}");
 		assert_eq!(mount.commit_seq(), a.commit_seq(), "mount {name}");

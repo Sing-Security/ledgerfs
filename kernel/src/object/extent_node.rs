@@ -51,7 +51,7 @@ pub struct ExtentNode {
 }
 
 impl ExtentNode {
-	/// Maximum canonical size (128 KiB as per spec)
+	/// Maximum canonical size (128 KiB as per FORMAT.md)
 	pub const MAX_CANONICAL_SIZE: usize = 128 * 1024;
 
 	/// Approximate max entries to stay under MAX_CANONICAL_SIZE
@@ -177,17 +177,8 @@ impl ExtentNode {
 			(left_children, right_children)
 		};
 
-		let left = if self.is_leaf {
-			ExtentNode::new_internal(left_extents, left_children)
-		} else {
-			ExtentNode::new_internal(left_extents, left_children)
-		};
-
-		let right = if self.is_leaf {
-			ExtentNode::new_internal(right_extents, right_children)
-		} else {
-			ExtentNode::new_internal(right_extents, right_children)
-		};
+		let left = ExtentNode::new_internal(left_extents, left_children);
+		let right = ExtentNode::new_internal(right_extents, right_children);
 
 		Ok((left, right))
 	}
@@ -224,7 +215,6 @@ impl ExtentNode {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use alloc::vec;
 
 	type TestResult<T> = core::result::Result<T, alloc::boxed::Box<dyn core::error::Error>>;
 
@@ -255,7 +245,11 @@ mod tests {
 		let canonical = node.encode_canonical()?;
 
 		// -- Check
-		assert_eq!(node.object_id, ObjectId::from_content(&canonical), "object_id must equal blake3 of its own canonical encoding");
+		assert_eq!(
+			node.object_id,
+			ObjectId::from_content(&canonical),
+			"object_id must equal blake3 of its own canonical encoding"
+		);
 		let decoded = ExtentNode::decode_canonical(&canonical)?;
 		assert_eq!(decoded.object_id, node.object_id);
 		assert_eq!(decoded, node);
@@ -356,7 +350,11 @@ mod tests {
 		node.insert_extent(new.clone())?;
 
 		// -- Check: exactly one extent survives, and it's the new one.
-		assert_eq!(node.extents.len(), 1, "the old, fully-overwritten extent must be dropped, not kept alongside the new one");
+		assert_eq!(
+			node.extents.len(),
+			1,
+			"the old, fully-overwritten extent must be dropped, not kept alongside the new one"
+		);
 		assert_eq!(node.extents[0], new);
 
 		Ok(())
@@ -391,7 +389,10 @@ mod tests {
 		assert_eq!(node.extents.len(), 2);
 		assert_eq!(node.extents[0].logical_offset, 0);
 		assert_eq!(node.extents[0].length, 2048);
-		assert_eq!(node.extents[0].chunk_offset, 0, "trimmed-from-the-right piece keeps its original chunk_offset");
+		assert_eq!(
+			node.extents[0].chunk_offset, 0,
+			"trimmed-from-the-right piece keeps its original chunk_offset"
+		);
 		assert_eq!(node.extents[1], new);
 
 		Ok(())
@@ -431,7 +432,10 @@ mod tests {
 		assert_eq!(node.extents[1], new);
 		assert_eq!(node.extents[2].logical_offset, 4096);
 		assert_eq!(node.extents[2].length, 4096);
-		assert_eq!(node.extents[2].chunk_offset, 4096, "trimmed-from-the-left piece's chunk_offset must advance by however much was cut from its front");
+		assert_eq!(
+			node.extents[2].chunk_offset, 4096,
+			"trimmed-from-the-left piece's chunk_offset must advance by however much was cut from its front"
+		);
 
 		Ok(())
 	}

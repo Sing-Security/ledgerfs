@@ -6,10 +6,10 @@
 //! - Intent log record creation
 //! - Mount selection
 
-use crucible_ledgerfs_kernel::{
+use ledgerfs::{
 	FsMode,
-	intent_log::{IntentLog, IntentLogRecord, IntentRecordType, parse_ring},
 	compression::CompressionAlgorithm,
+	intent_log::{IntentLog, IntentLogRecord, IntentRecordType, parse_ring},
 	record::{ObjectRecordReader, ObjectRecordWriter, ObjectType},
 	superblock::{RlrEntry, Superblock, mount_select},
 };

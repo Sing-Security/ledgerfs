@@ -5,8 +5,8 @@ Notable changes to LedgerFS. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Two crates are published from this repository and they version independently:
-`crucible-ledgerfs-kernel` carries the on-disk format and its copy-on-write
-operations, `crucible-ledgerfs-host` carries the `std` volume layer. The on-disk
+`ledgerfs` carries the on-disk format and its copy-on-write
+operations, `ledgerfs-host` carries the `std` volume layer. The on-disk
 format has its own version field in the superblock, which is a third number
 again — see [`FORMAT.md`](FORMAT.md).
 
@@ -22,12 +22,12 @@ notes for something you could have depended on.
   objects with BLAKE3 identity, four superblock copies with a Root Locator Ring,
   a ring-buffer intent log, a persistent allocator snapshot, and a commit
   protocol whose write order is the crash-consistency argument.
-- **`crucible-ledgerfs-kernel`** — the `no_std` half: canonical encoding with
+- **`ledgerfs`** — the `no_std` half: canonical encoding with
   strict decode rejection, `ObjectRecord` framing and verification, the object
   model, the block allocator with emergency reserves, copy-on-write transactions,
   and the ATA reader and writer used when the crate is the only path to its own
   partition.
-- **`crucible-ledgerfs-host`** — the `std` half: `Store`, which formats, mounts
+- **`ledgerfs-host`** — the `std` half: `Store`, which formats, mounts
   and mutates a volume over any `BlockDevice`. `FileBlockDevice` puts a volume in
   a file or a partition and takes an advisory exclusive lock that refuses a
   second writer; `MemBlockDevice` keeps one in memory and can be snapshotted to
@@ -36,6 +36,10 @@ notes for something you could have depended on.
 - **`benchmarks/`** — the comparison harness against SQLite in WAL mode, `redb`,
   and raw `File::write` + `sync_all`, with a guard that refuses to run on a
   filesystem whose barrier is not real.
+- **`pending/`** — the subsystems `FORMAT.md` §44 calls Tier B: the dedupe index,
+  snapshots, the scrubber, GC safety rules and content-defined chunking. They are
+  implemented and tested, but nothing in the shipping path calls them, so they
+  are built in this workspace and published to nobody.
 
 ### Features
 
@@ -48,8 +52,8 @@ notes for something you could have depended on.
   Off by default, and opt-in per volume: a lost key makes the volume
   permanently unreadable, which is a user-facing tradeoff rather than a default.
 - `temper_sealing` — ML-DSA-65 and SLH-DSA sealing of audit records, via the
-  `temper` crate on crates.io. Off by default; a plain filesystem build does not
-  need a post-quantum signature stack.
+  `temper-rs` crate on crates.io. Off by default; a plain filesystem build does
+  not need a post-quantum signature stack.
 
 ### Changed - Breaking
 
@@ -66,22 +70,22 @@ notes for something you could have depended on.
 
 ### Changed
 
-- **The x86 port-I/O primitives are vendored.** The six instructions the ATA
-  path issues (`inb`, `inw`, `outb`, `outw`, `rep insw`, `rep outsw`) now live in
+- **The x86 port-I/O primitives are vendored.** The four instructions the ATA
+  path issues (`inb`, `outb`, `rep insw`, `rep outsw`) now live in
   `kernel/src/arch/x86_port.rs` instead of arriving as a dependency. A filesystem
   that owns an on-disk format should not take a dependency on its host OS's
-  assembly crate to reach six instructions.
+  assembly crate to reach four instructions.
 - **The crates build on stable.** Neither uses a nightly feature, so neither
   needs a nightly toolchain; the declared minimum is Rust 1.89 and edition 2024.
-  The benchmark harness, which is not published, needs 1.90 — see
-  [`BENCHMARKS.md`](BENCHMARKS.md).
+  The benchmark harness is a workspace binary rather than a published crate and
+  needs 1.90 — see [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ### Removed
 
-- Internal work-log documents (`W2B_IMPLEMENTATION.md`, `W4A`/`W4B`/`W4C`/`W5A`
-  implementation summaries, `FINAL_TEST_STATUS.md`, `TEST_STATUS.md`) and the
-  `verify_w4*.sh` scripts. They described a project phase rather than a system,
-  and several stated test counts that were true only on one feature set.
+- Internal work-log documents: per-phase implementation summaries, standalone
+  test-status reports, and the shell scripts that re-ran one phase's checks.
+  They described a project phase rather than a system, and several stated test
+  counts that were true only on one feature set.
 
 ### Fixed before this release
 

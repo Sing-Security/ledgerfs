@@ -5,16 +5,13 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 
-use crucible_ledgerfs_kernel::{
-	alloc_node::AllocNode,
-	alloc_state::{AllocationState, PhysicalExtent},
-	dedupe::DedupeIndex,
-	object::{ObjectRef, Root},
-	snapshot::*,
-};
+use ledgerfs::alloc_node::AllocNode;
+use ledgerfs::alloc_state::{AllocationState, PhysicalExtent};
+use ledgerfs::object::{ObjectRef, Root};
+use ledgerfs_pending::dedupe::DedupeIndex;
+use ledgerfs_pending::snapshot::*;
 
 type Result<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
@@ -28,8 +25,8 @@ fn test_snapshot_create_basic() -> Result<()> {
 	let mut dedupe_index = DedupeIndex::new();
 
 	// Add allocated extents
-	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated));
-	alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Allocated));
+	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated))?;
+	alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Allocated))?;
 	alloc_node.recompute_stats();
 
 	let current_root = Root::new();
@@ -68,7 +65,7 @@ fn test_snapshot_delete_basic() -> Result<()> {
 	let mut dedupe_index = DedupeIndex::new();
 
 	// Create snapshot first
-	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated));
+	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated))?;
 	alloc_node.recompute_stats();
 
 	let current_root = Root::new();
@@ -133,7 +130,7 @@ fn test_snapshot_multiple_lifecycle() -> Result<()> {
 	let mut alloc_node = AllocNode::new_empty_leaf();
 	let mut dedupe_index = DedupeIndex::new();
 
-	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated));
+	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated))?;
 	alloc_node.recompute_stats();
 
 	let current_root = Root::new();
@@ -326,10 +323,9 @@ fn test_snapshot_crash_during_pin_phase() -> Result<()> {
 	// -- Setup & Fixtures
 	let mut registry = SnapshotRegistry::new();
 	let mut alloc_node = AllocNode::new_empty_leaf();
-	let mut dedupe_index = DedupeIndex::new();
 
-	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated));
-	alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Allocated));
+	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated))?;
+	alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Allocated))?;
 	alloc_node.recompute_stats();
 
 	// Allocate snapshot ID
@@ -358,7 +354,7 @@ fn test_snapshot_crash_during_pin_phase() -> Result<()> {
 	assert_eq!(alloc_node.extents.get(&2000).unwrap().state, AllocationState::Allocated);
 
 	// Recovery: Must unpin incomplete snapshot
-	for (_, extent) in alloc_node.extents.iter_mut() {
+	for extent in alloc_node.extents.values_mut() {
 		if extent.state == AllocationState::Pinned {
 			extent.state = AllocationState::Allocated;
 		}
@@ -378,13 +374,13 @@ fn test_snapshot_crash_before_register() -> Result<()> {
 	let mut registry = SnapshotRegistry::new();
 	let mut alloc_node = AllocNode::new_empty_leaf();
 
-	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated));
+	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated))?;
 	alloc_node.recompute_stats();
 
 	let snapshot_id = registry.allocate_id()?;
 
 	// Pin all extents
-	for (_, extent) in alloc_node.extents.iter_mut() {
+	for extent in alloc_node.extents.values_mut() {
 		if extent.state == AllocationState::Allocated {
 			extent.state = AllocationState::Pinned;
 		}
@@ -400,7 +396,7 @@ fn test_snapshot_crash_before_register() -> Result<()> {
 	let registered_ids: Vec<SnapshotId> = registry.list_ids();
 	if !registered_ids.contains(&snapshot_id) {
 		// This snapshot ID not registered, unpin its extents
-		for (_, extent) in alloc_node.extents.iter_mut() {
+		for extent in alloc_node.extents.values_mut() {
 			if extent.state == AllocationState::Pinned {
 				extent.state = AllocationState::Allocated;
 			}
@@ -421,7 +417,7 @@ fn test_snapshot_crash_during_delete() -> Result<()> {
 	let mut dedupe_index = DedupeIndex::new();
 
 	// Create snapshot
-	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated));
+	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated))?;
 	alloc_node.recompute_stats();
 
 	let current_root = Root::new();
@@ -449,7 +445,7 @@ fn test_snapshot_crash_during_delete() -> Result<()> {
 	let registered_ids = registry.list_ids();
 	if registered_ids.is_empty() {
 		// No snapshots, all pinned extents are orphaned
-		for (_, extent) in alloc_node.extents.iter_mut() {
+		for extent in alloc_node.extents.values_mut() {
 			if extent.state == AllocationState::Pinned {
 				extent.state = AllocationState::PendingFree;
 			}
@@ -471,8 +467,8 @@ fn test_snapshot_gc_protection() -> Result<()> {
 	let mut alloc_node = AllocNode::new_empty_leaf();
 
 	// Add extents in different states
-	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::PendingFree));
-	alloc_node.add_extent(PhysicalExtent::new(2000, 100, AllocationState::Pinned));
+	alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::PendingFree))?;
+	alloc_node.add_extent(PhysicalExtent::new(2000, 100, AllocationState::Pinned))?;
 	alloc_node.recompute_stats();
 
 	// -- Check

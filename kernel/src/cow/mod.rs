@@ -10,7 +10,10 @@ mod transaction;
 mod property_tests;
 
 pub use object_store::{InMemoryObjectStore, ObjectStore};
-pub use operations::{Operation, apply_ops_to_root, cow_update_dir_entry, create_file, mkdir, read, readdir, rename, unlink, write};
+pub use operations::{
+	Operation, apply_ops_to_root, cow_update_dir_entry, create_file, create_file_with_data, mkdir, read, read_inode,
+	readdir, rename, unlink, write,
+};
 pub use transaction::{NewObject, TxnPlan};
 
 // endregion: --- Modules

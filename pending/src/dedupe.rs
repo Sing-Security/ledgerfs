@@ -1,6 +1,6 @@
 //! Dedupe Index for content-addressed object deduplication
 //!
-//! Per §21 of ledgerfs-spec-v7.md:
+//! Per §21 of FORMAT.md:
 //! - DedupeIndex maps ObjectId (BLAKE3 hash) to physical locator
 //! - Supports hint-miss fallback during reads
 //! - Refcount tracking for GC safety
@@ -15,8 +15,8 @@
 use alloc::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
-use crate::object::ObjectId;
 use crate::{Error, Result};
+use ledgerfs::object::ObjectId;
 
 // region:    --- StorageTier
 
@@ -24,10 +24,11 @@ use crate::{Error, Result};
 ///
 /// Tiers allow different storage media with different performance/cost characteristics.
 /// No policy is enforced at this layer - policy is handled by higher-level components.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum StorageTier {
 	/// Hot tier - NVMe/SSD, frequently accessed data
+	#[default]
 	Hot = 0,
 
 	/// Warm tier - SSD/HDD, moderately accessed data  
@@ -55,12 +56,6 @@ impl StorageTier {
 	/// Convert to u8
 	pub fn to_u8(self) -> u8 {
 		self as u8
-	}
-}
-
-impl Default for StorageTier {
-	fn default() -> Self {
-		Self::Hot
 	}
 }
 
@@ -208,7 +203,7 @@ impl Default for DedupeFlags {
 
 /// Entry in the dedupe index mapping ObjectId to physical location
 ///
-/// Per §21.1 of spec:
+/// Per FORMAT.md §21.1:
 /// - Key: BLAKE3 hash (ObjectId)
 /// - Value: { lba, record_stored_len, refcount, flags }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,7 +398,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 		node.increment_refcount()
 	}
 
@@ -415,7 +410,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 		node.decrement_refcount()
 	}
 
@@ -426,7 +421,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 
 		if node.refcount > 0 {
 			return Err(Error::CannotFreeObjectWithRefcount {
@@ -447,7 +442,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 		node.flags.pinned = true;
 		Ok(())
 	}
@@ -457,7 +452,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 		node.flags.pinned = false;
 		Ok(())
 	}
@@ -501,7 +496,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 
 		let old_locator = node.locator;
 		node.locator = new_locator;
@@ -522,7 +517,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 
 		node.locator = new_locator;
 		Ok(())
@@ -536,7 +531,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 
 		node.locator.mark_stale();
 		Ok(())
@@ -549,7 +544,7 @@ impl DedupeIndex {
 		let node = self
 			.entries
 			.get_mut(object_id)
-			.ok_or_else(|| Error::DedupeEntryNotFound { object_id: *object_id })?;
+			.ok_or(Error::DedupeEntryNotFound { object_id: *object_id })?;
 
 		node.locator.mark_verified(timestamp);
 		Ok(())

@@ -32,7 +32,7 @@
 //!   about a host path but about the *volume*: a name containing `/` must split
 //!   into components rather than be stored whole, because a `read_dir` result
 //!   containing a slash would be re-split by anything that replays it
-//!   (`rebuild_into`, `bugs compact`) and would name a directory it was never
+//!   (`rebuild_into`, a compaction pass) and would name a directory it was never
 //!   meant to touch.
 //! - **the doors are counted.** Every verb that takes a path goes through the
 //!   same component parser, so a rule added to one verb and missed in another
@@ -46,7 +46,7 @@
 //! not 257. This file pins what happens when a path is *hostile*: refused where
 //! the format cannot express it, and stored verbatim where it can.
 
-use crucible_ledgerfs_host::{Error, InodeKind, Result, components_of};
+use ledgerfs_host::{Error, InodeKind, Result, components_of};
 
 mod common;
 use common::{expect_err, names, store};
@@ -118,7 +118,6 @@ fn test_every_spelling_of_dot_dot_is_refused() -> Result<()> {
 	// -- Setup & Fixtures: `..` in every position a caller might put it. A
 	// refusal that only fires on an interior component would let `..` at the
 	// start or the end through.
-	let s = store(1024)?;
 	let paths = [
 		"..",
 		"/..",
@@ -159,7 +158,11 @@ fn test_a_name_that_merely_looks_like_dot_dot_is_an_ordinary_name() -> Result<()
 	for name in ordinary {
 		let path = format!("/{name}");
 		s.write_new_file(&path, b"here", 0o644)?;
-		assert_eq!(s.read_file(&path)?, b"here", "{name} must be readable under the name it was written");
+		assert_eq!(
+			s.read_file(&path)?,
+			b"here",
+			"{name} must be readable under the name it was written"
+		);
 	}
 	let listed = names(&s.read_dir("/")?);
 	for name in ordinary {
@@ -195,7 +198,11 @@ fn test_a_single_dot_component_is_a_path_separator_not_a_name() -> Result<()> {
 			"{spelling} must name the file written through /a/./f"
 		);
 	}
-	assert_eq!(names(&s.read_dir("/a")?), vec!["f".to_string()], "a dot must not create an entry");
+	assert_eq!(
+		names(&s.read_dir("/a")?),
+		vec!["f".to_string()],
+		"a dot must not create an entry"
+	);
 	assert_eq!(names(&s.read_dir("/a/.")?), vec!["f".to_string()]);
 	Ok(())
 }
@@ -252,7 +259,10 @@ fn test_a_backslash_is_not_a_separator_here() -> Result<()> {
 	// -- Check: and it is not a traversal — no path containing a backslash can
 	// reach anything else, and the name with the backslashes in it is the only
 	// thing that was made.
-	assert!(s.read_dir("/etc").is_err(), "a backslash must not have created a directory");
+	assert!(
+		s.read_dir("/etc").is_err(),
+		"a backslash must not have created a directory"
+	);
 	assert_eq!(s.read_dir("/")?.len(), 1);
 	Ok(())
 }
@@ -298,7 +308,11 @@ fn test_an_absolute_looking_name_resolves_inside_the_volume() -> Result<()> {
 
 	// -- Exec & Check: every over-slashed spelling names the same object
 	for spelling in ["/etc/passwd", "//etc/passwd", "///etc/passwd", "/etc//passwd", "etc/passwd"] {
-		assert_eq!(s.read_file(spelling)?, b"volume-local", "{spelling} must be volume-absolute");
+		assert_eq!(
+			s.read_file(spelling)?,
+			b"volume-local",
+			"{spelling} must be volume-absolute"
+		);
 	}
 	Ok(())
 }
@@ -340,7 +354,11 @@ fn test_a_trailing_slash_does_not_change_which_object_is_named() -> Result<()> {
 
 	// -- Exec & Check
 	assert_eq!(names(&s.read_dir("/a")?), names(&s.read_dir("/a/")?));
-	assert_eq!(s.stat("/a")?.content_ref, s.stat("/a/")?.content_ref, "two spellings, two objects");
+	assert_eq!(
+		s.stat("/a")?.content_ref,
+		s.stat("/a/")?.content_ref,
+		"two spellings, two objects"
+	);
 	// -- Check: and a trailing slash on a *file* is not an error either — it is
 	// the same plain path — because treating it as one would be the reader
 	// inventing a rule the writer never applied.
@@ -351,7 +369,7 @@ fn test_a_trailing_slash_does_not_change_which_object_is_named() -> Result<()> {
 #[test]
 fn test_a_component_may_not_contain_a_separator_and_a_listing_never_hands_one_back() -> Result<()> {
 	// -- Setup & Fixtures: the invariant that keeps a replay safe. `rebuild_into`
-	// and `bugs compact` take names out of `read_dir` and build paths from them.
+	// and a compaction pass take names out of `read_dir` and build paths from them.
 	// If a name could contain `/`, replaying it would address a *different*
 	// location than the one it came from — a name `a/b` copied into `x` would
 	// create `x/a/b`, and the tree would grow a level that no caller wrote.
@@ -360,7 +378,10 @@ fn test_a_component_may_not_contain_a_separator_and_a_listing_never_hands_one_ba
 
 	// -- Exec: the only way to write a name with a slash in it is to write a
 	// path, which splits it.
-	s.write_new_file("/d/a/b", b"x", 0o644);
+	assert!(
+		s.write_new_file("/d/a/b", b"x", 0o644).is_err(),
+		"no intermediate directory exists yet"
+	);
 	assert!(s.stat("/d/a/b").is_err(), "no intermediate directory exists yet");
 	s.mkdir("/d/a", 0o755)?;
 	s.write_new_file("/d/a/b", b"x", 0o644)?;
@@ -371,7 +392,10 @@ fn test_a_component_may_not_contain_a_separator_and_a_listing_never_hands_one_ba
 	let inner = names(&s.read_dir("/d/a")?);
 	assert_eq!(inner, vec!["b".to_string()]);
 	for n in listed.iter().chain(inner.iter()) {
-		assert!(!n.contains('/'), "a listing must never hand back a name containing a separator: {n}");
+		assert!(
+			!n.contains('/'),
+			"a listing must never hand back a name containing a separator: {n}"
+		);
 	}
 	Ok(())
 }
@@ -458,7 +482,11 @@ fn test_a_name_the_lookup_cannot_see_is_impossible_to_create() -> Result<()> {
 	let mut copies = listed.clone();
 	copies.sort();
 	copies.dedup();
-	assert_eq!(copies.len(), listed.len(), "two distinct names collapsed into one: {listed:?}");
+	assert_eq!(
+		copies.len(),
+		listed.len(),
+		"two distinct names collapsed into one: {listed:?}"
+	);
 	for name in &awkward {
 		assert_eq!(
 			s.read_file(&format!("/{name}"))?,
@@ -468,7 +496,10 @@ fn test_a_name_the_lookup_cannot_see_is_impossible_to_create() -> Result<()> {
 	}
 	// -- Check: and they are all distinct files, not one file written fifteen
 	// times. This is the assertion that catches a normalising store.
-	assert_eq!(awkward.iter().collect::<std::collections::HashSet<_>>().len(), awkward.len());
+	assert_eq!(
+		awkward.iter().collect::<std::collections::HashSet<_>>().len(),
+		awkward.len()
+	);
 	Ok(())
 }
 
@@ -484,7 +515,7 @@ fn test_a_nul_in_a_name_does_not_truncate_it() -> Result<()> {
 
 	// -- Exec
 	let short = "victim".to_string();
-	let long = format!("victim\u{0}attacker");
+	let long = "victim\u{0}attacker".to_string();
 	s.write_new_file(&format!("/{short}"), b"the real one", 0o644)?;
 	s.write_new_file(&format!("/{long}"), b"the impostor", 0o644)?;
 
@@ -527,7 +558,7 @@ fn test_a_name_is_not_case_folded() -> Result<()> {
 #[test]
 fn test_two_names_that_differ_only_in_an_invisible_character_are_two_names() -> Result<()> {
 	// -- Setup & Fixtures: the spoofing case. A caller that shows a listing to a
-	// person — the `bugs` console does exactly this — must be able to tell
+	// person — an operator console does exactly this — must be able to tell
 	// `report.txt` from `report.txt` with an invisible byte in it, and the store
 	// must not be the thing that decides they are the same. It cannot make the
 	// spoof impossible; it can refuse to participate in it.
@@ -603,7 +634,10 @@ fn test_a_path_with_a_hundred_thousand_components_is_refused_or_resolved_but_nev
 	// there — which is also the property that makes a long hostile path cheap.
 	let s = store(256)?;
 	let e = expect_err("a very long path", s.stat(&path));
-	assert!(matches!(e, Error::NoSuchFile { .. } | Error::NotADirectory { .. }), "got {e:?}");
+	assert!(
+		matches!(e, Error::NoSuchFile { .. } | Error::NotADirectory { .. }),
+		"got {e:?}"
+	);
 	Ok(())
 }
 
@@ -682,9 +716,16 @@ fn test_a_directory_cannot_be_made_to_hold_more_than_its_ceiling() -> Result<()>
 	// (Exactly the 400: a volume made by `Store::format` has no `.ledgerfs`
 	// identity files, which is what `format_app` adds.)
 	let listed = names(&s.read_dir("/")?);
-	assert_eq!(listed.len(), 400, "nothing may be lost when the ceiling is hit: {listed:?}");
+	assert_eq!(
+		listed.len(),
+		400,
+		"nothing may be lost when the ceiling is hit: {listed:?}"
+	);
 	for i in 0..400 {
-		assert!(listed.contains(&format!("f{i:03}")), "f{i:03} disappeared when the ceiling was hit");
+		assert!(
+			listed.contains(&format!("f{i:03}")),
+			"f{i:03} disappeared when the ceiling was hit"
+		);
 	}
 	Ok(())
 }
@@ -731,7 +772,11 @@ fn test_a_mode_is_stored_verbatim_and_is_not_a_permission_gate() -> Result<()> {
 	// not a permission check, and a caller that treats it as one is trusting a
 	// value an attacker in the volume's writer position can set to anything.
 	s.write_new_file("/absurd", b"x", u32::MAX)?;
-	assert_eq!(s.stat("/absurd")?.mode, u32::MAX, "the mode field is stored, not sanitised");
+	assert_eq!(
+		s.stat("/absurd")?.mode,
+		u32::MAX,
+		"the mode field is stored, not sanitised"
+	);
 	Ok(())
 }
 

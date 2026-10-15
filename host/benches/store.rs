@@ -44,11 +44,10 @@ use std::time::Duration;
 
 use criterion::measurement::WallTime;
 use criterion::{
-	BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput, black_box, criterion_group,
-	criterion_main,
+	BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
 
-use crucible_ledgerfs_host::{BLOCK_SIZE, FileBlockDevice, MemBlockDevice, Store, rebuild_into};
+use ledgerfs_host::{BLOCK_SIZE, FileBlockDevice, MemBlockDevice, Store, rebuild_into};
 
 // region:    --- Harness
 
@@ -79,8 +78,7 @@ fn group<'a>(c: &'a mut Criterion, id: &str) -> BenchmarkGroup<'a, WallTime> {
 
 /// A freshly formatted in-heap volume.
 fn mem_store(blocks: u64) -> Store {
-	Store::format(Box::new(MemBlockDevice::new(blocks)), blocks)
-		.expect("format a fresh in-memory volume")
+	Store::format(Box::new(MemBlockDevice::new(blocks)), blocks).expect("format a fresh in-memory volume")
 }
 
 /// A formatted in-heap volume, returned as the bytes a volume file would hold —
@@ -112,8 +110,7 @@ fn temp_image(tag: &str) -> PathBuf {
 /// A freshly formatted file-backed volume, and the path to remove afterwards.
 fn file_store(tag: &str) -> (Store, PathBuf) {
 	let path = temp_image(tag);
-	let device = FileBlockDevice::create(&path, FILE_BLOCKS * BLOCK_SIZE as u64)
-		.expect("create the benchmark image");
+	let device = FileBlockDevice::create(&path, FILE_BLOCKS * BLOCK_SIZE as u64).expect("create the benchmark image");
 	let store = Store::format(Box::new(device), FILE_BLOCKS).expect("format the benchmark image");
 	(store, path)
 }
@@ -122,8 +119,7 @@ fn file_store(tag: &str) -> (Store, PathBuf) {
 /// benchmarks where the volume's *geometry* is the thing under test.
 fn big_file_store(tag: &str, blocks: u64) -> (Store, PathBuf) {
 	let path = temp_image(tag);
-	let device = FileBlockDevice::create(&path, blocks * BLOCK_SIZE as u64)
-		.expect("create the benchmark image");
+	let device = FileBlockDevice::create(&path, blocks * BLOCK_SIZE as u64).expect("create the benchmark image");
 	let store = Store::format(Box::new(device), blocks).expect("format the benchmark image");
 	(store, path)
 }
@@ -325,9 +321,9 @@ fn bench_read(c: &mut Criterion) {
 	let store = filled_mem_store(
 		MEM_BLOCKS,
 		&[
-			("/notes/small.md", &vec![b'a'; 12]),
-			("/notes/medium.bin", &vec![b'b'; 4 * KB]),
-			("/notes/large.bin", &vec![b'c'; 64 * KB]),
+			("/notes/small.md", &[b'a'; 12]),
+			("/notes/medium.bin", &[b'b'; 4 * KB]),
+			("/notes/large.bin", &[b'c'; 64 * KB]),
 		],
 	);
 
@@ -525,7 +521,11 @@ fn bench_mount_churned(c: &mut Criterion) {
 		);
 	});
 	g.bench_function("churned_walk", |b| {
-		b.iter_batched(reopen, |store| black_box(store.walk().expect("walk")), BatchSize::PerIteration);
+		b.iter_batched(
+			reopen,
+			|store| black_box(store.walk().expect("walk")),
+			BatchSize::PerIteration,
+		);
 	});
 
 	let _ = std::fs::remove_file(&churned_path);
@@ -546,13 +546,7 @@ fn bench_read_at_scaling(c: &mut Criterion) {
 			BenchmarkId::new("tail_64b_of", size),
 			&(store, size),
 			|b, (store, size)| {
-				b.iter(|| {
-					black_box(
-						store
-							.read_at("/big.bin", (*size - 64) as u64, 64)
-							.expect("read_at"),
-					)
-				});
+				b.iter(|| black_box(store.read_at("/big.bin", (*size - 64) as u64, 64).expect("read_at")));
 			},
 		);
 	}
@@ -614,8 +608,7 @@ fn bench_file_backed(c: &mut Criterion) {
 		b.iter_batched(
 			|| temp_image("format"),
 			|path| {
-				let device = FileBlockDevice::create(&path, FILE_BLOCKS * BLOCK_SIZE as u64)
-					.expect("create");
+				let device = FileBlockDevice::create(&path, FILE_BLOCKS * BLOCK_SIZE as u64).expect("create");
 				let store = Store::format(Box::new(device), FILE_BLOCKS).expect("format");
 				retire(store, &path);
 			},

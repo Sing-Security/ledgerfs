@@ -1,14 +1,13 @@
 //! Standalone compression tests
 //!
-//! Tests compression module in isolation since the main crate has unrelated build errors.
+//! Exercises the compression module through its public API only.
 
 #![no_std]
 
 extern crate alloc;
 
 use alloc::vec;
-use alloc::vec::Vec;
-use crucible_ledgerfs_kernel::compression::{
+use ledgerfs::compression::{
 	COMPRESSION_MIN_RATIO, COMPRESSION_THRESHOLD_SIZE, CompressionAlgorithm, compress, decompress,
 };
 

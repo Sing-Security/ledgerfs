@@ -3,27 +3,31 @@
 //! # What the superblock actually points at
 //!
 //! `superblock.active_root_id` names the root directory's **`Inode`**, not a
-//! [`Root`] object. `forge-builder`'s `populate.rs` writes that Inode's
-//! `content_ref` at the root `DirNode` and never writes a `Root` on disk at
-//! all, and both other readers agree with it: `ledgerfs-kernel`'s
-//! `reader::walk_path` and `forge-boot`'s `ledgerfs_read::walk_path` each take
-//! `root_inode_ref: &ObjectRef` and start from it.
+//! [`Root`] object. A `Root` is never written to disk at all, and every reader
+//! agrees with that: the kernel crate's `reader::walk_path` and a boot
+//! reader's `walk_path` each take `root_inode_ref: &ObjectRef` and start from
+//! it.
 //!
 //! [`Root`] is the in-memory descriptor the CoW transaction model carries
 //! (commit_seq, alloc/dedupe/deadlist roots); it is not a stored object. The
-//! query half of `cow::operations` reflects that — `read` and `readdir` take
-//! `&Root` but neither reads a field of it. [`HostFs::query_root`] builds the
-//! minimal one those signatures need.
+//! query half of `cow::operations` reflects that — `read_dir` goes through
+//! `readdir`, which takes a `&Root` but reads no field of it.
+//! [`HostFs::query_root`] builds the minimal one that signature needs.
+//!
+//! File reads go through `cow::operations::read_inode` instead of `read`: this
+//! module resolves the file's `Inode` on the way to the path, and `read` would
+//! fetch the very same object again to learn the size and content reference the
+//! walk is already holding.
 
 use std::collections::HashSet;
 use std::path::Path;
 
-use crucible_ledgerfs_kernel::cow::{read, readdir};
-use crucible_ledgerfs_kernel::object::{DirNode, Inode, InodeKind, ObjectRef, Root};
+use ledgerfs::cow::{read_inode, readdir};
+use ledgerfs::object::{DirNode, Inode, InodeKind, ObjectRef, Root};
 
 use crate::device::{BlockDevice, FileBlockDevice};
 use crate::error::{Error, Result};
-use crate::image::{find_partition, Partition, PartitionKind};
+use crate::image::{Partition, PartitionKind, find_partition};
 use crate::objstore::DiskObjectStore;
 use crate::volume::Volume;
 
@@ -56,8 +60,7 @@ impl HostFs {
 
 	/// Open an already-parsed partition, which must have a readable root.
 	pub fn open_partition(image: &Path, partition: &Partition) -> Result<Self> {
-		let device =
-			FileBlockDevice::open(image, partition.start_bytes(), partition.size_bytes())?;
+		let device = FileBlockDevice::open(image, partition.start_bytes(), partition.size_bytes())?;
 		let fs = Self::mount_device(Box::new(device))?;
 		fs.require_root()?;
 		Ok(fs)
@@ -80,11 +83,7 @@ impl HostFs {
 	pub fn mount_device(device: Box<dyn BlockDevice>) -> Result<Self> {
 		let volume = Volume::mount(device.as_ref())?;
 
-		let store = DiskObjectStore::new(
-			device,
-			volume.total_blocks(),
-			volume.superblock.max_scan_blocks(),
-		);
+		let store = DiskObjectStore::new(device, volume.total_blocks(), volume.superblock.max_scan_blocks());
 
 		let root_inode_ref = if volume.superblock.active_root_id == [0u8; 32] {
 			ObjectRef::zero()
@@ -123,9 +122,10 @@ impl HostFs {
 			detail: "the volume has no root — nothing has ever been committed to it".into(),
 		})?;
 
-		let inode = self.store.inode(root_inode_ref).map_err(|e| Error::RootUnreadable {
-			detail: e.to_string(),
-		})?;
+		let inode = self
+			.store
+			.inode(root_inode_ref)
+			.map_err(|e| Error::RootUnreadable { detail: e.to_string() })?;
 		if inode.kind != InodeKind::Directory {
 			return Err(Error::RootUnreadable {
 				detail: format!(
@@ -201,8 +201,8 @@ impl HostFs {
 			// Name the component that is actually missing. A create of
 			// `relay/transcript.jsonl` with no `relay/` is a missing
 			// *directory*, and a `NoSuchFile` naming the tail sends the caller
-			// hunting for the wrong thing — the failure mode that made
-			// `bugs`'s `write_finding` record nothing for a whole fleet.
+			// hunting for the wrong thing — the failure mode that once left a
+			// whole fleet of writers recording nothing.
 			current = self
 				.lookup_child(path, current, component)?
 				.ok_or_else(|| Error::NoSuchFile { path: prefix.clone() })?;
@@ -224,9 +224,7 @@ impl HostFs {
 	pub(crate) fn lookup_child(&self, path: &str, dir_ref: ObjectRef, name: &str) -> Result<Option<ObjectRef>> {
 		let inode = self.store.inode(dir_ref)?;
 		if inode.kind != InodeKind::Directory {
-			return Err(Error::NotADirectory {
-				path: path.to_string(),
-			});
+			return Err(Error::NotADirectory { path: path.to_string() });
 		}
 		if inode.content_ref.is_zero() {
 			return Ok(None);
@@ -238,9 +236,8 @@ impl HostFs {
 
 	/// `name` inside the directory at `dir_ref`, which must exist.
 	fn lookup_in(&self, path: &str, dir_ref: ObjectRef, name: &str) -> Result<ObjectRef> {
-		self.lookup_child(path, dir_ref, name)?.ok_or_else(|| Error::NoSuchFile {
-			path: path.to_string(),
-		})
+		self.lookup_child(path, dir_ref, name)?
+			.ok_or_else(|| Error::NoSuchFile { path: path.to_string() })
 	}
 }
 
@@ -257,9 +254,7 @@ impl HostFs {
 		let dir_ref = self.resolve(path)?;
 		let inode = self.store.inode(dir_ref)?;
 		if inode.kind != InodeKind::Directory {
-			return Err(Error::NotADirectory {
-				path: path.to_string(),
-			});
+			return Err(Error::NotADirectory { path: path.to_string() });
 		}
 		if !inode.content_ref.is_zero() {
 			check_dir_depth(&self.store, inode.content_ref)?;
@@ -283,22 +278,23 @@ impl HostFs {
 		Ok(out)
 	}
 
-	/// Read a whole file, delegating to `cow::operations::read`.
+	/// Read a whole file, delegating to `cow::operations::read_inode`.
+	///
+	/// The inode fetched here is the one handed on: `read` would fetch it again
+	/// to learn the same size and content reference this function has just read
+	/// it for, which on a CoW volume is a second device read of the same block.
 	pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
 		let file_ref = self.resolve(path)?;
 		let inode = self.store.inode(file_ref)?;
 		if inode.kind == InodeKind::Directory {
-			return Err(Error::IsADirectory {
-				path: path.to_string(),
-			});
+			return Err(Error::IsADirectory { path: path.to_string() });
 		}
 
 		let len = usize::try_from(inode.size).map_err(|_| Error::RootUnreadable {
 			detail: format!("{path}: file size {} does not fit in usize", inode.size),
 		})?;
 
-		let query_root = self.query_root();
-		read(&self.store, &query_root, file_ref, 0, len).map_err(Error::from)
+		read_inode(&self.store, &inode, 0, len).map_err(Error::from)
 	}
 
 	/// A byte range of a file: at most `len` bytes from `offset`.
@@ -313,9 +309,7 @@ impl HostFs {
 		let file_ref = self.resolve(path)?;
 		let inode = self.store.inode(file_ref)?;
 		if inode.kind == InodeKind::Directory {
-			return Err(Error::IsADirectory {
-				path: path.to_string(),
-			});
+			return Err(Error::IsADirectory { path: path.to_string() });
 		}
 
 		let available = inode.size.saturating_sub(offset);
@@ -323,17 +317,16 @@ impl HostFs {
 			detail: format!("{path}: {} unread bytes do not fit in usize", available),
 		})?);
 
-		let query_root = self.query_root();
-		read(&self.store, &query_root, file_ref, offset, len).map_err(Error::from)
+		read_inode(&self.store, &inode, offset, len).map_err(Error::from)
 	}
 
 	/// The minimal [`Root`] `cow::operations`' query signatures take.
 	///
-	/// Those functions take `&Root` but neither `read` nor `readdir` reads a
-	/// field of it (both name the parameter `_root`), and no `Root` object
-	/// exists on a `forge-builder`-written volume to read one from. Building
-	/// one from the superblock's own commit sequence keeps the descriptor
-	/// truthful rather than defaulted.
+	/// `readdir` takes a `&Root` but reads no field of it (it names the
+	/// parameter `_root`), and no `Root` object exists on an
+	/// image-builder-written volume to read one from. Building one from the
+	/// superblock's own commit sequence keeps the descriptor truthful rather
+	/// than defaulted.
 	fn query_root(&self) -> Root {
 		let mut root = Root::new();
 		root.commit_seq = self.volume.superblock.active_commit_seq;

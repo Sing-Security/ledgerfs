@@ -5,11 +5,8 @@
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 
-use crucible_ledgerfs_kernel::{
-	Result,
-	dedupe::{DedupeIndex, PhysicalLocator},
-	object::ObjectId,
-};
+use ledgerfs::object::ObjectId;
+use ledgerfs_pending::dedupe::{DedupeIndex, PhysicalLocator};
 
 type TestResult<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 

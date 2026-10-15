@@ -25,19 +25,19 @@
 //!    of the superblock's `max_scan_blocks` limit and the last non-trailer
 //!    block, reading each block's 60-byte header and comparing its `object_id`.
 //!
-//! The scan is the same shape as `reader.rs`'s and `forge-boot`'s, deliberately:
-//! a volume has to be findable the same way from all three readers or the
-//! format has three definitions.
+//! The scan is the same shape as the kernel reader's and the boot-time
+//! reader's, deliberately: a volume has to be findable the same way from all
+//! three readers or the format has three definitions.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crucible_ledgerfs_kernel::cow::ObjectStore;
-use crucible_ledgerfs_kernel::object::{Chunk, DirNode, ExtentNode, Inode, ObjectId, ObjectRef};
-use crucible_ledgerfs_kernel::record::{ObjectRecordHeader, ObjectRecordReader};
-use crucible_ledgerfs_kernel::{BLOCK_SIZE, RESERVED_HEADER_BLOCKS, RESERVED_TRAILER_BLOCKS};
-use crucible_ledgerfs_kernel::{Error as LedgerFsError, Result as LedgerFsResult};
+use ledgerfs::cow::ObjectStore;
+use ledgerfs::object::{Chunk, DirNode, ExtentNode, Inode, ObjectId, ObjectRef};
+use ledgerfs::record::{ObjectRecordHeader, ObjectRecordReader};
+use ledgerfs::{BLOCK_SIZE, RESERVED_HEADER_BLOCKS, RESERVED_TRAILER_BLOCKS};
+use ledgerfs::{Error as LedgerFsError, Result as LedgerFsResult};
 
 use crate::device::{BlockDevice, HintCache};
 use crate::error::{Error, Result};
@@ -57,7 +57,7 @@ pub struct DiskObjectStore {
 	///
 	/// Poisoning is recovered, not propagated: a poisoned cache holds at worst
 	/// a stale hint, and every hint is re-verified against the block it names
-	/// (`block_holds`) before it is trusted.
+	/// before it is trusted — see [`read_object`](Self::read_object).
 	hints: Mutex<HashMap<ObjectId, u64>>,
 
 	/// Upper bound on a linear scan, from the superblock's resolved limits.
@@ -138,8 +138,7 @@ impl DiskObjectStore {
 			// A record may span many blocks (`MAX_OBJECT_SIZE` is 256 KiB —
 			// 64 blocks). Read the exact length, not a rounded block count.
 			let mut whole = vec![0u8; total];
-			self.device
-				.read_bytes_at(lba * BLOCK_SIZE as u64, &mut whole)?;
+			self.device.read_bytes_at(lba * BLOCK_SIZE as u64, &mut whole)?;
 			whole
 		};
 
@@ -147,6 +146,21 @@ impl DiskObjectStore {
 	}
 
 	/// Read the payload of the object named by `obj_ref`.
+	///
+	/// # One block read per candidate
+	///
+	/// A candidate is the reference's own storage hint, then the hint cache, then
+	/// a scan. Each is **read once**: the read that fetches the payload is the
+	/// same read that checks the record's header names the id, so a candidate
+	/// that turns out not to hold the object costs one block read rather than a
+	/// verifying read followed by a fetching read.
+	///
+	/// This is where the hint's safety lives. A hint or cache entry that names
+	/// the wrong block is not detectable without reading it, and reading it is
+	/// the fetch — so the check is not skippable, and it costs nothing. What must
+	/// never happen is accepting a *header* without the rest of the record, and
+	/// `read_record` verifies the whole thing end to end: magic, checksum,
+	/// decompression and `blake3(payload) == header.object_id`.
 	pub fn read_object(&self, obj_ref: ObjectRef) -> Result<Vec<u8>> {
 		let id = obj_ref.object_id;
 
@@ -157,51 +171,44 @@ impl DiskObjectStore {
 			});
 		}
 
-		// Hinted read: verify the record actually found there is the one asked
-		// for, otherwise fall through to the cache and the scan.
-		if !obj_ref.hint.is_zero() {
-			if let Ok((header, payload)) = self.read_record(obj_ref.hint.0)
-				&& header.object_id == *id.as_bytes()
-			{
-				self.remember(id, obj_ref.hint.0);
-				return Ok(payload);
-			}
+		if !obj_ref.hint.is_zero()
+			&& let Ok((header, payload)) = self.read_record(obj_ref.hint.0)
+			&& header.object_id == *id.as_bytes()
+		{
+			self.remember(id, obj_ref.hint.0);
+			return Ok(payload);
 		}
 
-		let lba = self.locate(id)?;
-		Ok(self.read_record(lba)?.1)
-	}
-
-	/// Find the physical block holding `id` — from the cache, else by scanning.
-	fn locate(&self, id: ObjectId) -> Result<u64> {
-		// The disk-backed half of the cache, before the in-memory half: on a
-		// reopen this is what turns the whole-volume scan into a map hit.
-		self.ensure_cache_loaded();
-
-		if let Some(lba) = self.hints.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id).copied()
-			&& self.block_holds(lba, id)
+		if let Some(lba) = self.cached_lba(id)
+			&& let Ok((header, payload)) = self.read_record(lba)
+			&& header.object_id == *id.as_bytes()
 		{
-			return Ok(lba);
+			self.remember(id, lba);
+			return Ok(payload);
 		}
 
 		let lba = self.scan(id)?;
 		self.remember(id, lba);
-		Ok(lba)
+		Ok(self.read_record(lba)?.1)
 	}
 
-	/// Whether block `lba` starts a record for `id`.
+	/// The cached block for `id`, if the cache has one.
 	///
-	/// Reads only the 60-byte header, so a stale hint costs one block read
-	/// rather than a full record read.
-	fn block_holds(&self, lba: u64, id: ObjectId) -> bool {
-		let mut head = vec![0u8; BLOCK_SIZE as usize];
-		if self.device.read_block(lba, &mut head).is_err() {
-			return false;
-		}
-		match ObjectRecordHeader::decode(&head) {
-			Ok(header) => header.object_id == *id.as_bytes(),
-			Err(_) => false,
-		}
+	/// Loads the disk-backed half of the cache first: on a reopen that is what
+	/// turns the whole-volume scan into a map hit. The map is a *claim*, not an
+	/// answer — the read that follows verifies the block it names, so a stale
+	/// entry costs one record read and a fall-through rather than a wrong
+	/// answer. (A record may span blocks, so "one record read" is more bytes
+	/// than the header-only probe this replaced; it is not more reads, and on a
+	/// volume the writer has only ever allocated forward into, a stale entry is
+	/// a bug rather than a state to optimise for.)
+	fn cached_lba(&self, id: ObjectId) -> Option<u64> {
+		self.ensure_cache_loaded();
+		self.hints
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
+			.get(&id)
+			.copied()
 	}
 
 	/// Linear scan for `id`, from the first object block to the scan limit.
@@ -256,7 +263,13 @@ impl DiskObjectStore {
 			self.cache_dirty.store(true, Ordering::SeqCst);
 			self.flush_cache();
 		}
-		if let Some(lba) = self.hints.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id).copied() {
+		if let Some(lba) = self
+			.hints
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
+			.get(&id)
+			.copied()
+		{
 			return Ok(lba);
 		}
 
@@ -292,7 +305,10 @@ impl DiskObjectStore {
 	}
 
 	fn remember(&self, id: ObjectId, lba: u64) {
-		self.hints.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, lba);
+		self.hints
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
+			.insert(id, lba);
 		self.cache_dirty.store(true, Ordering::Relaxed);
 	}
 }
@@ -304,7 +320,7 @@ impl DiskObjectStore {
 impl DiskObjectStore {
 	/// Read the sidecar into the map, once per handle.
 	///
-	/// Called from [`locate`](Self::locate) rather than from `new`, so a store
+	/// Called from [`cached_lba`](Self::cached_lba) rather than from `new`, so a store
 	/// that is opened and never read past its root pays nothing — and so the
 	/// load happens on the same thread as the first lookup, keeping the whole
 	/// cost on the caller's cold path instead of on the mount.

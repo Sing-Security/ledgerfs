@@ -9,9 +9,9 @@
 mod common;
 
 use common::*;
-use crucible_ledgerfs_host::{
-	BlockDevice, Error, FileBlockDevice, InodeKind, MemBlockDevice, Origin, Store,
-	STORE_APP_FILE, STORE_CONTRACT_VERSION, STORE_DIR, STORE_VERSION_FILE,
+use ledgerfs_host::{
+	BlockDevice, Error, FileBlockDevice, InodeKind, MemBlockDevice, Origin, STORE_APP_FILE, STORE_CONTRACT_VERSION,
+	STORE_DIR, STORE_VERSION_FILE, Store,
 };
 
 // region:    --- Format
@@ -36,7 +36,11 @@ fn test_format_produces_a_mountable_volume_with_a_root() -> Result<()> {
 	// -- Check
 	assert_eq!(reopened.stat("/")?.kind, InodeKind::Directory);
 	assert_eq!(reopened.read_dir("/")?.len(), 0);
-	assert_eq!(reopened.origin(), Origin::ResumedWritable, "a formatted volume has an allocator snapshot to resume from");
+	assert_eq!(
+		reopened.origin(),
+		Origin::ResumedWritable,
+		"a formatted volume has an allocator snapshot to resume from"
+	);
 	Ok(())
 }
 
@@ -112,7 +116,10 @@ fn test_format_refuses_volumes_the_genesis_commit_cannot_fit() -> Result<()> {
 	// named error — and refusing did not leave the volume inconsistent.
 	let e = expect_err("mkdir on a full volume", store.mkdir("/d", 0o755));
 	assert!(matches!(e, Error::Format(_)), "got {e:?}");
-	assert!(store.read_dir("/")?.is_empty(), "the old tree is intact after a refused commit");
+	assert!(
+		store.read_dir("/")?.is_empty(),
+		"the old tree is intact after a refused commit"
+	);
 	Ok(())
 }
 
@@ -167,7 +174,10 @@ fn test_format_erases_what_the_device_held_before() -> Result<()> {
 			continue;
 		}
 		let at = block_offset(lba as u64);
-		assert!(!after[at..at + 4096].contains(&0xAA), "block {lba} still holds pre-format bytes");
+		assert!(
+			!after[at..at + 4096].contains(&0xAA),
+			"block {lba} still holds pre-format bytes"
+		);
 	}
 	Ok(())
 }
@@ -188,7 +198,10 @@ fn test_reopen_sees_the_tree_that_was_written() -> Result<()> {
 	let back = open_bytes(bytes(&watch))?;
 
 	// -- Check
-	assert_eq!(names(&back.read_dir("/")?), vec!["notes".to_string(), "top.txt".to_string()]);
+	assert_eq!(
+		names(&back.read_dir("/")?),
+		vec!["notes".to_string(), "top.txt".to_string()]
+	);
 	assert_eq!(back.read_file("/notes/a.md")?, b"hello");
 	assert_eq!(back.read_file("/top.txt")?, b"top");
 	assert_eq!(back.stat("/top.txt")?.mode, 0o600, "mode survives a reopen");
@@ -226,7 +239,10 @@ fn test_reopen_does_not_see_a_commit_that_never_happened() -> Result<()> {
 	// the entire point of copy-on-write. Not a torn state, not a repair, just
 	// the tree as it was.
 	assert_eq!(names(&abandoned.read_dir("/")?), vec!["kept".to_string()]);
-	assert!(is_no_such_file(&expect_err("added", abandoned.stat("/added")), "/added"));
+	assert!(is_no_such_file(
+		&expect_err("added", abandoned.stat("/added")),
+		"/added"
+	));
 	Ok(())
 }
 
@@ -350,7 +366,10 @@ fn test_free_space_never_exceeds_capacity() -> Result<()> {
 	let free = store.free_bytes().expect("free bytes");
 	let reserved = store.reserved_bytes().expect("reserved bytes");
 	let total = store.total_free_bytes().expect("total free bytes");
-	assert!(free + reserved == total, "the split must account for the whole: {free} + {reserved} != {total}");
+	assert!(
+		free + reserved == total,
+		"the split must account for the whole: {free} + {reserved} != {total}"
+	);
 	assert!(total <= store.capacity_bytes(), "{total} > {}", store.capacity_bytes());
 	Ok(())
 }
@@ -380,13 +399,13 @@ fn test_a_freshly_formatted_volume_reports_its_whole_object_region_free() -> Res
 #[test]
 fn test_app_store_records_its_identity_and_contract_version() -> Result<()> {
 	// -- Setup & Fixtures
-	let store = app_store(BLOCKS, "bugs")?;
+	let store = app_store(BLOCKS, "example")?;
 
 	// -- Check
-	assert_eq!(store.app()?, Some("bugs".to_string()));
+	assert_eq!(store.app()?, Some("example".to_string()));
 	assert_eq!(store.contract_version()?, Some(STORE_CONTRACT_VERSION.to_string()));
 	assert_eq!(store.stat(STORE_DIR)?.kind, InodeKind::Directory);
-	assert_eq!(store.read_file(STORE_APP_FILE)?, b"bugs");
+	assert_eq!(store.read_file(STORE_APP_FILE)?, b"example");
 	Ok(())
 }
 
@@ -399,7 +418,10 @@ fn test_a_plain_volume_has_no_app_marker() -> Result<()> {
 	// rather than an error — the difference between "not mine" and "unreadable".
 	assert_eq!(store.app()?, None);
 	assert_eq!(store.contract_version()?, None);
-	assert!(is_no_such_file(&expect_err("stat store dir", store.stat(STORE_DIR)), STORE_DIR));
+	assert!(is_no_such_file(
+		&expect_err("stat store dir", store.stat(STORE_DIR)),
+		STORE_DIR
+	));
 	Ok(())
 }
 
@@ -419,7 +441,7 @@ fn test_app_markers_survive_a_reopen_and_a_plain_mount() -> Result<()> {
 	// -- Setup & Fixtures
 	let device = mem(BLOCKS);
 	let watch = device.clone();
-	drop(Store::format_app(Box::new(device), "bugs")?);
+	drop(Store::format_app(Box::new(device), "example")?);
 
 	// -- Exec: the markers are ordinary files, not a format change, so both a
 	// plain `Store::open` and a bare `HostFs` mount must see them.
@@ -427,7 +449,7 @@ fn test_app_markers_survive_a_reopen_and_a_plain_mount() -> Result<()> {
 	let via_fs = mount_bytes(bytes(&watch))?;
 
 	// -- Check
-	assert_eq!(via_store.app()?, Some("bugs".to_string()));
+	assert_eq!(via_store.app()?, Some("example".to_string()));
 	assert_eq!(via_store.contract_version()?, Some(STORE_CONTRACT_VERSION.to_string()));
 	let names = names(&via_fs.read_dir("/")?);
 	assert!(names.contains(&".ledgerfs".to_string()), "{names:?}");
@@ -438,7 +460,7 @@ fn test_app_markers_survive_a_reopen_and_a_plain_mount() -> Result<()> {
 #[test]
 fn test_a_marker_that_is_not_utf8_is_reported_not_swallowed() -> Result<()> {
 	// -- Setup & Fixtures
-	let mut store = app_store(BLOCKS, "bugs")?;
+	let mut store = app_store(BLOCKS, "example")?;
 	// A volume that calls itself an app store and then cannot say whose is
 	// worth surfacing rather than treating as unmarked.
 	store.write_file(STORE_APP_FILE, &[0xFF, 0xFE, 0x00], 0o644)?;
@@ -461,7 +483,10 @@ fn test_contract_version_is_one_hyphenless_token() -> Result<()> {
 	// platform's writer might normalise.
 	assert!(!STORE_CONTRACT_VERSION.is_empty());
 	assert!(!STORE_CONTRACT_VERSION.contains(char::is_whitespace));
-	assert!(STORE_DIR.starts_with('/'), "the reserved name is a volume-absolute path");
+	assert!(
+		STORE_DIR.starts_with('/'),
+		"the reserved name is a volume-absolute path"
+	);
 	assert!(STORE_APP_FILE.starts_with(STORE_DIR));
 	Ok(())
 }

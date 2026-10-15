@@ -5,9 +5,9 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use crucible_ledgerfs_kernel::dedupe::{DedupeIndex, DedupeNode, PhysicalLocator, RelocationReason, StorageTier};
-use crucible_ledgerfs_kernel::object::ObjectId;
-use crucible_ledgerfs_kernel::scrubber::{CorruptionType, Scrubber, ScrubberMode, ThrottleConfig};
+use ledgerfs::object::ObjectId;
+use ledgerfs_pending::dedupe::{DedupeIndex, PhysicalLocator, StorageTier};
+use ledgerfs_pending::scrubber::{CorruptionType, Scrubber, ThrottleConfig};
 
 type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
@@ -162,7 +162,6 @@ fn test_throttle_config_aggressive() -> TestResult<()> {
 fn test_should_pause_on_high_write_queue() -> TestResult<()> {
 	// -- Setup & Fixtures
 	let scrubber = Scrubber::with_throttle_config(ThrottleConfig::default());
-	let config = scrubber.stats();
 
 	// -- Check - Should pause when queue depth exceeds threshold
 	assert!(!scrubber.should_pause(49)); // Below threshold

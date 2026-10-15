@@ -3,12 +3,12 @@
 //! ## Why this exists
 //!
 //! LedgerFS's compression was implemented against the `lz4` and `zstd` crates,
-//! both of which the `std` feature gates — and the kernel and `fs-cbl` take this
-//! crate with `default-features = false`. So on target every algorithm except
-//! `CompressionAlgorithm::None` returned `InvalidEncoding`, and because the
-//! write path uses `compress(..)?` an object written with a non-`None` policy
-//! would have failed the write outright. Compression was a documented feature
-//! that could not run.
+//! both of which the `std` feature gates — and the kernel and the runtime
+//! volume driver take this crate with `default-features = false`. So on target
+//! every algorithm except `CompressionAlgorithm::None` returned
+//! `InvalidEncoding`, and because the write path uses `compress(..)?` an object
+//! written with a non-`None` policy would have failed the write outright.
+//! Compression was a documented feature that could not run.
 //!
 //! `lz4` is a binding to the C library and needs libc; there is no vendored
 //! `no_std` LZ4 available here. This is the block format implemented directly,
@@ -40,9 +40,12 @@ use crate::error::{Error, Result};
 /// Shortest match the format can encode (the token's low nibble is `len - 4`).
 const MIN_MATCH: usize = 4;
 /// No match may start within this many bytes of the end.
+///
+/// Two format rules collapse into this one number: a match may not begin within
+/// the last 12 bytes, and the last 5 bytes must be literals. Since 12 > 5 the
+/// first implies the second, so there is no separate end-literals guard — the
+/// encoder's match limit is already stricter than the literal rule.
 const LAST_MATCH_GUARD: usize = 12;
-/// The final bytes of a block are always literals.
-const END_LITERALS: usize = 5;
 /// Offsets are 16-bit, so a match can reach back this far at most.
 const MAX_OFFSET: usize = 0xFFFF;
 
@@ -104,11 +107,7 @@ pub fn compress(src: &[u8]) -> Vec<u8> {
 
 		// A candidate is usable only if it is in range and actually matches —
 		// the hash is lossy, so this comparison is what makes it correct.
-		if !seen
-			|| pos <= candidate
-			|| pos - candidate > MAX_OFFSET
-			|| read_u32(src, candidate) != seq
-		{
+		if !seen || pos <= candidate || pos - candidate > MAX_OFFSET || read_u32(src, candidate) != seq {
 			pos += 1;
 			continue;
 		}
@@ -156,9 +155,7 @@ fn emit_last_literals(out: &mut Vec<u8>, literals: &[u8]) {
 fn read_extended(src: &[u8], pos: &mut usize) -> Result<usize> {
 	let mut total = 15usize;
 	loop {
-		let b = *src
-			.get(*pos)
-			.ok_or_else(|| Error::invalid_encoding("lz4: truncated length"))?;
+		let b = *src.get(*pos).ok_or_else(|| Error::invalid_encoding("lz4: truncated length"))?;
 		*pos += 1;
 		total = total
 			.checked_add(b as usize)
@@ -271,7 +268,11 @@ mod tests {
 		let packed = compress(&data);
 
 		// -- Check
-		assert!(packed.len() < data.len() / 10, "64 KiB of one byte should compress hard, got {}", packed.len());
+		assert!(
+			packed.len() < data.len() / 10,
+			"64 KiB of one byte should compress hard, got {}",
+			packed.len()
+		);
 		assert_eq!(decompress(&packed, data.len())?, data);
 		Ok(())
 	}
@@ -321,7 +322,7 @@ mod tests {
 		// length, which only decode correctly with a byte-at-a-time copy.
 		//
 		// -- Setup & Fixtures
-		let data: Vec<u8> = core::iter::repeat(b"ab").take(4096).flatten().copied().collect();
+		let data: Vec<u8> = core::iter::repeat_n(b"ab", 4096).flatten().copied().collect();
 
 		// -- Exec / Check
 		roundtrip(&data)?;

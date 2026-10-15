@@ -2,11 +2,11 @@
 //!
 //! # Why this exists
 //!
-//! `crucible-ledgerfs-kernel` owns the on-disk format, but every read path in
-//! the tree is either ring-0 (`reader.rs`, over ATA PIO port I/O) or firmware
-//! (`forge-boot`'s allocation-free reader). Nothing could open a LedgerFS
-//! partition from a host process. This crate is that path: point it at an
-//! image and a partition, and walk the filesystem.
+//! `ledgerfs` owns the on-disk format, but its read paths are
+//! ring-0 (`reader.rs`, over ATA PIO port I/O) or firmware (an allocation-free
+//! boot reader). Nothing could open a
+//! LedgerFS partition from a host process. This crate is that path: point it at
+//! an image and a partition, and walk the filesystem.
 //!
 //! # What it is not
 //!
@@ -30,50 +30,35 @@
 //!   when the cipher is not compiled in, so an encrypted volume fails the
 //!   mount here with a clear message rather than decoding ciphertext as
 //!   garbage. That refusal is the correct behaviour, not a gap to paper over.
-//! - **A partition straight out of `fs_init` has nothing to mount.**
-//!   `fs_init` writes `active_root_id = 0` and `active_commit_seq = 0` — no
-//!   root, because nothing has committed yet — so `mount_select` finds no
-//!   candidate. That state has its own error, [`Error::VolumeUncommitted`], so
-//!   it reads as "initialised but never formatted" rather than as damage. A
-//!   partition becomes mountable once something gives it a root: `populate.rs`
-//!   patches one into all four of `/system`'s superblock copies, `fs-cbl`'s
-//!   `MountedVolume::open_or_bootstrap` bootstraps a genesis root into `/data`
-//!   on the image's first boot, and [`Store::format`] now writes a *complete*
-//!   set of four copies plus a committed root. The first two are true of
-//!   `artifacts-x86_64/crucible-install.img`, which is what this crate was
-//!   verified against.
+//! - **A partition that has only been initialised has nothing to mount.** An
+//!   initialiser lays down four superblock copies with `active_root_id = 0` and
+//!   `active_commit_seq = 0` — no root, because nothing has committed yet — so
+//!   `mount_select` finds no candidate. That state has its own error,
+//!   [`Error::VolumeUncommitted`], so it reads as "initialised but never
+//!   formatted" rather than as damage. A partition becomes mountable once
+//!   something gives it a root, either by patching one into the superblock
+//!   copies or by committing one. [`Store::format`] does the latter: it writes
+//!   a *complete* set of four copies plus a committed root.
 //!
-//! # An auditor's note: `/data`'s superblock copies disagree
+//! # An auditor's note: the superblock copies can disagree
 //!
-//! On the image above, `/data`'s four superblock copies do not hold the same
-//! state:
-//!
-//! | copy | block | `commit_seq` | `active_root_id` |
-//! |------|-------|-------------:|------------------|
-//! | 0 | `0` | 1 | `39a13a7b…`, an empty directory |
-//! | 1 | `1` | 0 | null |
-//! | 2 | `N-2` | 0 | null |
-//! | 3 | `N-1` | 0 | null |
-//!
-//! The volume still mounts, and mounts correctly — `mount_select` takes the
-//! highest `commit_seq`, so copy 0 wins. But the four-copy redundancy the
-//! format is designed around is not being maintained at run time. The only
-//! writer in the tree that updates a superblock after the image is built is
-//! `fs-cbl/src/disk.rs`'s `persist_superblock`, and its own doc comment says it
-//! writes the primary copy only. Copies 1–3 are therefore still what `fs_init`
-//! left there, and the practical consequence is that damage to block 0 rolls
-//! `/data` back to a null root — the volume reads back empty rather than
-//! falling through to a surviving copy.
+//! The format keeps four superblock copies, and `mount_select` picks the
+//! highest `commit_seq` among them, so a volume mounts correctly even when the
+//! copies are not in step. Nothing in the format *forces* them to stay in step,
+//! though: a writer that updates only the primary copy leaves the other three
+//! at whatever they last held, and damage to the primary then rolls the volume
+//! back to that older state rather than falling through to a surviving copy —
+//! for a volume that has only been initialised, a null root, so it reads back
+//! empty.
 //!
 //! This is reported rather than repaired: [`Volume::copy_status`] returns the
 //! per-copy state and `lfs-read info` prints it. A host-side reader that
 //! silently averaged over the disagreement would be hiding the one thing an
 //! audit of this filesystem most wants to see.
 //!
-//! The host write path does not repeat that mistake — [`Store::commit`] persists
-//! all four copies, which is why `lfs-write info` reports `4/4 decoded, all
-//! agree` after a mutation. The observation above is a property of the shipped
-//! image, and remains true of it.
+//! [`Store::commit`] persists all four copies on every commit, so a volume this
+//! crate has written reports `4/4 decoded, all agree` — `lfs-write info` prints
+//! exactly that after a mutation.
 //!
 //! # Where a volume lives
 //!
@@ -87,7 +72,7 @@
 //!
 //! # The application-store contract
 //!
-//! [`Store`] is not only `mkfs` for a Crucible partition. It is also the
+//! [`Store`] is not only `mkfs` for a volume. It is also the
 //! surface an ordinary application programs against when it wants a real
 //! filesystem inside its own process — [`Store::format_app`] marks a volume as
 //! an app's store, and the verbs [`append`](Store::append),
@@ -105,7 +90,7 @@
 //! crate can link to them; the types they export are the public surface.
 //!
 //! - `device`: [`BlockDevice`], plus a file-backed and a memory-backed impl.
-//! - `image`: MBR parsing — which partitions a Crucible image has.
+//! - `image`: MBR parsing — which partitions an image has.
 //! - `volume`: superblock copies + `mount_select`.
 //! - `objstore`: [`DiskObjectStore`], the disk-backed `ObjectStore`.
 //! - `path`: [`HostFs`], the mount-and-walk facade.
@@ -144,9 +129,7 @@ pub use objstore::DiskObjectStore;
 // a caller that checks first and a store that checks second cannot disagree.
 pub use path::{Entry, HostFs, components_of};
 pub use rebuild::{RebuildStats, WalkEntry, rebuild_into};
-pub use store::{
-	Origin, Store, STORE_APP_FILE, STORE_CONTRACT_VERSION, STORE_DIR, STORE_VERSION_FILE,
-};
+pub use store::{Origin, STORE_APP_FILE, STORE_CONTRACT_VERSION, STORE_DIR, STORE_VERSION_FILE, Store};
 pub use volume::{CopyStatus, Volume};
 
 // Re-exported so callers of this crate name the format types through it rather
@@ -158,12 +141,10 @@ pub use volume::{CopyStatus, Volume};
 // `ObjectRecordHeader`/`DirNode`/`ExtentNode`/`Chunk`. Without the re-export an
 // embedder cannot name its own arguments without adding the kernel as a direct
 // dependency, which is exactly the coupling this crate exists to absorb.
-pub use crucible_ledgerfs_kernel::commit::CommitResult;
-pub use crucible_ledgerfs_kernel::cow::TxnPlan;
-pub use crucible_ledgerfs_kernel::object::{
-	Chunk, DirEntry, DirNode, ExtentNode, Inode, InodeKind, ObjectId, ObjectRef,
-};
-pub use crucible_ledgerfs_kernel::record::ObjectRecordHeader;
-pub use crucible_ledgerfs_kernel::BLOCK_SIZE;
+pub use ledgerfs::BLOCK_SIZE;
+pub use ledgerfs::commit::CommitResult;
+pub use ledgerfs::cow::TxnPlan;
+pub use ledgerfs::object::{Chunk, DirEntry, DirNode, ExtentNode, Inode, InodeKind, ObjectId, ObjectRef};
+pub use ledgerfs::record::ObjectRecordHeader;
 
 // endregion: --- Modules

@@ -1,12 +1,12 @@
 # The LedgerFS application-store contract
 
-This is the standard for an application that embeds LedgerFS as its own
-on-disk store: what it calls, what those calls promise, and what it is expected
-to do in return. It is written from the shape `crucible-ledgerfs-host` already
-had, with two consumers defining it — CrucibleOS, where the same commit path
-drives `/data`, and `bugs`, whose relay transcripts are the first application to
-lean on it. The code that implements it is `Store` in this crate; the same
-contract as running code is `examples/app_store.rs`.
+This is the standard for an application that embeds LedgerFS as its own on-disk
+store: what it calls, what those calls promise, and what it is expected to do in
+return. The shape comes from the two applications that have used it — an OS that
+keeps its writable data volume on it, and a log-structured application whose
+transcripts were the first thing to lean on the contract. The code that
+implements it is `Store` in `host/`; the same contract as running code is
+`examples/app_store.rs`.
 
 The rule of thumb throughout: **a volume is a filesystem, not a file.** If you
 wanted a file, you wanted a file. You embed LedgerFS because you want a *tree*
@@ -23,14 +23,13 @@ An application's entry points:
 |---|---|
 | new store, stamped as mine | `Store::format_app(device, "myapp")` |
 | new store, plain volume | `Store::format_device(device)` |
-| open an existing volume | `Store::open(device)` (or `open_partition` for a Crucible image) |
+| open an existing volume | `Store::open(device)` |
 | is this my volume? | `store.app()`, `store.contract_version()` |
 
 A `BlockDevice` is a flat array of 4 KiB blocks. `FileBlockDevice` for a disk
 image or a bare file, `MemBlockDevice` for a volume in the process's own heap.
 The store takes ownership of the device; it does not care which kind it is. That
-seam is the entire embedding story — nothing above it is host- or
-CrucibleOS-specific.
+seam is the entire embedding story — nothing above it is host-specific.
 
 ## 2. The verbs
 
@@ -59,8 +58,7 @@ An error names the component that is actually absent, not the path the caller
 asked for: creating `findings/FIND-0001.md` in a volume with no `findings/`
 returns `NoSuchFile { path: "findings" }`. A create never makes its parents —
 that is the app's job, and the store says which one is missing rather than
-letting a caller conclude its *file* is the problem. (`bugs` lost an entire
-fleet's findings to exactly that reading.)
+letting a caller conclude its *file* is the problem.
 
 ## 3. Rules
 
@@ -99,17 +97,17 @@ appending N times writes O(N²) bytes — a 4 MiB transcript can cost gigabytes.
 app whose data is a log, a transcript or a stream should write **bounded chunk
 files** (`log-000001.jsonl`, …) and never touch a chunk after committing it: the
 cost of a commit is then bounded by the chunk, and total write amplification is
-linear in the data. `bugs` does exactly this for its relay transcript; see
-`events::CHUNK_BYTES`. This is not a tuning detail — it is the difference
-between a volume that lasts a campaign and one that fills in an afternoon.
+linear in the data. This is not a tuning detail — it is the difference between a
+volume that lasts a campaign and one that fills in an afternoon.
 
 ### A commit is the durability point
 
-Every mutating call is one transaction through the real `CommitEngine`: objects
-placed, data written, and **at least two device barriers** (the allocator
-snapshot, then the superblock — in that order, which is not interchangeable).
-On a `FileBlockDevice` a barrier is `fsync`; on a `MemBlockDevice` it is a
-no-op, so an in-memory volume is fast and not durable, by construction.
+Every mutating call is one transaction through the real `CommitEngine`: the
+objects placed and the allocator snapshot written, one device barrier, then the
+superblock copies, then the barrier that commits them — in that order, which is
+not interchangeable. On a `FileBlockDevice` a barrier is `fsync`; on a
+`MemBlockDevice` it is a no-op, so an in-memory volume is fast and not durable,
+by construction.
 
 The cost is per *call*, not per byte. An app that writes a turn's worth of
 files should think of each call as a sync point and not scatter single-byte
@@ -122,11 +120,15 @@ metadata** (the allocator snapshot, four superblock copies) **plus one block
 for every object in the path it touched** — and CoW re-places every object on
 that path, not just the one being changed. A two-level path (root, directory,
 file inode, extent, chunk) is therefore five or six fresh 4 KiB blocks per
-commit, so writing a 12-byte file can consume 40–64 KiB of volume. Measured:
-sixty rewrites of a twenty-byte file cost 3.9 MiB. The corollaries are the ones
-an app plans around: fewer, larger commits beat many small ones; a deep path
-costs more per write than a shallow one; and dead objects from one commit are
-released only by a rebuild (§3, "Space only falls").
+commit. `BENCHMARKS.md` reports the measured figure as the `volume KiB/op`
+column, produced by `benchmarks/` on the reader's own machine; the harness
+exists so this number can be re-derived rather than believed.
+
+The corollaries are the ones an app plans around: fewer, larger commits beat
+many small ones; a deep path costs more per write than a shallow one; and
+`write_new_file` is *two* commits (a create, then a write), so it costs about
+twice what the paragraph above describes. Use `create_file` plus `write_at`, or
+`write_file`, when you are counting.
 
 **Ordering rule, do not invert:** within `commit`, the allocator snapshot is
 persisted before the superblock. The other order can brick a volume — a
@@ -143,10 +145,11 @@ archive, or it will eventually fail a write with out-of-space. This is the one
 constraint most likely to bite a long-running agent, which is exactly why
 free-space reporting is on the standard surface rather than an optional extra.
 
-The amplification is not small, and it is worth stating with real numbers: a
-volume holding **554 KiB** of live transcript had grown to **124 MiB** — 220×.
-The image is mostly dead versions of objects that are still live, and nothing in
-this path can reach them.
+An always-on store can also grow far past the size of its live data, and by a
+factor rather than a percentage: the volume holds dead versions of live objects,
+and nothing in this path can reach them. `BENCHMARKS.md` measures what a volume
+costs per small file; multiply by the write rate and the lifetime to get the
+number an app has to plan against.
 
 The way back is [`rebuild_into`](crate::rebuild_into) — write the live tree into
 a fresh volume and swap it in. It is deliberately not an in-place operation: a
@@ -161,10 +164,8 @@ The shape of a correct compaction:
 5. only then `rename` the new image over the old one — one atomic step, so a
    failure anywhere before it leaves the original untouched.
 
-`bugs` does exactly this as `bugs compact <campaign>`, and calls it
-automatically at relay start when a volume is too full to record a session.
-`walk()` + `rebuild_into` are on the public surface so an embedding app can do
-the same. Budget for it: the scratch image is a full-size copy, so compaction
+`walk()` and `rebuild_into` are on the public surface so an embedding app can do
+this itself. Budget for it: the scratch image is a full-size copy, so compaction
 needs as much free *disk* as the volume is large, even though it returns most of
 it.
 
@@ -187,8 +188,8 @@ primitive the store offers.
 
 ## 4. Identity — recognising your own volume
 
-`format_app(device, "myapp")` writes an ordinary volume plus three files under
-one reserved top-level name:
+`format_app(device, "myapp")` writes an ordinary volume plus two files under one
+reserved top-level name:
 
 ```
 /.ledgerfs/APP       the app that owns the volume
@@ -223,10 +224,10 @@ Stated plainly so an app plans around them rather than discovering them:
   when one op's input feeds another's path). A single verb that touches a deep
   path *is* still one commit — the ancestor cascade merges several objects into
   one.
-- **A directory is flat and bounded.** `DirNode` entries live in one object, so
-  a directory holds roughly 400 children before the object no longer fits a
-  chunk. Partition deep fan-out across subdirectories; do not plan on a
-  `node_modules`-shaped directory.
+- **A directory is flat and bounded at 400 entries.** `DirNode` entries live in
+  one object and there is no split, so the 401st child fails the write. Partition
+  deep fan-out across subdirectories; do not plan on a `node_modules`-shaped
+  directory. See `KNOWN_ISSUES.md` §2.
 - **No partial or streaming read.** `read_file` returns the whole file;
   `read_at(path, offset, len)` gives a byte range, clamped to the file (past the
   end is an empty vector, not an error) — enough to tail an append-only file,

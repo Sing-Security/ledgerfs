@@ -2,10 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-	use super::super::*;
 	use crate::object::*;
-	use alloc::format;
-	use alloc::string::ToString;
 	use alloc::vec;
 
 	type TestResult<T> = core::result::Result<T, alloc::boxed::Box<dyn core::error::Error>>;
@@ -155,22 +152,13 @@ mod tests {
 			extent_tree.insert_extent(extent)?;
 		}
 
-		let original_object_id = extent_tree.object_id;
-
 		// Modify a single extent in the middle
 		let new_chunk_data = b"modified_chunk_50";
 		let new_chunk_id = ObjectId::from_content(new_chunk_data);
 
-		let mut modified_tree = extent_tree.clone();
+		let modified_tree = extent_tree.clone();
 		// In a real CoW implementation, we would update just one extent
 		// For now, verify that the object ID changes when we modify
-		let new_extent = ExtentDescriptor {
-			logical_offset: 50 * 4096,
-			length: 4096,
-			chunk_id: new_chunk_id,
-			chunk_hint: StorageHint::zero(),
-			chunk_offset: 0,
-		};
 
 		// This would require remove + insert in real implementation
 		// For now, just verify the tree structure
@@ -246,7 +234,8 @@ mod tests {
 		}
 
 		// -- Exec
-		let encoded = extent_tree.encode_canonical()?;
+		// Encoding must succeed even though only the split below is asserted.
+		extent_tree.encode_canonical()?;
 
 		// -- Check - Should need splitting due to size or entry count
 		assert!(extent_tree.needs_split());

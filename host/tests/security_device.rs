@@ -29,7 +29,7 @@
 //! implementation's internals, because both implementations have to answer the
 //! same questions — that is what makes them substitutable.
 
-use crucible_ledgerfs_host::{BlockDevice, Error, FileBlockDevice, MemBlockDevice, Result};
+use ledgerfs_host::{BlockDevice, Error, FileBlockDevice, MemBlockDevice, Result};
 
 mod common;
 
@@ -56,7 +56,11 @@ fn test_a_read_that_starts_past_the_end_is_refused() -> Result<()> {
 	// does not say what the bound *was* leaves the caller guessing whether it
 	// mis-addressed by a block or by a kilobyte.
 	match e {
-		Error::OutOfBounds { offset, len, size_bytes } => {
+		Error::OutOfBounds {
+			offset,
+			len,
+			size_bytes,
+		} => {
 			assert_eq!(offset, 4 * BS);
 			assert_eq!(len, BS as usize);
 			assert_eq!(size_bytes, 4 * BS);
@@ -118,7 +122,11 @@ fn test_a_write_that_starts_past_the_end_is_refused_and_changes_nothing() -> Res
 	assert!(matches!(e, Error::OutOfBounds { .. }), "got {e:?}");
 	let mut buf = block();
 	device.read_block(0, &mut buf)?;
-	assert_eq!(&buf[..9], b"untouched", "a refused write must not have landed somewhere else");
+	assert_eq!(
+		&buf[..9],
+		b"untouched",
+		"a refused write must not have landed somewhere else"
+	);
 	Ok(())
 }
 
@@ -135,7 +143,10 @@ fn test_offset_plus_length_that_overflows_u64_is_refused_not_wrapped() -> Result
 	let e = device.read_bytes_at(u64::MAX, &mut [0u8; 16]).expect_err("overflowing end");
 
 	// -- Check
-	assert!(matches!(e, Error::OutOfBounds { offset, .. } if offset == u64::MAX), "got {e:?}");
+	assert!(
+		matches!(e, Error::OutOfBounds { offset, .. } if offset == u64::MAX),
+		"got {e:?}"
+	);
 	Ok(())
 }
 
@@ -168,9 +179,16 @@ fn test_an_empty_range_at_the_very_end_is_a_no_op_and_past_it_is_not() -> Result
 	device.write_bytes_at(4 * BS, &[])?;
 
 	// -- Exec & Check: one byte past the end, refused even though it is empty
-	let e = device.read_bytes_at(4 * BS + 1, &mut []).expect_err("an empty range past the end");
-	assert!(matches!(e, Error::OutOfBounds { offset, len: 0, .. } if offset == 4 * BS + 1), "got {e:?}");
-	let e = device.write_bytes_at(u64::MAX, &[]).expect_err("an empty range far past the end");
+	let e = device
+		.read_bytes_at(4 * BS + 1, &mut [])
+		.expect_err("an empty range past the end");
+	assert!(
+		matches!(e, Error::OutOfBounds { offset, len: 0, .. } if offset == 4 * BS + 1),
+		"got {e:?}"
+	);
+	let e = device
+		.write_bytes_at(u64::MAX, &[])
+		.expect_err("an empty range far past the end");
 	assert!(matches!(e, Error::OutOfBounds { len: 0, .. }), "got {e:?}");
 	Ok(())
 }
@@ -249,7 +267,17 @@ fn test_every_out_of_range_lba_in_a_sweep_is_refused() -> Result<()> {
 	// a check that happens to special-case a single value is caught. `1 << 63`
 	// and `u64::MAX` differ in how they wrap.
 	let device = MemBlockDevice::new(16);
-	let lbas = [16u64, 17, 1 << 32, 1 << 52, 1 << 62, u64::MAX / BS, u64::MAX / BS + 1, u64::MAX - 1, u64::MAX];
+	let lbas = [
+		16u64,
+		17,
+		1 << 32,
+		1 << 52,
+		1 << 62,
+		u64::MAX / BS,
+		u64::MAX / BS + 1,
+		u64::MAX - 1,
+		u64::MAX,
+	];
 
 	// -- Exec & Check
 	for lba in lbas {
@@ -273,7 +301,17 @@ fn test_a_misaligned_block_write_is_refused() -> Result<()> {
 	let e = device.write_blocks(0, &[0u8; 100]).expect_err("not a block multiple");
 
 	// -- Check
-	assert!(matches!(e, Error::Misaligned { len: 100, block_size: 4096, .. }), "got {e:?}");
+	assert!(
+		matches!(
+			e,
+			Error::Misaligned {
+				len: 100,
+				block_size: 4096,
+				..
+			}
+		),
+		"got {e:?}"
+	);
 	Ok(())
 }
 
@@ -288,7 +326,10 @@ fn test_a_misaligned_block_write_at_the_end_is_refused_before_it_writes_anything
 	let e = device.write_blocks(4, &[0u8; 100]).expect_err("bad write");
 
 	// -- Check
-	assert!(matches!(e, Error::Misaligned { .. } | Error::OutOfBounds { .. }), "got {e:?}");
+	assert!(
+		matches!(e, Error::Misaligned { .. } | Error::OutOfBounds { .. }),
+		"got {e:?}"
+	);
 	Ok(())
 }
 
@@ -336,7 +377,10 @@ fn test_an_over_long_block_write_writes_exactly_one_block() -> Result<()> {
 	assert_eq!(buf[0], b'X');
 	assert!(buf[1..].iter().all(|b| *b == 0xBB));
 	device.read_block(2, &mut buf)?;
-	assert!(buf.iter().all(|b| *b == 0xAA), "write_block spilled into the next block");
+	assert!(
+		buf.iter().all(|b| *b == 0xAA),
+		"write_block spilled into the next block"
+	);
 	Ok(())
 }
 
@@ -368,7 +412,7 @@ fn test_the_device_reports_its_own_geometry_consistently() -> Result<()> {
 	assert_eq!(device.size_bytes(), 7 * BS);
 	assert_eq!(device.block_count(), 7);
 	assert!(device.is_writable());
-	assert_eq!(device.read_block(6, &mut block()).map(|_| ()).is_ok(), true);
+	assert!(device.read_block(6, &mut block()).map(|_| ()).is_ok());
 	assert!(device.read_block(7, &mut block()).is_err());
 	Ok(())
 }
@@ -381,8 +425,8 @@ fn test_the_device_reports_its_own_geometry_consistently() -> Result<()> {
 fn test_a_read_only_device_refuses_a_write_with_a_named_error() -> Result<()> {
 	// -- Setup & Fixtures: a read-only `MemBlockDevice` is not constructible
 	// directly, so this uses the file device — which is the case that matters
-	// anyway, since it is how `lfs-read` and `bugs cat` open a volume a writer
-	// still holds.
+	// anyway, since it is how `lfs-read` and other read-only inspectors open a
+	// volume a writer still holds.
 	let image = common::TempImage::new("ro-device");
 	let device = FileBlockDevice::create(&image.path, 8 * BS)?;
 	device.write_block(0, b"durable")?;
@@ -413,8 +457,8 @@ fn test_a_read_only_device_refuses_a_write_with_a_named_error() -> Result<()> {
 #[test]
 fn test_a_read_only_open_sees_a_writable_one_s_writes() -> Result<()> {
 	// -- Setup & Fixtures: the read-only-mount-while-writing case, which is the
-	// documented reason read-only opens take no lock: `bugs cat` on a volume a
-	// running server holds.
+	// documented reason read-only opens take no lock: a read-only inspector on a
+	// volume a running writer holds.
 	let image = common::TempImage::new("ro-sees-writes");
 	let rw = FileBlockDevice::create(&image.path, 8 * BS)?;
 
@@ -512,7 +556,10 @@ fn test_a_region_that_runs_off_the_end_of_the_file_is_refused_at_open() -> Resul
 	image.write(&vec![0u8; 8 * BS as usize])?;
 
 	// -- Exec
-	let e = expect_err("a region past the end of the file", FileBlockDevice::open(&image.path, 4 * BS, 8 * BS));
+	let e = expect_err(
+		"a region past the end of the file",
+		FileBlockDevice::open(&image.path, 4 * BS, 8 * BS),
+	);
 
 	// -- Check: the message carries all three numbers, because "does not fit" is
 	// unactionable without knowing by how much.
@@ -536,7 +583,10 @@ fn test_an_offset_plus_size_that_overflows_u64_is_refused_at_open() -> Result<()
 	image.write(&vec![0u8; 8 * BS as usize])?;
 
 	// -- Exec
-	let e = expect_err("an offset that overflows", FileBlockDevice::open(&image.path, u64::MAX - 100, 4096));
+	let e = expect_err(
+		"an offset that overflows",
+		FileBlockDevice::open(&image.path, u64::MAX - 100, 4096),
+	);
 
 	// -- Check
 	match e {
@@ -566,8 +616,14 @@ fn test_a_volume_inside_a_file_cannot_address_bytes_outside_itself() -> Result<(
 	assert_eq!(region.size_bytes(), 4 * BS);
 	assert_eq!(region.block_count(), 4);
 	assert_eq!(region.base_offset(), 8 * BS);
-	assert!(region.read_block(3, &mut block()).is_ok(), "the last block of the region is addressable");
-	assert!(region.read_block(4, &mut block()).is_err(), "one block past the region must be refused");
+	assert!(
+		region.read_block(3, &mut block()).is_ok(),
+		"the last block of the region is addressable"
+	);
+	assert!(
+		region.read_block(4, &mut block()).is_err(),
+		"one block past the region must be refused"
+	);
 
 	// -- Exec: write the whole region, then check the bytes on either side
 	let mut buf = block();
@@ -579,8 +635,16 @@ fn test_a_volume_inside_a_file_cannot_address_bytes_outside_itself() -> Result<(
 	assert_eq!(std::fs::metadata(&image.path)?.len(), 32 * BS);
 	let after = std::fs::read(&image.path)?;
 	assert_eq!(after[8 * BS as usize], 0x00, "the region was written");
-	assert_eq!(after[7 * BS as usize], 0x5A, "the block before the region was clobbered");
-	assert_eq!(after[12 * BS as usize], 0x5A, "the block after the region was clobbered");
+	assert_eq!(
+		after[7 * BS as usize],
+		0x5A,
+		"the block before the region was clobbered"
+	);
+	assert_eq!(
+		after[12 * BS as usize],
+		0x5A,
+		"the block after the region was clobbered"
+	);
 	Ok(())
 }
 
@@ -617,7 +681,11 @@ fn test_creating_a_file_at_a_misaligned_size_is_refused() -> Result<()> {
 
 	// -- Check
 	match e {
-		Error::Misaligned { context, len, block_size } => {
+		Error::Misaligned {
+			context,
+			len,
+			block_size,
+		} => {
 			assert_eq!(context, "FileBlockDevice::create");
 			assert_eq!(len, 4097);
 			assert_eq!(block_size, 4096);
@@ -653,7 +721,10 @@ fn test_creating_a_device_does_not_erase_what_the_file_held() -> Result<()> {
 	drop(device);
 	let shrunk = FileBlockDevice::create(&image.path, 4 * BS)?;
 	assert_eq!(shrunk.block_count(), 4);
-	assert!(shrunk.read_block(5, &mut buf).is_err(), "block 5 is outside the shrunken volume");
+	assert!(
+		shrunk.read_block(5, &mut buf).is_err(),
+		"block 5 is outside the shrunken volume"
+	);
 	Ok(())
 }
 
@@ -671,7 +742,10 @@ fn test_a_zero_block_region_is_openable_and_empty() -> Result<()> {
 	// -- Check
 	assert_eq!(region.block_count(), 0);
 	assert_eq!(region.size_bytes(), 0);
-	assert!(region.read_block(0, &mut block()).is_err(), "a zero-block volume has no block 0");
+	assert!(
+		region.read_block(0, &mut block()).is_err(),
+		"a zero-block volume has no block 0"
+	);
 	Ok(())
 }
 
@@ -687,7 +761,11 @@ fn test_adopting_a_buffer_whose_length_is_not_a_whole_number_of_blocks_is_refuse
 
 	// -- Check
 	match e {
-		Error::Misaligned { context, len, block_size } => {
+		Error::Misaligned {
+			context,
+			len,
+			block_size,
+		} => {
 			assert_eq!(context, "MemBlockDevice::from_bytes");
 			assert_eq!(len, 4097);
 			assert_eq!(block_size, 4096);
@@ -707,7 +785,7 @@ fn test_an_empty_buffer_is_a_zero_block_volume_not_an_error() -> Result<()> {
 
 	// -- Check
 	assert_eq!(device.block_count(), 0);
-	assert_eq!(device.read_bytes_at(0, &mut [0u8; 1]).is_err(), true);
+	assert!(device.read_bytes_at(0, &mut [0u8; 1]).is_err());
 	Ok(())
 }
 

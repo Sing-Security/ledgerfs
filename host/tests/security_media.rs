@@ -30,9 +30,9 @@
 
 use std::path::Path;
 
-use crucible_ledgerfs_host::{
-	Error, FileBlockDevice, HostFs, MemBlockDevice, Partition, PartitionKind, Result, Store, Volume,
-	find_partition, read_partitions,
+use ledgerfs_host::{
+	Error, FileBlockDevice, HostFs, MemBlockDevice, Partition, PartitionKind, Result, Store, Volume, find_partition,
+	read_partitions,
 };
 
 mod common;
@@ -44,7 +44,7 @@ const SECTOR: u64 = 512;
 /// The boot signature, at bytes 510..512 of the MBR sector.
 const SIGNATURE: [u8; 2] = [0x55, 0xAA];
 
-/// Partition type bytes, as `forge-builder` writes and this crate reads them.
+/// Partition type bytes, as the image builder writes and this crate reads them.
 const TYPE_BOOT: u8 = 0x83;
 const TYPE_LFS: u8 = 0xC0;
 
@@ -127,7 +127,10 @@ fn test_a_signature_one_byte_wrong_is_still_no_partition_table() -> Result<()> {
 	write_image(&image, &sector, 4 * BS)?;
 
 	// -- Exec & Check
-	assert!(matches!(expect_err("a bad signature", read_partitions(&image.path)), Error::NoPartitionTable { .. }));
+	assert!(matches!(
+		expect_err("a bad signature", read_partitions(&image.path)),
+		Error::NoPartitionTable { .. }
+	));
 	Ok(())
 }
 
@@ -138,7 +141,7 @@ fn test_an_image_shorter_than_one_sector_is_refused_and_the_message_says_why() -
 	// zero-length table — "this image has no partitions" and "this image is not
 	// an image" are different answers and only one of them is true.
 	let image = TempImage::new("short-image");
-	image.write(&vec![0u8; 100])?;
+	image.write(&[0u8; 100])?;
 
 	// -- Exec
 	let e = expect_err("a 100-byte image", read_partitions(&image.path));
@@ -247,13 +250,21 @@ fn test_a_third_ledgerfs_entry_is_dropped_rather_than_renamed() -> Result<()> {
 	// mounted under a name it should not have; either way there is no kind left
 	// to give it, and inventing one would make `find_partition` ambiguous.
 	let image = TempImage::new("third-lfs");
-	write_image(&image, &mbr(&[(TYPE_LFS, 10, 8), (TYPE_LFS, 20, 8), (TYPE_LFS, 30, 8)]), 4096 * BS)?;
+	write_image(
+		&image,
+		&mbr(&[(TYPE_LFS, 10, 8), (TYPE_LFS, 20, 8), (TYPE_LFS, 30, 8)]),
+		4096 * BS,
+	)?;
 
 	// -- Exec
 	let parts = read_partitions(&image.path)?;
 
 	// -- Check
-	assert_eq!(parts.len(), 2, "a third LFS partition has no kind and must not be listed");
+	assert_eq!(
+		parts.len(),
+		2,
+		"a third LFS partition has no kind and must not be listed"
+	);
 	assert_eq!(parts[1].start_lba, 20);
 	Ok(())
 }
@@ -263,7 +274,11 @@ fn test_a_second_boot_entry_is_dropped_rather_than_taking_the_boot_kind() -> Res
 	// -- Setup & Fixtures: the `0x83` rule has the same positional flavour. A
 	// second Linux-type entry must not become a second `/boot`.
 	let image = TempImage::new("second-boot");
-	write_image(&image, &mbr(&[(TYPE_BOOT, 10, 8), (TYPE_BOOT, 20, 8), (TYPE_LFS, 30, 8)]), 4096 * BS)?;
+	write_image(
+		&image,
+		&mbr(&[(TYPE_BOOT, 10, 8), (TYPE_BOOT, 20, 8), (TYPE_LFS, 30, 8)]),
+		4096 * BS,
+	)?;
 
 	// -- Exec
 	let parts = read_partitions(&image.path)?;
@@ -279,10 +294,14 @@ fn test_a_second_boot_entry_is_dropped_rather_than_taking_the_boot_kind() -> Res
 #[test]
 fn test_partition_types_this_tool_does_not_know_are_dropped() -> Result<()> {
 	// -- Setup & Fixtures: a real disk carries an EFI system partition and a
-	// Windows partition beside the Crucible ones. Neither is a LedgerFS volume,
-	// and neither may be offered as one.
+	// Windows partition beside the image's own ones. Neither is a LedgerFS
+	// volume, and neither may be offered as one.
 	let image = TempImage::new("foreign");
-	write_image(&image, &mbr(&[(0xEF, 10, 8), (0x07, 20, 8), (0x05, 30, 8), (TYPE_LFS, 40, 8)]), 4096 * BS)?;
+	write_image(
+		&image,
+		&mbr(&[(0xEF, 10, 8), (0x07, 20, 8), (0x05, 30, 8), (TYPE_LFS, 40, 8)]),
+		4096 * BS,
+	)?;
 
 	// -- Exec
 	let parts = read_partitions(&image.path)?;
@@ -311,11 +330,10 @@ fn test_a_partition_pointed_past_the_end_of_the_image_parses_but_does_not_open()
 	assert_eq!(parts[0].sectors, 0xFFFF);
 
 	// -- Exec: opening it does not
-	let e = expect_err("a partition past the end", FileBlockDevice::open(
-		&image.path,
-		parts[0].start_bytes(),
-		parts[0].size_bytes(),
-	));
+	let e = expect_err(
+		"a partition past the end",
+		FileBlockDevice::open(&image.path, parts[0].start_bytes(), parts[0].size_bytes()),
+	);
 
 	// -- Check
 	match e {
@@ -344,7 +362,10 @@ fn test_a_partition_covering_the_partition_table_itself_is_not_a_bootable_volume
 
 	// -- Check: and it is not a filesystem. `Store::open` reads the superblock
 	// at LBA 0, finds an MBR, and says so.
-	let e = expect_err("mounting the MBR as a volume", Store::open_partition(&image.path, PartitionKind::System));
+	let e = expect_err(
+		"mounting the MBR as a volume",
+		Store::open_partition(&image.path, PartitionKind::System),
+	);
 	match e {
 		Error::SuperblockUnreadable { detail, .. } | Error::Mount { detail } => {
 			assert!(!detail.is_empty(), "a refusal must say something");
@@ -391,17 +412,20 @@ fn test_overlapping_partitions_are_reported_and_cannot_both_be_opened_for_writin
 
 	// -- Exec
 	let parts = read_partitions(&image.path)?;
-	assert_eq!(parts.len(), 2, "overlap is the table's business, not the parser's to hide");
+	assert_eq!(
+		parts.len(),
+		2,
+		"overlap is the table's business, not the parser's to hide"
+	);
 	assert_eq!(parts[0].start_bytes(), parts[1].start_bytes());
 
 	// -- Check: the first writer takes the file lock, the second is refused
 	let region = parts[0].size_bytes();
 	let first = FileBlockDevice::open_rw(&image.path, parts[0].start_bytes(), region)?;
-	let e = expect_err("a second writable volume on the same region", FileBlockDevice::open_rw(
-		&image.path,
-		parts[1].start_bytes(),
-		region,
-	));
+	let e = expect_err(
+		"a second writable volume on the same region",
+		FileBlockDevice::open_rw(&image.path, parts[1].start_bytes(), region),
+	);
 	drop(first);
 
 	// -- Check
@@ -577,7 +601,7 @@ fn formatted_system_image(image: &TempImage) -> Result<Partition> {
 	let terms = partition.sectors * SECTOR / BS;
 	let mut store = Store::format(Box::new(device), terms)?;
 	store.mkdir("/etc", 0o755)?;
-	store.write_new_file("/etc/hostname", b"crucible", 0o644)?;
+	store.write_new_file("/etc/hostname", b"myhost", 0o644)?;
 	Ok(partition)
 }
 
@@ -588,11 +612,11 @@ fn test_a_volume_inside_a_partition_round_trips_through_the_image() -> Result<()
 	let image = TempImage::new("real-image");
 	let partition = formatted_system_image(&image)?;
 
-	// -- Exec: reopen by kind, the way `lfs-read` and `bugs` do
+	// -- Exec: reopen by kind, the way `lfs-read` and other host tools do
 	let fs = HostFs::open(&image.path, PartitionKind::System)?;
 
 	// -- Check
-	assert_eq!(fs.read_file("/etc/hostname")?, b"crucible");
+	assert_eq!(fs.read_file("/etc/hostname")?, b"myhost");
 	assert_eq!(fs.volume.total_blocks(), partition.sectors * SECTOR / BS);
 	Ok(())
 }
@@ -623,8 +647,14 @@ fn test_the_volume_stays_inside_its_partition() -> Result<()> {
 	// partition table — so the region checked is from the end of the first
 	// sector up to the partition's own start.
 	assert_eq!(&bytes[510..512], &SIGNATURE, "the partition table was overwritten");
-	assert!(bytes[512..start].iter().all(|b| *b == 0), "the volume wrote before its partition");
-	assert!(bytes[end..].iter().all(|b| *b == 0), "the volume wrote past its partition");
+	assert!(
+		bytes[512..start].iter().all(|b| *b == 0),
+		"the volume wrote before its partition"
+	);
+	assert!(
+		bytes[end..].iter().all(|b| *b == 0),
+		"the volume wrote past its partition"
+	);
 	Ok(())
 }
 
@@ -649,7 +679,10 @@ fn test_a_volume_file_with_no_image_around_it_still_mounts() -> Result<()> {
 
 	// -- Check: and the same file is *not* a partitioned image, so nothing
 	// treats its first block as an MBR.
-	assert!(matches!(expect_err("a bare volume as an image", read_partitions(&image.path)), Error::NoPartitionTable { .. }));
+	assert!(matches!(
+		expect_err("a bare volume as an image", read_partitions(&image.path)),
+		Error::NoPartitionTable { .. }
+	));
 	Ok(())
 }
 
@@ -751,13 +784,20 @@ fn test_mounting_the_same_bytes_twice_gives_the_same_answer() -> Result<()> {
 	for _ in 0..3 {
 		let device = MemBlockDevice::from_bytes(before.clone())?;
 		let fs = HostFs::mount_device(Box::new(device))?;
-		answers.push((fs.volume.total_blocks(), fs.volume.superblock.active_commit_seq, fs.volume.copy_status().is_healthy()));
+		answers.push((
+			fs.volume.total_blocks(),
+			fs.volume.superblock.active_commit_seq,
+			fs.volume.copy_status().is_healthy(),
+		));
 	}
 	let device = MemBlockDevice::from_bytes(before.clone())?;
 	let _ = Volume::mount(&device)?;
 
 	// -- Check: identical answers, and the device's bytes are untouched
-	assert!(answers.iter().all(|a| *a == answers[0]), "mounting gave different answers: {answers:?}");
+	assert!(
+		answers.iter().all(|a| *a == answers[0]),
+		"mounting gave different answers: {answers:?}"
+	);
 	assert_eq!(common::bytes(&watch), before, "mounting modified the volume");
 	Ok(())
 }
@@ -872,7 +912,7 @@ fn test_formatting_a_medium_leaves_none_of_what_it_held() -> Result<()> {
 
 	// -- Check: and the filesystem it did write is functional, so the erase was
 	// not simply a very thorough way of producing a blank device.
-	assert_eq!(store.stat("/d")?.kind, crucible_ledgerfs_host::InodeKind::Directory);
+	assert_eq!(store.stat("/d")?.kind, ledgerfs_host::InodeKind::Directory);
 	Ok(())
 }
 

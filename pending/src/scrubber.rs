@@ -1,6 +1,15 @@
 //! Background Scrubber for LedgerFS v7
 //!
-//! Per §40 of ledgerfs-spec-v7.md:
+//! # Status
+//!
+//! Scheduling, throttling, and the per-object corruption bookkeeping are real.
+//! The verification is not: `Scrubber::scrub_batch` walks the dedupe index
+//! without reading anything, and `attempt_repair` relocates without reading the
+//! alternate location, so both count work done rather than confirm it. None of
+//! the three verification kinds listed below is performed. Nothing in the host
+//! `Store` calls either entry point — `KNOWN_ISSUES.md` §11.
+//!
+//! Per §40 of FORMAT.md:
 //! - Verify stored_hash and ObjectId checksums
 //! - Detect and report corruption
 //! - Integrate with repair hooks (mirror/parity reads)
@@ -35,16 +44,17 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::dedupe::{DedupeIndex, PhysicalLocator, RelocationReason};
-use crate::object::ObjectId;
 use crate::{Error, Result};
+use ledgerfs::object::ObjectId;
 
 // region:    --- ScrubberMode
 
 /// Scrubber operation mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ScrubberMode {
 	/// Idle - scrubber not running
+	#[default]
 	Idle = 0,
 
 	/// Active - scrubber running
@@ -52,12 +62,6 @@ pub enum ScrubberMode {
 
 	/// Paused - temporarily suspended
 	Paused = 2,
-}
-
-impl Default for ScrubberMode {
-	fn default() -> Self {
-		Self::Idle
-	}
 }
 
 // endregion: --- ScrubberMode
@@ -134,7 +138,7 @@ pub enum CorruptionType {
 // region:    --- ScrubStats
 
 /// Scrubber statistics
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScrubStats {
 	/// Total objects scanned
 	pub objects_scanned: u64,
@@ -156,20 +160,6 @@ pub struct ScrubStats {
 
 	/// Last scrub completion timestamp
 	pub last_scrub_complete: u64,
-}
-
-impl Default for ScrubStats {
-	fn default() -> Self {
-		Self {
-			objects_scanned: 0,
-			objects_verified: 0,
-			corruptions_detected: 0,
-			repairs_attempted: 0,
-			repairs_successful: 0,
-			last_scrub_start: 0,
-			last_scrub_complete: 0,
-		}
-	}
 }
 
 // endregion: --- ScrubStats
@@ -398,11 +388,12 @@ impl Scrubber {
 
 	/// Attempt repair of corrupted object
 	///
-	/// Integrates with relocation primitives:
-	/// 1. Mark primary location as stale
-	/// 2. Attempt read from alternate locations (mirror/parity)
-	/// 3. Verify alternate data by hash
-	/// 4. Relocate if verification succeeds
+	/// Marks the primary location stale, then relocates to the alternate
+	/// locator supplied. Steps 2 and 3 of the intended sequence — read the
+	/// alternate, verify its hash — are not performed, so the relocation is
+	/// recorded as a successful repair on the strength of the locator alone,
+	/// and a `true` return means an attempt was made rather than a repair
+	/// confirmed. See `KNOWN_ISSUES.md` §11.
 	pub fn attempt_repair(
 		&mut self,
 		object_id: &ObjectId,
@@ -417,7 +408,7 @@ impl Scrubber {
 			.state
 			.corruption_events
 			.get_mut(object_id)
-			.ok_or_else(|| Error::Custom("Corruption event not found"))?;
+			.ok_or(Error::Custom("Corruption event not found"))?;
 
 		event.repair_attempted = true;
 
@@ -429,8 +420,11 @@ impl Scrubber {
 			return Ok(false);
 		};
 
-		// TODO: Read from alternate location and verify
-		// For Phase 1, assume verification succeeds
+		// The alternate location is not read, so nothing is verified: the
+		// relocation below is recorded as a successful repair on the strength
+		// of the locator alone. `repairs_successful` therefore counts repairs
+		// that were attempted, not repairs that were confirmed — see
+		// `KNOWN_ISSUES.md` §11.
 
 		// Relocate to alternate location
 		dedupe_index.relocate(object_id, alt_locator, timestamp, RelocationReason::CorruptionRepair)?;
@@ -447,11 +441,11 @@ impl Scrubber {
 
 	/// Scrub batch of objects from dedupe index
 	///
-	/// Returns number of objects scanned in this batch.
-	/// Respects throttling configuration.
-	///
-	/// If `write_queue_depth` meets or exceeds `pause_threshold_queue_depth`,
-	/// the scrubber pauses itself and returns 0 immediately.
+	/// Returns the number of entries walked in this batch. No object is read,
+	/// so that is not the number verified — the loop advances a cursor and
+	/// counts. Respects throttling configuration: if `write_queue_depth` meets
+	/// or exceeds `pause_threshold_queue_depth`, the scrubber pauses itself and
+	/// returns 0 immediately.
 	pub fn scrub_batch(
 		&mut self,
 		dedupe_index: &DedupeIndex,
@@ -493,8 +487,10 @@ impl Scrubber {
 				prefetch_nta(ahead_ptr);
 			}
 
-			// TODO: Read actual object data from storage
-			// For Phase 1, skip actual I/O
+			// No read is issued. This loop advances the scan cursor and counts
+			// entries without looking at any of them, so the count it returns
+			// is the number of entries walked, not the number verified — see
+			// `KNOWN_ISSUES.md` §11.
 
 			self.state.last_scanned_object = Some(*object_id);
 			scanned += 1;

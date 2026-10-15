@@ -28,7 +28,7 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crucible_ledgerfs_kernel::BLOCK_SIZE;
+use ledgerfs::BLOCK_SIZE;
 
 use crate::error::{Error, Result};
 
@@ -57,8 +57,16 @@ impl VolumeIdentity {
 	/// file behind it.
 	pub(crate) fn of_file(file: &File, size_bytes: u64) -> Self {
 		match file.metadata() {
-			Ok(m) => Self { size_bytes, dev: m.dev(), ino: m.ino() },
-			Err(_) => Self { size_bytes, dev: 0, ino: 0 },
+			Ok(m) => Self {
+				size_bytes,
+				dev: m.dev(),
+				ino: m.ino(),
+			},
+			Err(_) => Self {
+				size_bytes,
+				dev: 0,
+				ino: 0,
+			},
 		}
 	}
 }
@@ -243,13 +251,10 @@ pub struct FileBlockDevice {
 impl FileBlockDevice {
 	/// Open an existing region read-only.
 	pub fn open(path: &Path, base_offset: u64, size_bytes: u64) -> Result<Self> {
-		let file = OpenOptions::new()
-			.read(true)
-			.open(path)
-			.map_err(|e| Error::ImageOpen {
-				path: path.to_path_buf(),
-				detail: e.to_string(),
-			})?;
+		let file = OpenOptions::new().read(true).open(path).map_err(|e| Error::ImageOpen {
+			path: path.to_path_buf(),
+			detail: e.to_string(),
+		})?;
 		Self::from_file(file, path, base_offset, size_bytes, false)
 	}
 
@@ -308,13 +313,7 @@ impl FileBlockDevice {
 		Self::from_file(file, path, 0, size_bytes, true)
 	}
 
-	fn from_file(
-		file: File,
-		path: &Path,
-		base_offset: u64,
-		size_bytes: u64,
-		writable: bool,
-	) -> Result<Self> {
+	fn from_file(file: File, path: &Path, base_offset: u64, size_bytes: u64, writable: bool) -> Result<Self> {
 		let image_bytes = file.metadata().map_err(Error::Io)?.len();
 
 		// Catch bad geometry at open time, where the message can name the
@@ -326,9 +325,7 @@ impl FileBlockDevice {
 		if end > image_bytes {
 			return Err(Error::ImageOpen {
 				path: path.to_path_buf(),
-				detail: format!(
-					"volume spans bytes {base_offset}..{end} but the file is only {image_bytes} bytes"
-				),
+				detail: format!("volume spans bytes {base_offset}..{end} but the file is only {image_bytes} bytes"),
 			});
 		}
 
@@ -337,12 +334,14 @@ impl FileBlockDevice {
 		// second open in this one — is refused with `Error::Locked` rather than
 		// allowed to place objects on blocks the first handle still counts as
 		// free. Read-only opens take no lock and coexist freely, which is what
-		// lets a CLI `bugs cat` read a volume a running `bugs serve` holds.
+		// lets a read-only inspector read a volume a live writer holds.
 		if writable {
 			match file.try_lock() {
 				Ok(()) => {}
 				Err(std::fs::TryLockError::WouldBlock) => {
-					return Err(Error::Locked { path: path.to_path_buf() });
+					return Err(Error::Locked {
+						path: path.to_path_buf(),
+					});
 				}
 				Err(std::fs::TryLockError::Error(e)) => {
 					return Err(Error::ImageOpen {
@@ -600,7 +599,9 @@ mod tests {
 		let bytes = vec![0u8; BLOCK_SIZE as usize - 1];
 
 		// -- Exec
-		let err = MemBlockDevice::from_bytes(bytes).err().expect("a truncated volume must be refused");
+		let err = MemBlockDevice::from_bytes(bytes)
+			.err()
+			.expect("a truncated volume must be refused");
 
 		// -- Check
 		assert!(matches!(err, Error::Misaligned { .. }), "got {err:?}");
@@ -610,7 +611,7 @@ mod tests {
 
 	/// A file path unique to one test, removed by that test.
 	fn temp_path(tag: &str) -> std::path::PathBuf {
-		std::env::temp_dir().join(format!("crucible-ledgerfs-{}-{tag}.img", std::process::id()))
+		std::env::temp_dir().join(format!("ledgerfs-{}-{tag}.img", std::process::id()))
 	}
 
 	#[test]

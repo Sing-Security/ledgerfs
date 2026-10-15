@@ -21,10 +21,11 @@
 #![allow(dead_code)] // each test binary uses a subset of these
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crucible_ledgerfs_host::{
-	Error, FileBlockDevice, HostFs, InodeKind, MemBlockDevice, Result as FsResult, Store, WalkEntry,
+use ledgerfs_host::{
+	BlockDevice, Error, FileBlockDevice, HostFs, InodeKind, MemBlockDevice, Result as FsResult, Store, WalkEntry,
 };
 
 /// The rust10x test result: `?` on anything that implements `std::error::Error`.
@@ -53,7 +54,12 @@ pub const MIN_BLOCKS: u64 = 14;
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn unique(tag: &str) -> String {
-	format!("ledgerfs-test-{}-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::SeqCst), tag)
+	format!(
+		"ledgerfs-test-{}-{}-{}",
+		std::process::id(),
+		SEQ.fetch_add(1, Ordering::SeqCst),
+		tag
+	)
 }
 
 // region:    --- Volumes in memory
@@ -65,12 +71,12 @@ pub fn mem(blocks: u64) -> MemBlockDevice {
 
 /// A fresh volume of `blocks` blocks, formatted, with a genesis root.
 pub fn store(blocks: u64) -> FsResult<Store> {
-	Ok(Store::format(Box::new(mem(blocks)), blocks)?)
+	Store::format(Box::new(mem(blocks)), blocks)
 }
 
 /// A fresh application store, so the `.ledgerfs/` identity markers exist.
 pub fn app_store(blocks: u64, app: &str) -> FsResult<Store> {
-	Ok(Store::format_app(Box::new(mem(blocks)), app)?)
+	Store::format_app(Box::new(mem(blocks)), app)
 }
 
 /// A formatted volume *and* a live handle on the same buffer.
@@ -84,9 +90,79 @@ pub fn watched(blocks: u64) -> FsResult<(Store, MemBlockDevice)> {
 	Ok((Store::format(Box::new(device), blocks)?, watch))
 }
 
+/// A [`MemBlockDevice`] that counts the device traffic asked of it.
+///
+/// Every block-level helper on [`BlockDevice`] funnels into `read_bytes_at` and
+/// `write_bytes_at`, so counting those two counts the volume's whole I/O. This
+/// is here rather than inline in one test because the read path's cost is a
+/// *count* and not a duration: a test that timed a read would measure the
+/// machine it ran on, and this crate's test suite runs on whatever machine
+/// happens to be running it.
+#[derive(Clone)]
+pub struct CountingDevice {
+	inner: MemBlockDevice,
+	reads: Arc<AtomicU64>,
+	writes: Arc<AtomicU64>,
+}
+
+impl CountingDevice {
+	pub fn new(blocks: u64) -> Self {
+		Self {
+			inner: MemBlockDevice::new(blocks),
+			reads: Arc::new(AtomicU64::new(0)),
+			writes: Arc::new(AtomicU64::new(0)),
+		}
+	}
+
+	/// Device reads since the last [`reset`](Self::reset).
+	pub fn reads(&self) -> u64 {
+		self.reads.load(Ordering::Relaxed)
+	}
+
+	/// Device writes since the last [`reset`](Self::reset).
+	pub fn writes(&self) -> u64 {
+		self.writes.load(Ordering::Relaxed)
+	}
+
+	/// Zero both counters — so a test can measure one operation rather than the
+	/// setup that preceded it.
+	pub fn reset(&self) {
+		self.reads.store(0, Ordering::Relaxed);
+		self.writes.store(0, Ordering::Relaxed);
+	}
+}
+
+impl BlockDevice for CountingDevice {
+	fn size_bytes(&self) -> u64 {
+		self.inner.size_bytes()
+	}
+
+	fn read_bytes_at(&self, offset: u64, buf: &mut [u8]) -> FsResult<()> {
+		self.reads.fetch_add(1, Ordering::Relaxed);
+		self.inner.read_bytes_at(offset, buf)
+	}
+
+	fn write_bytes_at(&self, offset: u64, data: &[u8]) -> FsResult<()> {
+		self.writes.fetch_add(1, Ordering::Relaxed);
+		self.inner.write_bytes_at(offset, data)
+	}
+
+	fn barrier(&self) -> FsResult<()> {
+		self.inner.barrier()
+	}
+
+	fn is_writable(&self) -> bool {
+		self.inner.is_writable()
+	}
+
+	fn hint_cache(&self) -> Option<ledgerfs_host::HintCache> {
+		self.inner.hint_cache()
+	}
+}
+
 /// Mount `bytes` as a volume, the way a reopen after a restart does.
 pub fn open_bytes(bytes: Vec<u8>) -> FsResult<Store> {
-	Ok(Store::open(Box::new(MemBlockDevice::from_bytes(bytes)?))?)
+	Store::open(Box::new(MemBlockDevice::from_bytes(bytes)?))
 }
 
 /// Mount `bytes` and keep a live handle on the buffer it mounted.
@@ -105,7 +181,7 @@ pub fn open_bytes_watched(bytes: Vec<u8>) -> FsResult<(Store, MemBlockDevice)> {
 /// Mount `bytes` read-only, erroring where a mount should (the `HostFs` path
 /// that insists on a usable root).
 pub fn mount_bytes(bytes: Vec<u8>) -> FsResult<HostFs> {
-	Ok(HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(bytes)?))?)
+	HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(bytes)?))
 }
 
 /// The volume's bytes, as a valid volume file.
@@ -171,7 +247,7 @@ impl TempImage {
 	/// A formatted volume in a file, opened read-write.
 	pub fn store(&self, blocks: u64) -> FsResult<Store> {
 		let device = FileBlockDevice::create(&self.path, blocks * 4096)?;
-		Ok(Store::format(Box::new(device), blocks)?)
+		Store::format(Box::new(device), blocks)
 	}
 }
 
@@ -184,13 +260,13 @@ impl Drop for TempImage {
 /// A file-backed device opened read-only over `bytes`.
 pub fn ro_file(image: &TempImage, bytes: &[u8]) -> FsResult<FileBlockDevice> {
 	image.write(bytes)?;
-	Ok(FileBlockDevice::open(&image.path, 0, bytes.len() as u64)?)
+	FileBlockDevice::open(&image.path, 0, bytes.len() as u64)
 }
 
 /// A file-backed device opened read-write over `bytes`.
 pub fn rw_file(image: &TempImage, bytes: &[u8]) -> FsResult<FileBlockDevice> {
 	image.write(bytes)?;
-	Ok(FileBlockDevice::open_rw(&image.path, 0, bytes.len() as u64)?)
+	FileBlockDevice::open_rw(&image.path, 0, bytes.len() as u64)
 }
 
 // endregion:    --- Volumes in files
@@ -206,7 +282,7 @@ pub fn paths(entries: &[WalkEntry]) -> Vec<String> {
 
 /// The names in one directory listing, sorted — the shape most tests want to
 /// assert on, since `read_dir` makes no ordering promise.
-pub fn names(entries: &[crucible_ledgerfs_host::Entry]) -> Vec<String> {
+pub fn names(entries: &[ledgerfs_host::Entry]) -> Vec<String> {
 	let mut out: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
 	out.sort();
 	out
@@ -219,11 +295,7 @@ pub fn names(entries: &[crucible_ledgerfs_host::Entry]) -> Vec<String> {
 /// no `Store` to hand, and both must produce the same listing. A `Store` call
 /// site passes `store.fs()`.
 pub fn listing(fs: &HostFs, path: &str) -> FsResult<Vec<(String, InodeKind)>> {
-	let mut out: Vec<(String, InodeKind)> = fs
-		.read_dir(path)?
-		.into_iter()
-		.map(|e| (e.name, e.kind))
-		.collect();
+	let mut out: Vec<(String, InodeKind)> = fs.read_dir(path)?.into_iter().map(|e| (e.name, e.kind)).collect();
 	out.sort_by(|a, b| a.0.cmp(&b.0));
 	Ok(out)
 }
@@ -231,11 +303,11 @@ pub fn listing(fs: &HostFs, path: &str) -> FsResult<Vec<(String, InodeKind)>> {
 /// The error a `Result` carried, panicking with `what` when it succeeded.
 ///
 /// Generic over the error type rather than downcasting, so a test can hand it
-/// either a `crucible_ledgerfs_host::Result` or a `Box<dyn Error>` one.
+/// either a `ledgerfs_host::Result` or a `Box<dyn Error>` one.
 ///
 /// Tests assert on the *variant*, not on a `to_string()`: a message is for a
 /// human and is allowed to change, while `Error::NoSuchFile` naming the missing
-/// parent is a contract `bugs` depends on.
+/// parent is a contract callers depend on.
 pub fn expect_err<T, E: std::fmt::Debug>(what: &str, r: core::result::Result<T, E>) -> E {
 	match r {
 		Ok(_) => panic!("{what}: expected an error, got Ok"),

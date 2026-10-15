@@ -2,13 +2,12 @@
 //!
 //! Hand-written `Display` with one match arm per variant, no
 //! `thiserror`/`anyhow` — the Rust10x error pattern as this repo already
-//! practises it in `crucible-ledgerfs-kernel/src/error.rs` and
-//! `forge-builder/src/error.rs`.
+//! practises it in `ledgerfs/src/error.rs`.
 
 use std::fmt::{self, Display};
 use std::path::PathBuf;
 
-use crucible_ledgerfs_kernel::Error as LedgerFsError;
+use ledgerfs::Error as LedgerFsError;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -20,27 +19,46 @@ pub enum Error {
 
 	// -- Image & partition geometry
 	/// The image file could not be opened, or is not the size it claims.
-	ImageOpen { path: PathBuf, detail: String },
-	/// No MBR signature at byte 510 — not a partitioned Crucible image.
-	NoPartitionTable { path: PathBuf },
+	ImageOpen {
+		path: PathBuf,
+		detail: String,
+	},
+	/// No MBR signature at byte 510 — not a partitioned image.
+	NoPartitionTable {
+		path: PathBuf,
+	},
 	/// The image has no partition of the requested kind.
-	PartitionNotFound { kind: String },
+	PartitionNotFound {
+		kind: String,
+	},
 
 	// -- Mount
 	/// A superblock copy could not be turned into a `Superblock`.
-	SuperblockUnreadable { copy_lba: u64, detail: String },
+	SuperblockUnreadable {
+		copy_lba: u64,
+		detail: String,
+	},
 	/// `mount_select` found no usable root, or the volume's geometry
 	/// disagrees with its partition.
-	Mount { detail: String },
+	Mount {
+		detail: String,
+	},
 	/// The superblocks are valid and say nothing has ever been committed to
-	/// this volume — which is what `fs_init` leaves behind, not damage.
-	VolumeUncommitted { total_blocks: u64 },
+	/// this volume — which is what the image initialiser leaves behind, not
+	/// damage.
+	VolumeUncommitted {
+		total_blocks: u64,
+	},
 	/// The active root object was located but would not decode.
-	RootUnreadable { detail: String },
+	RootUnreadable {
+		detail: String,
+	},
 
 	// -- Object access
 	/// No `ObjectRecord` on the volume carries the requested `ObjectId`.
-	ObjectNotFound { object_id: String },
+	ObjectNotFound {
+		object_id: String,
+	},
 	/// A read would fall outside the partition this device was opened on.
 	OutOfBounds {
 		offset: u64,
@@ -61,22 +79,35 @@ pub enum Error {
 	},
 
 	// -- Path resolution
-	NotADirectory { path: String },
-	IsADirectory { path: String },
-	NoSuchFile { path: String },
+	NotADirectory {
+		path: String,
+	},
+	IsADirectory {
+		path: String,
+	},
+	NoSuchFile {
+		path: String,
+	},
 	/// A create was asked for a name that is already taken.
-	AlreadyExists { path: String },
+	AlreadyExists {
+		path: String,
+	},
 
 	// -- Filesystem verbs
 	/// An operation the store's contract does not cover, named as the caller
 	/// called it. Currently the cross-directory `rename` and any `write_at`
 	/// that would land inside a file's existing bytes — both refusals rather
 	/// than corruptions, see [`Store::rename`](crate::Store::rename).
-	Unsupported { detail: String },
+	Unsupported {
+		detail: String,
+	},
 	/// A file the store reads as text — an app-store marker — is not UTF-8.
 	/// Surfaced rather than swallowed: a volume that calls itself an app store
 	/// and then cannot say whose is worth a caller's attention.
-	MarkerUnreadable { path: String, detail: String },
+	MarkerUnreadable {
+		path: String,
+		detail: String,
+	},
 
 	// -- Verification
 	/// A file read back out of the volume is not the file that was written.
@@ -91,14 +122,18 @@ pub enum Error {
 	/// device was opened read-only, or there is no allocator snapshot on the
 	/// volume. Both are stated in `detail`, because both arrive at the same
 	/// place in `commit`.
-	ReadOnly { detail: String },
+	ReadOnly {
+		detail: String,
+	},
 	/// A second writer tried to open a volume an existing writer already holds.
 	/// LedgerFS is **one writer per volume** — the allocator snapshot is not
 	/// shareable, so two writable handles would place objects on the same
 	/// "free" blocks. The lock that enforces this is an advisory OS file lock,
 	/// taken by every writable [`FileBlockDevice`](crate::FileBlockDevice);
 	/// a read-only open takes no lock and is always allowed.
-	Locked { path: PathBuf },
+	Locked {
+		path: PathBuf,
+	},
 
 	// -- Externals
 	Io(std::io::Error),
@@ -113,7 +148,11 @@ impl Display for Error {
 				write!(f, "cannot open image {}: {detail}", path.display())
 			}
 			Self::NoPartitionTable { path } => {
-				write!(f, "{} has no MBR partition table (bad signature at byte 510)", path.display())
+				write!(
+					f,
+					"{} has no MBR partition table (bad signature at byte 510)",
+					path.display()
+				)
 			}
 			Self::PartitionNotFound { kind } => {
 				write!(f, "image has no {kind} partition")
@@ -131,14 +170,22 @@ impl Display for Error {
 			Self::ObjectNotFound { object_id } => {
 				write!(f, "no object with id {object_id} on this volume")
 			}
-			Self::OutOfBounds { offset, len, size_bytes } => write!(
+			Self::OutOfBounds {
+				offset,
+				len,
+				size_bytes,
+			} => write!(
 				f,
 				"read of {len} bytes at offset {offset} falls outside the {size_bytes}-byte partition"
 			),
 			Self::ShortRead { offset, want, got } => {
 				write!(f, "short read at offset {offset}: wanted {want} bytes, got {got}")
 			}
-			Self::Misaligned { context, len, block_size } => write!(
+			Self::Misaligned {
+				context,
+				len,
+				block_size,
+			} => write!(
 				f,
 				"{context}: length {len} is not a multiple of the {block_size}-byte block size"
 			),
@@ -150,10 +197,9 @@ impl Display for Error {
 			Self::MarkerUnreadable { path, detail } => {
 				write!(f, "{path} is not readable text: {detail}")
 			}
-			Self::ContentMismatch { path, local, detail } => write!(
-				f,
-				"content mismatch: {path} does not match {local} — {detail}"
-			),
+			Self::ContentMismatch { path, local, detail } => {
+				write!(f, "content mismatch: {path} does not match {local} — {detail}")
+			}
 			Self::ReadOnly { detail } => write!(f, "cannot write to this volume: {detail}"),
 			Self::Locked { path } => write!(
 				f,

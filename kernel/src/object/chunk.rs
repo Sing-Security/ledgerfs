@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use super::object_id::ObjectId;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Plaintext data chunk (canonical encoding)
 ///
@@ -16,7 +16,7 @@ pub struct Chunk {
 	/// Content-addressed ID of this chunk
 	pub object_id: ObjectId,
 
-	/// Actual data bytes (plaintext for Phase 2)
+	/// Actual data bytes (currently plaintext)
 	pub data: Vec<u8>,
 
 	/// Compression flags (reserved, must be 0)
@@ -49,17 +49,19 @@ impl Chunk {
 	///
 	/// This used to postcard-serialize the whole struct
 	/// (`[object_id][len][data][flags][flags]`), which put three independent
-	/// consumers into disagreement — `forge-builder`'s `populate.rs` and the
-	/// kernel's `reader.rs` both treat a chunk object's stored payload as raw
-	/// file bytes, while the CoW write path wrote it framed. Nothing caught
-	/// it: the record's `object_id` really is `blake3(canonical_bytes)`, so
-	/// verification passed and only the *interpretation* was wrong. A
-	/// 31-byte file written through `/data` read back as the first 31 bytes
-	/// of the chunk's own BLAKE3 id — garbage of exactly the right length.
+	/// consumers into disagreement — a raw-bytes writer that populates a
+	/// volume and the kernel's `reader.rs` both treat a chunk object's stored
+	/// payload as raw file bytes, while the CoW write path wrote it framed.
+	/// Nothing caught it: the record's `object_id` really is
+	/// `blake3(canonical_bytes)`, so verification passed and only the
+	/// *interpretation* was wrong. A 31-byte file written through the CoW
+	/// path read back as the first 31 bytes of the chunk's own BLAKE3 id —
+	/// garbage of exactly the right length.
 	///
 	/// Making raw the canonical form settles it in favour of the two
-	/// consumers that already agreed, needs no on-disk change to `/system`,
-	/// and makes `object_id == blake3(canonical) == blake3(data)` hold
+	/// consumers that already agreed, needs no on-disk change to the system
+	/// volume (which already stored raw file bytes), and makes
+	/// `object_id == blake3(canonical) == blake3(data)` hold
 	/// universally — the same identity [`new`](Self::new) and
 	/// [`verify`](Self::verify) already use.
 	///
@@ -114,23 +116,23 @@ mod tests {
 		Ok(())
 	}
 
-	/// Regression test for the `/data` garbled-content bug: a chunk's stored
+	/// Regression test for the garbled-content bug: a chunk's stored
 	/// bytes must be *exactly* its data, with no framing.
 	///
-	/// Three independent consumers read chunk objects — `forge-builder`'s
-	/// `populate.rs` (writes `/system`), the kernel's `reader.rs` (reads
-	/// both partitions), and `cow::operations`/`fs-cbl` (writes and reads
-	/// `/data`). The first two treat the stored payload as raw file bytes.
+	/// Three independent consumers read chunk objects — a raw-bytes writer
+	/// that populates a volume, the kernel's `reader.rs`, and
+	/// `cow::operations`. The first two treat the stored payload as raw file
+	/// bytes.
 	/// When `encode_canonical` postcard-framed the whole struct instead, a
-	/// file written through `/data` read back as the leading bytes of its
-	/// own BLAKE3 id — and the record-level hash check could not catch it,
+	/// file written through the CoW path read back as the leading bytes of
+	/// its own BLAKE3 id — and the record-level hash check could not catch it,
 	/// because the framed bytes really did hash to the stored id. Asserting
 	/// on the exact byte sequence, not just a round trip, is what pins the
 	/// convention: a round-trip-only test passes under either encoding.
 	#[test]
 	fn test_chunk_canonical_bytes_are_the_raw_data_with_no_framing() -> TestResult<()> {
 		// -- Setup & Fixtures
-		let data = b"phase1e-reboot-survival-payload".to_vec();
+		let data = b"reboot-survival-payload".to_vec();
 		let chunk = Chunk::new(data.clone());
 
 		// -- Exec
@@ -143,8 +145,8 @@ mod tests {
 			ObjectId::from_content(&canonical),
 			"object_id must equal blake3(canonical) — the invariant ObjectRecordReader::read enforces"
 		);
-		// And what a raw-bytes writer (forge-builder) stores decodes back to
-		// the same chunk a CoW writer would have produced.
+		// And what a raw-bytes writer stores decodes back to the same chunk a
+		// CoW writer would have produced.
 		let decoded = Chunk::decode_canonical(&data)?;
 		assert_eq!(decoded.data, data);
 		assert_eq!(decoded.object_id, chunk.object_id);

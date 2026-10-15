@@ -4,7 +4,7 @@
 //! logic is correct — that `commit()` builds the right bytes and calls
 //! `write_blocks` with them. They cannot prove the *hardware* protocol
 //! itself is correct, since a host-run `cargo test` never executes real
-//! `outb`/`inw`/`outw` port I/O. This module is the live counterpart: write
+//! `outb`/`inb` port I/O. This module is the live counterpart: write
 //! a known pattern via the real [`crate::commit::AtaBlockDevice`], flush,
 //! read it back via the real ATA read path, and compare byte-for-byte.
 //!
@@ -13,9 +13,9 @@
 //! Call [`write_read_roundtrip_test`] against a **disposable, scratch-only
 //! disk image** — never against a real install image. It overwrites
 //! whatever is at the given block unconditionally; it has no way to know
-//! whether that block holds real data. See `build-x86_64-lfstest.sh` for
-//! the harness that builds a minimal throwaway image and boots it under
-//! `kdh` specifically to run this test.
+//! whether that block holds real data. A dedicated harness builds a minimal
+//! throwaway image and boots it in a virtual machine specifically to run
+//! this test.
 
 extern crate alloc;
 
@@ -81,9 +81,15 @@ pub unsafe fn write_read_roundtrip_test(partition_start_lba: u32, block_idx: u64
 		.map_err(|e| crate::Error::InvalidOperation(alloc::format!("readback ATA read failed: {e:?}")))?;
 
 	if readback == pattern {
-		Ok(RoundtripResult { passed: true, first_mismatch_offset: None })
+		Ok(RoundtripResult {
+			passed: true,
+			first_mismatch_offset: None,
+		})
 	} else {
 		let first_mismatch = readback.iter().zip(pattern.iter()).position(|(a, b)| a != b);
-		Ok(RoundtripResult { passed: false, first_mismatch_offset: first_mismatch })
+		Ok(RoundtripResult {
+			passed: false,
+			first_mismatch_offset: first_mismatch,
+		})
 	}
 }

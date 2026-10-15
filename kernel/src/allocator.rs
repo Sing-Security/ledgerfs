@@ -1,6 +1,6 @@
 //! Block allocator for LedgerFS v7
 //!
-//! Per §14 and §25 of ledgerfs-spec-v7.md:
+//! Per §14 and §25 of FORMAT.md:
 //! - Finds free regions for object placement
 //! - Enforces 512-byte alignment
 //! - Maintains emergency reserves (1% or 100MiB min)
@@ -8,9 +8,7 @@
 
 extern crate alloc;
 
-
 use crate::alloc_node::AllocNode;
-use crate::alloc_state::{AllocationState, PhysicalExtent};
 use crate::error::{Error, Result};
 use crate::mode::FsMode;
 
@@ -18,7 +16,7 @@ use crate::mode::FsMode;
 ///
 /// Must equal [`crate::BLOCK_SIZE`] (4 KiB), the granularity every other
 /// piece of this crate's write path allocates/addresses in —
-/// `AllocNode`/`PhysicalExtent`'s block counts (see `disk::MountedVolume::
+/// `AllocNode`/`PhysicalExtent`'s block counts (see `MountedVolume::
 /// bootstrap_genesis`'s `RESERVED_HEADER_BLOCKS`-based extent setup),
 /// `PlacedObject::physical_lba`/`block_count`, and `AtaBlockDevice::
 /// write_blocks`'s `lba` parameter (explicitly documented as "a
@@ -33,7 +31,7 @@ use crate::mode::FsMode;
 /// then zero-padded-and-written) as if it were up to 8x larger than it
 /// actually was, clobbering whatever real, still-referenced content
 /// happened to sit in the extra blocks immediately after it. Found via
-/// code audit while hardening the `/data` write path — no single
+/// code audit while hardening the data volume's write path — no single
 /// small test object triggered it, but any object over 512 bytes (an
 /// `Inode` with a couple of xattrs, a `DirNode` with more than a couple of
 /// entries) would.
@@ -70,7 +68,7 @@ impl AllocatorConfig {
 		let min_reserve = ((total_bytes as f64 * MIN_RESERVE_PERCENT) as u64).max(MIN_RESERVE_BYTES);
 		let recommended_reserve = (total_bytes as f64 * RECOMMENDED_RESERVE_PERCENT) as u64;
 		let reserve_bytes = recommended_reserve.max(min_reserve).min(total_bytes / 4);
-		let reserve_blocks = (reserve_bytes + BLOCK_SIZE_BYTES - 1) / BLOCK_SIZE_BYTES;
+		let reserve_blocks = reserve_bytes.div_ceil(BLOCK_SIZE_BYTES);
 
 		// Warn at 50% reserve consumption
 		let warn_threshold_blocks = reserve_blocks / 2;
@@ -149,7 +147,7 @@ impl Allocator {
 		}
 
 		// Convert size to blocks (round up to a whole BLOCK_SIZE_BYTES block).
-		let block_count = ((size_bytes + BLOCK_SIZE_BYTES - 1) / BLOCK_SIZE_BYTES) as u32;
+		let block_count = size_bytes.div_ceil(BLOCK_SIZE_BYTES) as u32;
 
 		// Check if we have enough space
 		if allow_reserve {
@@ -170,9 +168,13 @@ impl Allocator {
 		// additional alignment to verify here (a leftover check from an
 		// earlier sub-block-granular design was removed — see
 		// `BLOCK_SIZE_BYTES`'s doc comment).
-		let (start_lba, available_blocks) = alloc_node
+		// The extent finder also returns how many contiguous blocks it found,
+		// but `block_count` (the caller's request, already rounded up above)
+		// is the only figure this path needs, so only the start is bound.
+		let start_lba = alloc_node
 			.find_free_extent(block_count)
-			.ok_or_else(|| Error::not_found("No free extent available"))?;
+			.ok_or_else(|| Error::not_found("No free extent available"))?
+			.0;
 
 		// Update free block counts
 		if allow_reserve {
@@ -182,10 +184,11 @@ impl Allocator {
 			self.user_free_blocks -= from_user;
 			self.reserved_free_blocks -= from_reserve;
 
-			// Warn if reserve is being consumed
-			if from_reserve > 0 {
-				// TODO: Emit audit warning
-			}
+			// Drawing the reserve down is not announced anywhere. This crate
+			// has no audit sink and emits no diagnostics of its own, so the
+			// condition is visible only as `reserved_free_blocks` falling; the
+			// audit chain that would carry the warning exists in the format and
+			// is not wired in (`KNOWN_ISSUES.md` §11).
 		} else {
 			self.user_free_blocks -= block_count as u64;
 		}
@@ -204,10 +207,11 @@ impl Allocator {
 
 	/// Check reserve threshold and update mode if needed
 	fn check_reserve_threshold(&mut self) {
-		if self.reserved_free_blocks < self.config.warn_threshold_blocks {
-			// TODO: Emit warning
-		}
-
+		// `warn_threshold_blocks` is not compared against here: crossing it is
+		// a warning with no sink to warn through (`KNOWN_ISSUES.md` §11), so
+		// the threshold is a value a caller can check this counter against
+		// itself. What this method does act on is the transition below, which
+		// is a mode change rather than a message.
 		if self.reserved_free_blocks == 0 {
 			// Reserve exhausted - enter read-only mode
 			self.mode = FsMode::ReadOnlySafe;
@@ -238,6 +242,10 @@ impl Allocator {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	// `AllocationState`/`PhysicalExtent` are only referenced by this module's
+	// fixtures, so they are imported here rather than at the parent's scope.
+	use crate::alloc_state::{AllocationState, PhysicalExtent};
 
 	extern crate alloc;
 	use alloc::boxed::Box;

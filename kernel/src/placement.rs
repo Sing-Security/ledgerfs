@@ -10,15 +10,15 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::alloc_node::AllocNode;
-use crate::allocator::{Allocator, BLOCK_SIZE_BYTES};
+use crate::allocator::Allocator;
 use crate::cow::TxnPlan;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::object::ObjectId;
 use crate::record::ObjectRecord;
 
 /// Physical storage hint for an object
 ///
-/// Per §20 of ledgerfs-spec-v7.md:
+/// Per §20 of FORMAT.md:
 /// - Advisory location for data placement
 /// - Used by allocator to reduce fragmentation
 /// - Must not be trusted for correctness
@@ -99,7 +99,7 @@ impl PlacementEngine {
 			// header whenever the payload lands within 60 bytes of a block
 			// boundary, and the commit dies with `BufferTooSmall`.
 			//
-			// That is what capped a `/data` directory at ~103 entries: the
+			// That is what capped a directory on the data volume at ~103 entries: the
 			// directory node's canonical form reached 4,059 bytes, the
 			// allocator rounded that to one 4,096-byte block, and the writer
 			// needed 4,119. It surfaced as an opaque `Os { code: 4 }` at the
@@ -109,8 +109,7 @@ impl PlacementEngine {
 			// Compression can only shrink the stored form (`ObjectRecordWriter`
 			// falls back to uncompressed when compression does not help), so
 			// header + payload is a safe upper bound.
-			let size_bytes =
-				(new_obj.canonical_bytes.len() + crate::record::ObjectRecordHeader::SIZE) as u64;
+			let size_bytes = (new_obj.canonical_bytes.len() + crate::record::ObjectRecordHeader::SIZE) as u64;
 			let (physical_lba, block_count) = allocator.allocate(&alloc_node, size_bytes, false)?;
 
 			// Update allocation tree - mark exactly block_count blocks as allocated,
@@ -167,10 +166,17 @@ impl PlacementEngine {
 			// `place_transaction` is from the *uncompressed* length plus the
 			// header, which stays a safe upper bound when the stored form is
 			// smaller.
+			// Every record this path writes carries the same type
+			// discriminant. The object model distinguishes chunks, inodes,
+			// directory nodes, and the rest (§7.2), but the placement engine
+			// carries canonical bytes forward without their kind, and nothing
+			// reads the field back: a reader locates an object by its id and
+			// decodes the payload's own header. So this is uniform rather than
+			// wrong about any particular object — but it is not a type.
 			let record = ObjectRecord::from_object_id(
 				placed.object_id,
 				&placed.canonical_bytes,
-				crate::record::ObjectType::Data, // TODO: Determine actual type
+				crate::record::ObjectType::Data,
 				crate::compression::CompressionAlgorithm::Lz4 as u8,
 				0, // No encryption
 			)?;
@@ -231,8 +237,9 @@ mod tests {
 		// still has a 60-byte `ObjectRecordHeader` written in front of it by
 		// `commit()`. Sizing the allocation from the payload alone
 		// under-allocates by exactly that, and the commit dies with
-		// `BufferTooSmall` — which is what capped a `/data` directory at ~103
-		// entries (payload 4,059, one 4,096-byte block allocated, 4,119
+		// `BufferTooSmall` — which is what capped a directory on the data
+		// volume at ~103 entries (payload 4,059, one 4,096-byte block
+		// allocated, 4,119
 		// needed).
 		//
 		// -- Setup & Fixtures
@@ -258,7 +265,10 @@ mod tests {
 			} else {
 				payload_len += 1;
 			}
-			assert!(payload_len > 0 && payload_len < block, "could not land near the boundary");
+			assert!(
+				payload_len > 0 && payload_len < block,
+				"could not land near the boundary"
+			);
 		};
 		let canonical = chunk.encode_canonical()?;
 		let canonical_len = canonical.len();

@@ -1,4 +1,4 @@
-# crucible-ledgerfs-host
+# ledgerfs-host
 
 The `std` half of LedgerFS. It supplies the one `ObjectStore` implementation the
 kernel crate's copy-on-write operations run against, the path and mount
@@ -6,7 +6,7 @@ plumbing, and `Store` — `mkfs`, mount, and the mutation verbs in a single type
 over any `BlockDevice`.
 
 ```rust
-use crucible_ledgerfs_host::{MemBlockDevice, Result, Store};
+use ledgerfs_host::{MemBlockDevice, Result, Store};
 
 fn main() -> Result<()> {
 	let device = MemBlockDevice::new(2048);
@@ -54,8 +54,8 @@ identity convention — see [`EMBEDDING.md`](../EMBEDDING.md). For what the form
 guarantees and what it does not, see [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md).
 
 ```sh
-cargo test -p crucible-ledgerfs-host
-cargo run --example app_store -p crucible-ledgerfs-host
+cargo test -p ledgerfs-host
+cargo run --example app_store -p ledgerfs-host
 ```
 
 ## License

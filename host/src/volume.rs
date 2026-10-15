@@ -9,29 +9,24 @@
 //!
 //! # Why the copy LBAs are what they are
 //!
-//! `forge-builder/src/fs_init.rs`'s `write_superblocks` (mirrored by
-//! `crucible-installer`) writes them at blocks `0`, `1`, `N-2`, `N-1`. The
-//! trailing pair means the last two blocks of a partition are never object
-//! space — which is why `RESERVED_TRAILER_BLOCKS` exists and why the object
-//! scanner stops short of the end.
+//! The format places them at blocks `0`, `1`, `N-2`, `N-1`. The trailing pair
+//! means the last two blocks of a partition are never object space — which is
+//! why `RESERVED_TRAILER_BLOCKS` exists and why the object scanner stops short
+//! of the end.
 
-use crucible_ledgerfs_kernel::object::{ObjectId, ObjectRef, Root, StorageHint};
-use crucible_ledgerfs_kernel::superblock::{CandidateSource, MountSelection, Superblock};
-use crucible_ledgerfs_kernel::{BLOCK_SIZE, NUM_SUPERBLOCK_COPIES};
+use ledgerfs::object::{ObjectId, ObjectRef, Root, StorageHint};
+use ledgerfs::superblock::{CandidateSource, MountSelection, Superblock};
+use ledgerfs::{BLOCK_SIZE, NUM_SUPERBLOCK_COPIES};
 
 use crate::device::BlockDevice;
 use crate::error::{Error, Result};
 
 // `superblock_copy_lbas` is not exported by the kernel crate, so the formula
-// is restated here — and pinned by `test_volume_copy_lbas_match_forge_builder`
-// against the literal array in `fs_init.rs`.
+// is restated here — and pinned by
+// `test_volume_copy_lbas_are_the_leading_and_trailing_pair` against the
+// literal array.
 pub const fn superblock_copy_lbas(total_blocks: u64) -> [u64; NUM_SUPERBLOCK_COPIES] {
-	[
-		0,
-		1,
-		total_blocks.saturating_sub(2),
-		total_blocks.saturating_sub(1),
-	]
+	[0, 1, total_blocks.saturating_sub(2), total_blocks.saturating_sub(1)]
 }
 
 pub struct Volume {
@@ -97,9 +92,10 @@ impl Volume {
 		// error covers two very different volumes, so tell them apart before
 		// reporting it: `mount_select` builds its candidate list only from
 		// copies with `active_commit_seq > 0`, so a volume that is entirely
-		// intact and simply has nothing committed to it (what `fs_init` leaves
-		// behind) lands on the same branch as a destroyed one.
-		let selection = match crucible_ledgerfs_kernel::superblock::mount_select(&copies) {
+		// intact and simply has nothing committed to it (what the image
+		// initialiser leaves behind) lands on the same branch as a destroyed
+		// one.
+		let selection = match ledgerfs::superblock::mount_select(&copies) {
 			Ok(selection) => selection,
 			Err(e) => {
 				return Err(match uncommitted_total_blocks(&copies) {
@@ -109,10 +105,9 @@ impl Volume {
 			}
 		};
 
-		let selected = selected_copy_index(&selection)
-			.ok_or_else(|| Error::Mount {
-				detail: "mount selection named a superblock copy that did not decode".into(),
-			})?;
+		let selected = selected_copy_index(&selection).ok_or_else(|| Error::Mount {
+			detail: "mount selection named a superblock copy that did not decode".into(),
+		})?;
 
 		let superblock = copies[selected].clone().ok_or_else(|| Error::Mount {
 			detail: "mount selection named a superblock copy that did not decode".into(),
@@ -155,9 +150,9 @@ impl Volume {
 	/// Physical block of the active root, or `0` when the volume never
 	/// recorded one (`ACTIVE_ROOT_HINT_OFFSET` = 0 means "scan for it").
 	///
-	/// Every image built so far lands here with `0`: `forge-builder`'s
-	/// `update_superblock_root` sets `active_root_id` and `active_commit_seq`
-	/// but not this. It is an accelerator only, and `DiskObjectStore::locate`
+	/// A writer that sets `active_root_id` and `active_commit_seq` but not this
+	/// leaves `0` here, and a volume built that way scans for its root on
+	/// every mount. It is an accelerator only, and `DiskObjectStore::locate`
 	/// verifies any hint before trusting it.
 	pub fn active_root_hint(&self) -> u64 {
 		self.superblock.active_root_hint
@@ -188,11 +183,10 @@ impl Volume {
 
 	/// Report which superblock copies decoded and whether they agree.
 	///
-	/// A volume built entirely by `forge-builder` is healthy here: `populate`
-	/// and `fs_init` write all four copies. A volume that has been booted may
-	/// not be — `fs-cbl::disk`'s `persist_superblock` updates the primary copy
-	/// only, so a runtime commit leaves copies 1..3 naming the root the volume
-	/// had *before* that commit.
+	/// A volume whose initialiser wrote all four copies, and which nothing has
+	/// committed to since, is healthy here. A writer that updates the primary
+	/// copy only leaves copies 1..3 naming the root the volume had *before*
+	/// that commit.
 	pub fn copy_status(&self) -> CopyStatus {
 		let selected = selected_copy_index(&self.selection).unwrap_or(0);
 		let lbas = superblock_copy_lbas(self.superblock.total_blocks);
@@ -232,9 +226,7 @@ impl Volume {
 /// Fetch all four superblock copies. A copy that will not read or decode is
 /// `None` rather than a hard error — a dead trailing copy is precisely what
 /// the other three exist to survive.
-fn read_superblock_copies(
-	device: &dyn BlockDevice,
-) -> Result<[Option<Superblock>; NUM_SUPERBLOCK_COPIES]> {
+fn read_superblock_copies(device: &dyn BlockDevice) -> Result<[Option<Superblock>; NUM_SUPERBLOCK_COPIES]> {
 	// The trailing pair's LBAs need `total_blocks`, which is only known from a
 	// decoded superblock. The first two sit at fixed LBAs, so read those first
 	// for the geometry, then finish the set.
@@ -290,13 +282,12 @@ pub(crate) fn publish_root_into(superblock: &mut Superblock, root: &Root) {
 /// superblock with `active_commit_seq == 0` — i.e. the volume is intact and
 /// nothing has ever been committed to it.
 ///
-/// This is `fs_init`'s post-condition, and it is a format state rather than a
-/// fault: there is no root because no `commit` has run yet. `None` means at
+/// This is the image initialiser's post-condition, and it is a format state
+/// rather than a fault: there is no root because no `commit` has run yet.
+/// `None` means at
 /// least one decoded copy *is* committed (so the failure is something else) or
 /// nothing decoded at all (damage).
-fn uncommitted_total_blocks(
-	copies: &[Option<Superblock>; NUM_SUPERBLOCK_COPIES],
-) -> Option<u64> {
+fn uncommitted_total_blocks(copies: &[Option<Superblock>; NUM_SUPERBLOCK_COPIES]) -> Option<u64> {
 	let mut total_blocks = None;
 
 	for copy in copies.iter().flatten() {
@@ -328,10 +319,10 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	#[test]
-	fn test_volume_copy_lbas_match_forge_builder() -> Result<()> {
-		// `forge-builder/src/fs_init.rs` and `populate.rs` both write
-		// `[0, 1, N-2, N-1]` literally. If that ever changes, this is where it
-		// should be noticed rather than at a mount that reads four empty blocks.
+	fn test_volume_copy_lbas_are_the_leading_and_trailing_pair() -> Result<()> {
+		// The copies sit at `[0, 1, N-2, N-1]`. If that ever changes, this is
+		// where it should be noticed rather than at a mount that reads four
+		// empty blocks.
 		let lbas = superblock_copy_lbas(4096);
 		assert_eq!(lbas, [0, 1, 4094, 4095]);
 
@@ -345,15 +336,15 @@ mod tests {
 	#[test]
 	fn test_volume_copy_status_reports_a_lagging_copy() -> Result<()> {
 		// A volume whose primary copy names a committed root while the other
-		// three still hold the null root `fs_init` wrote — the state `/data` is
-		// left in after its first boot (see the crate docs).
+		// three still hold the null root the image initialiser wrote — the state
+		// the data volume is left in after its first boot (see the crate docs).
 		let copies = [
 			Some(superblock([0xAB; 32], 1, 4096)),
 			Some(superblock([0u8; 32], 0, 4096)),
 			Some(superblock([0u8; 32], 0, 4096)),
 			Some(superblock([0u8; 32], 0, 4096)),
 		];
-		let selection = crucible_ledgerfs_kernel::superblock::mount_select(&copies)?;
+		let selection = ledgerfs::superblock::mount_select(&copies)?;
 		let volume = Volume {
 			superblock: copies[0].clone().unwrap(),
 			copies,

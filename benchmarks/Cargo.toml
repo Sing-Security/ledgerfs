@@ -13,7 +13,7 @@ license = "Apache-2.0"
 repository = "https://github.com/Sing-Security/ledgerfs"
 
 [dependencies]
-crucible-ledgerfs-host = { path = "../host" }
+ledgerfs-host = { path = "../host" }
 
 # -- The engines LedgerFS is compared against.
 #
@@ -21,6 +21,10 @@ crucible-ledgerfs-host = { path = "../host" }
 # number does not depend on whichever libsqlite3 the host happens to have.
 rusqlite = { version = "0.40", features = ["bundled"] }
 redb = "4"
+# -- The medium record. `statfs` for the filesystem magic (so a tmpfs can be
+# refused rather than silently benchmarked) and `/proc/self/mountinfo` for the
+# device behind the path. There is no std API for either.
+libc = "0.2"
 # -- Result serialisation. One JSON file per run, checked in, rendered into
 # BENCHMARKS.md by a separate renderer so the document cannot drift from the
 # harness that produced it.

@@ -19,7 +19,8 @@
 mod common;
 
 use common::*;
-use crucible_ledgerfs_host::{Error, HostFs, InodeKind, Store};
+use ledgerfs_host::{Error, HostFs, InodeKind, Store};
+use std::os::unix::fs::PermissionsExt;
 
 // region:    --- Mount
 
@@ -67,7 +68,7 @@ fn test_hostfs_mount_refuses_a_device_it_cannot_even_recognise() -> Result<()> {
 	// in one way — it insists on a usable root — but both must first agree that
 	// the device is a LedgerFS volume at all.
 	//
-	// The "valid volume, null root" case (what the kernel's `fs_init` leaves
+	// The "valid volume, null root" case (what the image initialiser leaves
 	// behind, and the reason `Error::VolumeUncommitted` exists) needs a crafted
 	// superblock and lives in `security_media.rs`.
 
@@ -249,7 +250,10 @@ fn test_read_dir_reports_each_entry_with_its_metadata() -> Result<()> {
 	}
 	assert_eq!(
 		listing(store.fs(), "/")?,
-		vec![("d".to_string(), InodeKind::Directory), ("f".to_string(), InodeKind::RegularFile)]
+		vec![
+			("d".to_string(), InodeKind::Directory),
+			("f".to_string(), InodeKind::RegularFile)
+		]
 	);
 	Ok(())
 }
@@ -271,7 +275,10 @@ fn test_read_dir_makes_no_ordering_promise_but_is_stable_within_a_mount() -> Res
 
 	// -- Check
 	assert_eq!(first, second);
-	assert_eq!(first, vec!["a".to_string(), "b".to_string(), "m".to_string(), "z".to_string()]);
+	assert_eq!(
+		first,
+		vec!["a".to_string(), "b".to_string(), "m".to_string(), "z".to_string()]
+	);
 	Ok(())
 }
 
@@ -317,8 +324,14 @@ fn test_stat_of_a_missing_path_names_it() -> Result<()> {
 	with_dir.mkdir("/d", 0o755)?;
 
 	// -- Exec & Check
-	assert!(is_no_such_file(&expect_err("stat /missing", with_dir.stat("/missing")), "/missing"));
-	assert!(is_no_such_file(&expect_err("stat /d/missing", with_dir.stat("/d/missing")), "/d/missing"));
+	assert!(is_no_such_file(
+		&expect_err("stat /missing", with_dir.stat("/missing")),
+		"/missing"
+	));
+	assert!(is_no_such_file(
+		&expect_err("stat /d/missing", with_dir.stat("/d/missing")),
+		"/d/missing"
+	));
 	// A missing path under a *file* cannot be reached at all, so it is the same
 	// answer as any other path through a non-directory.
 	let mut with_file = store(BLOCKS)?;
@@ -401,7 +414,10 @@ fn test_the_entry_ceiling_is_a_count_not_a_byte_budget() -> Result<()> {
 	// -- Exec & Check: and the 401st is still refused for count, not for space
 	let stem = "i0400";
 	let name = format!("{stem}{}", "x".repeat(256 - stem.len()));
-	let e = expect_err("the 401st long-named entry", store.create_file(&format!("/{name}"), 0o644));
+	let e = expect_err(
+		"the 401st long-named entry",
+		store.create_file(&format!("/{name}"), 0o644),
+	);
 	match e {
 		Error::Format(e) => assert!(e.to_string().contains("directory is full"), "{e}"),
 		other => panic!("expected the directory-full error, got {other:?}"),
@@ -414,14 +430,22 @@ fn test_filling_a_directory_with_content_costs_far_more_than_the_entries() -> Re
 	// -- Setup & Fixtures: the *cost* ceiling, which is the one that bites in
 	// practice. Every commit rewrites the whole `DirNode`, so filling a
 	// directory of n entries writes O(n²) bytes of directory data on top of the
-	// content: a 64 MiB volume runs out before 400 long-named files with
+	// content: a volume of this size runs out before 400 long-named files with
 	// content, even though their content is a few hundred bytes each.
 	//
 	// This is why free space is part of the embedding contract and why a caller
 	// with many files in one directory has to watch it. Measured, not assumed:
 	// the test asserts the space consumed is far out of proportion to the
 	// content written.
-	let mut store = store(BIG_BLOCKS)?;
+	//
+	// The volume is sized here rather than taken from `BIG_BLOCKS`, because
+	// `BIG_BLOCKS` no longer exhausts: a file's create and its write are one
+	// transaction now, and the create-then-write pair used to rewrite the
+	// directory node twice per file. At 64 MiB all 400 entries fit where they
+	// previously did not. Half the volume restores the scenario this test is
+	// about — running out on churn rather than on content — at the new cost.
+	const CHURN_BLOCKS: u64 = BIG_BLOCKS / 2;
+	let mut store = store(CHURN_BLOCKS)?;
 	let content = b"d"; // 1 byte each
 	let mut made = 0usize;
 	let start_free = store.free_bytes().expect("free bytes");
@@ -441,8 +465,14 @@ fn test_filling_a_directory_with_content_costs_far_more_than_the_entries() -> Re
 	}
 
 	// -- Check: it stopped short of the count ceiling, on space.
-	assert!(made < 400, "the volume must run out before 400 long-named files (made {made})");
-	assert!(made > 200, "but only by the margin the DirNode churn costs (made {made})");
+	assert!(
+		made < 400,
+		"the volume must run out before 400 long-named files (made {made})"
+	);
+	assert!(
+		made > 200,
+		"but only by the margin the DirNode churn costs (made {made})"
+	);
 
 	let spent = start_free - store.free_bytes().expect("free bytes");
 	let content_written = made as u64; // one byte per file
@@ -472,8 +502,16 @@ fn test_read_file_of_an_empty_file_is_an_empty_vector() -> Result<()> {
 	// -- Check
 	assert_eq!(got, Vec::<u8>::new());
 	assert_eq!(store.read_at("/empty", 0, 0)?, Vec::<u8>::new());
-	assert_eq!(store.read_at("/empty", 0, 4096)?, Vec::<u8>::new(), "asking for more than there is");
-	assert_eq!(store.read_at("/empty", 100, 10)?, Vec::<u8>::new(), "past the end of nothing");
+	assert_eq!(
+		store.read_at("/empty", 0, 4096)?,
+		Vec::<u8>::new(),
+		"asking for more than there is"
+	);
+	assert_eq!(
+		store.read_at("/empty", 100, 10)?,
+		Vec::<u8>::new(),
+		"past the end of nothing"
+	);
 	Ok(())
 }
 
@@ -539,7 +577,10 @@ fn test_read_at_of_a_missing_file_or_a_directory_is_refused() -> Result<()> {
 	store.mkdir("/d", 0o755)?;
 
 	// -- Exec & Check
-	assert!(is_no_such_file(&expect_err("read_at /missing", store.read_at("/missing", 0, 1)), "/missing"));
+	assert!(is_no_such_file(
+		&expect_err("read_at /missing", store.read_at("/missing", 0, 1)),
+		"/missing"
+	));
 	let e = expect_err("read_at a directory", store.read_at("/d", 0, 1));
 	assert!(matches!(e, Error::IsADirectory { .. }), "got {e:?}");
 	Ok(())
@@ -617,6 +658,78 @@ fn test_read_at_works_on_a_file_with_a_hole() -> Result<()> {
 }
 
 // endregion:    --- read_file & read_at
+
+// region:    --- What a read costs on the device
+
+/// A warm point read costs one device read per object on the path.
+///
+/// This is the read path's whole cost model, and it is a count rather than a
+/// duration on purpose: a timing assertion would measure the machine, while a
+/// count is a property of the design. `/d/f` is a two-level path, so the
+/// objects are the root `Inode`, the root `DirNode`, `/d`'s `Inode`, `/d`'s
+/// `DirNode`, `/d/f`'s `Inode`, its extent node and its chunk — seven, and one
+/// read each.
+///
+/// The number that would be *eight* is the one this pins against. A lookup that
+/// reads a candidate block to see whether it holds the wanted object, and then
+/// reads it again to fetch the payload, costs two per object; that is what this
+/// path used to do, and halving it is why the count is asserted exactly. A
+/// change that adds a read here is not necessarily wrong, but it has to be a
+/// deliberate change to this contract rather than a regression nobody noticed.
+#[test]
+fn test_a_warm_point_read_costs_one_device_read_per_object_on_the_path() -> Result<()> {
+	// -- Setup & Fixtures: written and read through one handle, so the id→block
+	// map is warm and no candidate has to be found by scanning.
+	let device = CountingDevice::new(BLOCKS);
+	let counts = device.clone();
+	let mut store = Store::format(Box::new(device), BLOCKS)?;
+	store.mkdir("/d", 0o755)?;
+	store.write_new_file("/d/f", b"payload", 0o644)?;
+
+	// -- Exec
+	counts.reset();
+	let got = store.read_file("/d/f")?;
+
+	// -- Check
+	assert_eq!(got, b"payload");
+	assert_eq!(
+		counts.reads(),
+		7,
+		"one device read per object on the path (root inode, root dir, /d inode, \
+		 /d dir, file inode, extent node, chunk)"
+	);
+	Ok(())
+}
+
+/// The same read on a reused handle is what the second one costs — nothing is
+/// re-read and nothing is cached decoded, so the count holds operation after
+/// operation.
+#[test]
+fn test_a_repeated_warm_read_does_not_get_cheaper_or_dearer() -> Result<()> {
+	// -- Setup & Fixtures
+	let device = CountingDevice::new(BLOCKS);
+	let counts = device.clone();
+	let mut store = Store::format(Box::new(device), BLOCKS)?;
+	store.mkdir("/d", 0o755)?;
+	store.write_new_file("/d/f", b"payload", 0o644)?;
+	let _ = store.read_file("/d/f")?;
+
+	// -- Exec
+	counts.reset();
+	for _ in 0..4 {
+		assert_eq!(store.read_file("/d/f")?, b"payload");
+	}
+
+	// -- Check
+	assert_eq!(
+		counts.reads(),
+		4 * 7,
+		"four reads of the same path cost four times one read of it"
+	);
+	Ok(())
+}
+
+// endregion:    --- What a read costs on the device
 
 // region:    --- Names
 
@@ -714,10 +827,7 @@ fn test_every_verb_refuses_an_over_long_name_the_same_way() -> Result<()> {
 		("append", store.append(&format!("/{long}"), b"x", 0o644)),
 	] {
 		let e = expect_err(what, r);
-		assert!(
-			matches!(e, Error::Format(_)),
-			"{what}: expected Format, got {e:?}"
-		);
+		assert!(matches!(e, Error::Format(_)), "{what}: expected Format, got {e:?}");
 	}
 
 	// -- Check
@@ -775,11 +885,17 @@ fn test_a_file_and_a_directory_name_do_not_collide() -> Result<()> {
 	store.mkdir("/target", 0o755)?;
 
 	// -- Exec: the name is taken by a directory, so a file cannot have it too
-	let e = expect_err("file over a directory name", store.write_new_file("/target", b"x", 0o644));
+	let e = expect_err(
+		"file over a directory name",
+		store.write_new_file("/target", b"x", 0o644),
+	);
 
 	// -- Check
 	assert!(matches!(e, Error::AlreadyExists { .. }), "got {e:?}");
-	assert_eq!(listing(store.fs(), "/")?, vec![("target".to_string(), InodeKind::Directory)]);
+	assert_eq!(
+		listing(store.fs(), "/")?,
+		vec![("target".to_string(), InodeKind::Directory)]
+	);
 	Ok(())
 }
 
@@ -828,11 +944,11 @@ fn test_hostfs_open_refuses_a_read_only_image_for_a_writable_store() -> Result<(
 	std::fs::set_permissions(&image.path, perms)?;
 
 	// -- Exec
-	let r = Store::open_partition(&image.path, crucible_ledgerfs_host::PartitionKind::Data);
+	let r = Store::open_partition(&image.path, ledgerfs_host::PartitionKind::Data);
 
 	// -- Check: this image has no partition table at all, so the *first*
 	// refusal is the geometry one — which is the right order: a caller is told
-	// the image is not a Crucible image before being told anything about
+	// the image is not a partitioned image before being told anything about
 	// permissions.
 	let e = expect_err("open_partition a bare volume file", r);
 	assert!(matches!(e, Error::NoPartitionTable { .. }), "got {e:?}");
@@ -841,7 +957,7 @@ fn test_hostfs_open_refuses_a_read_only_image_for_a_writable_store() -> Result<(
 	// it (on Linux unlinking needs write permission on the directory, not the
 	// file, but a read-only file in a sticky /tmp is worth restoring anyway).
 	let mut perms = std::fs::metadata(&image.path)?.permissions();
-	perms.set_readonly(false);
+	perms.set_mode(perms.mode() | 0o200);
 	std::fs::set_permissions(&image.path, perms)?;
 	Ok(())
 }

@@ -1,6 +1,15 @@
 //! Garbage Collection for LedgerFS v7
 //!
-//! Per §22 of ledgerfs-spec-v7.md:
+//! # Status
+//!
+//! `GcEngine::incremental_cycle` frees what the deadlist names. The safety
+//! checks of §22.2 are all present, but two of them answer conservatively where
+//! the exact answer needs a tree walk that does not exist — each says so where
+//! it is. Reconciliation and the generational tier are not implemented. Nothing
+//! in the host `Store` calls any of it, so a volume written through `Store`
+//! accumulates dead objects and reclaims none: `KNOWN_ISSUES.md` §1 and §11.
+//!
+//! Per §22 of FORMAT.md:
 //! - Deadlist-first approach with refcount validation
 //! - Safe freeing procedure (deadlist → refcount check → snapshot check)
 //! - Tier B: Incremental processing with periodic reconciliation
@@ -26,16 +35,16 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::alloc_node::AllocNode;
 use crate::dedupe::DedupeIndex;
-use crate::object::ObjectId;
 use crate::snapshot::SnapshotRegistry;
 use crate::{Error, Result};
+use ledgerfs::alloc_node::AllocNode;
+use ledgerfs::object::ObjectId;
 
 // region:    --- GcMode
 
 /// Garbage collection mode/tier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum GcMode {
 	/// Tier A: Stop-the-world mark-sweep
@@ -45,6 +54,7 @@ pub enum GcMode {
 	/// Tier B: Incremental deadlist processing with periodic reconciliation
 	/// Processes deadlist incrementally, uses refcounts as candidates
 	/// Conservative fallback on uncertainty, periodic full mark to correct drift
+	#[default]
 	TierB = 1,
 
 	/// Tier C: Generational GC with age tracking
@@ -64,12 +74,6 @@ impl GcMode {
 
 	pub fn to_u8(self) -> u8 {
 		self as u8
-	}
-}
-
-impl Default for GcMode {
-	fn default() -> Self {
-		Self::TierB // Default to incremental mode
 	}
 }
 
@@ -345,11 +349,16 @@ impl GcEngine {
 	/// 2. No active snapshots reference it
 	/// 3. Refcount is zero
 	/// 4. Allocation state allows freeing
+	///
+	/// `_alloc_node` is part of this method's public contract — callers
+	/// hand the allocation tree in so a freeing pass can update it — but
+	/// this implementation only *selects* candidates (step 1-3) and does
+	/// not yet mutate the tree, so the parameter is currently unused.
 	pub fn incremental_cycle(
 		&mut self,
 		dedupe_index: &mut DedupeIndex,
 		snapshot_registry: &SnapshotRegistry,
-		alloc_node: &mut AllocNode,
+		_alloc_node: &mut AllocNode,
 		current_commit_seq: u64,
 		current_timestamp: u64,
 	) -> Result<GcCycleResult> {
@@ -394,9 +403,11 @@ impl GcEngine {
 			// (This would require looking up the physical location and checking alloc_node)
 			// For now, we trust the dedupe index refcount check
 
-			// SAFETY CHECK 5: Verify no snapshots reference this object
-			// TODO: This requires tree traversal of all active snapshots
-			// For Phase 1, we conservatively skip if any snapshots exist
+			// SAFETY CHECK 5: Verify no snapshots reference this object.
+			// Answering that exactly needs a traversal of every active
+			// snapshot's tree, which is not implemented; so the check is
+			// conservative by construction and skips everything while any
+			// snapshot exists at all.
 			if !snapshot_registry.list_ids().is_empty() {
 				skipped_snapshot += 1;
 				continue; // Conservative: skip if snapshots exist
@@ -422,15 +433,21 @@ impl GcEngine {
 
 	/// Perform full reconciliation (streaming mark)
 	///
-	/// Traverses entire object tree to verify refcounts match reality.
-	/// Corrects drift between refcounts and actual references.
+	/// Intended to traverse the object tree to check refcounts against reality
+	/// and correct the drift. It does not traverse anything: the streamed mark
+	/// it would run on does not exist, so the reconciliation is marked complete
+	/// and every counter in the result is zero. Zero here means "not measured",
+	/// not "no drift found". See `KNOWN_ISSUES.md` §11.
 	pub fn reconcile(
 		&mut self,
 		_dedupe_index: &mut DedupeIndex,
 		current_commit_seq: u64,
 	) -> Result<ReconciliationResult> {
-		// TODO: Implement tree traversal
-		// For Phase 1, just mark reconciliation as completed
+		// Marks reconciliation complete and reports zero of everything, because
+		// the streaming mark it would need does not exist. The result is honest
+		// about that — all three counters are zero rather than plausible — but a
+		// caller who reads zero drift as "no drift found" is reading it wrong.
+		// See `KNOWN_ISSUES.md` §11.
 		self.state.mark_reconciliation_completed(current_commit_seq);
 
 		Ok(ReconciliationResult {

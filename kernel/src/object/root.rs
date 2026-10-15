@@ -126,7 +126,7 @@ impl Default for Root {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use alloc::{boxed::Box, vec};
+	use alloc::boxed::Box;
 
 	type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 

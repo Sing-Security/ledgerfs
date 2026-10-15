@@ -16,10 +16,10 @@
 //! is perfectly valid and simply points somewhere wrong.
 //!
 //! So something has to walk the rest of the way up, re-pointing each ancestor's
-//! entry at its CoW-copied child until the chain reaches the real root. Inside
-//! CrucibleOS that something is `fs-cbl/src/disk.rs`'s
-//! `build_create_txn`/`build_write_txn`/`cascade_dir_entry_update` family. This
-//! module is the same three pieces for the host.
+//! entry at its CoW-copied child until the chain reaches the real root. A
+//! volume driver inside an OS keeps that ancestor-cascade step next to its
+//! create/write transaction builders. This module is the same three pieces for
+//! a host process.
 //!
 //! # Not a reimplementation
 //!
@@ -27,14 +27,15 @@
 //! themselves: every `DirNode`, `Inode`, `ExtentNode` and `Chunk` is produced by
 //! the kernel crate's own `cow` functions. What is duplicated is only the
 //! ordering — which parent gets re-pointed at which child, deepest first — and
-//! it is duplicated because the original lives in a crucible crate that reaches
-//! CrucibleOS syscalls, which a host-side store cannot depend on.
+//! it is duplicated because the other implementation of it lives inside an OS,
+//! wired to interfaces a host-side store cannot depend on.
 
-use crucible_ledgerfs_kernel::cow::{
-	cow_update_dir_entry, create_file, mkdir, rename, unlink, write, NewObject, ObjectStore, TxnPlan,
+use ledgerfs::cow::{
+	NewObject, ObjectStore, TxnPlan, cow_update_dir_entry, create_file, create_file_with_data, mkdir, rename, unlink,
+	write,
 };
-use crucible_ledgerfs_kernel::object::{ObjectRef, Root};
-use crucible_ledgerfs_kernel::{Error as LedgerFsError, Result as LedgerFsResult};
+use ledgerfs::object::{Inode, ObjectRef, Root};
+use ledgerfs::{Error as LedgerFsError, Result as LedgerFsResult};
 
 use crate::error::{Error, Result};
 
@@ -73,6 +74,47 @@ pub(crate) fn build_create_txn<S: ObjectStore>(
 	// `mkdir`/`create_file` have already CoW-copied the immediate parent and
 	// put it in `new_root.file_tree_root`. Everything above it still has to
 	// follow, or the volume gets re-rooted one level too deep.
+	let new_parent_ref = txn.new_root.file_tree_root;
+	cascade_dir_entry_update(store, &mut txn, parent_chain(chain)?, new_parent_ref)?;
+
+	Ok(txn)
+}
+
+/// The transaction that creates `chain.last()` as a regular file already
+/// containing `data`, cascaded to a fully consistent new root.
+///
+/// [`build_create_txn`] and [`build_write_txn`] are two commits; this is one.
+/// That matters here and not only in the abstract, because the commit is the
+/// volume's durability point: a caller storing a 256-byte record and waiting for
+/// the write to be durable was paying two of them, and the inode and directory
+/// node the first wrote were rewritten by the second.
+///
+/// The cascade is [`build_create_txn`]'s verbatim — the kernel side leaves
+/// `file_tree_root` at the CoW copy of the immediate parent, exactly as
+/// `mkdir`/`create_file` do, and everything above it still has to follow.
+///
+/// `data` must fit in a single object; the caller splits a longer payload, as
+/// it does for [`build_write_txn`].
+pub(crate) fn build_create_with_data_txn<S: ObjectStore>(
+	store: &S,
+	current_root: &Root,
+	chain: &Chain,
+	data: &[u8],
+	uid: u32,
+	gid: u32,
+	mode: u32,
+) -> Result<TxnPlan> {
+	let (parent_ref, name) = last_of(chain)?;
+
+	let mut txn = create_file_with_data(
+		store,
+		current_root,
+		parent_ref,
+		&name,
+		Inode::new_file(uid, gid, mode),
+		data,
+	)?;
+
 	let new_parent_ref = txn.new_root.file_tree_root;
 	cascade_dir_entry_update(store, &mut txn, parent_chain(chain)?, new_parent_ref)?;
 
@@ -123,11 +165,7 @@ pub(crate) fn build_write_txn<S: ObjectStore>(
 /// `create_file` do, so the cascade that follows is the same one
 /// [`build_create_txn`] runs: the parent's own ancestors still have to be
 /// re-pointed at their copies or the removal is invisible from the volume root.
-pub(crate) fn build_unlink_txn<S: ObjectStore>(
-	store: &S,
-	current_root: &Root,
-	chain: &Chain,
-) -> Result<TxnPlan> {
+pub(crate) fn build_unlink_txn<S: ObjectStore>(store: &S, current_root: &Root, chain: &Chain) -> Result<TxnPlan> {
 	let (parent_ref, name) = last_of(chain)?;
 
 	let mut txn = unlink(store, current_root, parent_ref, &name)?;
@@ -216,14 +254,11 @@ pub(crate) fn cascade_dir_entry_update<S: ObjectStore>(
 /// committed root while the node it names is not yet on disk.
 fn add_dir_pair(
 	txn: &mut TxnPlan,
-	dir_node: &crucible_ledgerfs_kernel::object::DirNode,
-	inode: &crucible_ledgerfs_kernel::object::Inode,
+	dir_node: &ledgerfs::object::DirNode,
+	inode: &ledgerfs::object::Inode,
 ) -> LedgerFsResult<()> {
 	txn.add_object(NewObject::new(dir_node.object_id, dir_node.encode_canonical()?));
-	txn.add_object(
-		NewObject::new(inode.object_id, inode.encode_canonical()?)
-			.with_dependency(dir_node.object_id),
-	);
+	txn.add_object(NewObject::new(inode.object_id, inode.encode_canonical()?).with_dependency(dir_node.object_id));
 	Ok(())
 }
 
@@ -254,7 +289,7 @@ mod tests {
 	#[test]
 	fn test_mutate_parent_chain_drops_the_target() -> Result<()> {
 		// -- Setup & Fixtures
-		use crucible_ledgerfs_kernel::object::ObjectRef;
+		use ledgerfs::object::ObjectRef;
 		let chain = vec![
 			(ObjectRef::zero(), "a".to_string()),
 			(ObjectRef::zero(), "b".to_string()),

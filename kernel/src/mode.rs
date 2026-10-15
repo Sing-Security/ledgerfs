@@ -4,9 +4,10 @@
 //! continuity violations are detected during mount.
 
 /// Filesystem operational mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FsMode {
 	/// Normal read-write mode
+	#[default]
 	ReadWrite,
 
 	/// Read-only safe mode (entered when split-brain or continuity violation detected)
@@ -33,12 +34,6 @@ impl FsMode {
 				"Write operations embargoed in read-only safe mode",
 			)),
 		}
-	}
-}
-
-impl Default for FsMode {
-	fn default() -> Self {
-		FsMode::ReadWrite
 	}
 }
 

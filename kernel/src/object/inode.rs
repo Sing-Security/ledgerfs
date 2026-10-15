@@ -19,7 +19,7 @@ pub enum InodeKind {
 }
 
 /// Security flags for inodes
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityFlags {
 	/// Disable deduplication for this inode
 	pub no_dedupe: bool,
@@ -29,16 +29,6 @@ pub struct SecurityFlags {
 
 	/// Append-only flag
 	pub append_only: bool,
-}
-
-impl Default for SecurityFlags {
-	fn default() -> Self {
-		Self {
-			no_dedupe: false,
-			immutable: false,
-			append_only: false,
-		}
-	}
 }
 
 /// Inode metadata structure
@@ -250,7 +240,11 @@ mod tests {
 		let canonical = inode.encode_canonical()?;
 
 		// -- Check
-		assert_eq!(inode.object_id, ObjectId::from_content(&canonical), "object_id must equal blake3 of its own canonical encoding");
+		assert_eq!(
+			inode.object_id,
+			ObjectId::from_content(&canonical),
+			"object_id must equal blake3 of its own canonical encoding"
+		);
 
 		// -- Check: decode_canonical must recompute the same id from the
 		// bytes, not just deserialize whatever's embedded (there's nothing

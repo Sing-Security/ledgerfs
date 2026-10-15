@@ -1,4 +1,4 @@
-# crucible-ledgerfs-kernel
+# ledgerfs
 
 The `no_std` half of LedgerFS: the on-disk format and the copy-on-write
 operations that produce it. This crate performs no I/O. It reads and writes
@@ -8,7 +8,7 @@ holding a `Vec<u8>`.
 
 The normative description of the bytes is [`FORMAT.md`](../FORMAT.md), which this
 crate cites by section number. If you are looking for how to *use* a volume
-rather than what one looks like, start at the [`crucible-ledgerfs-host`
+rather than what one looks like, start at the [`ledgerfs-host`
 crate](https://github.com/Sing-Security/ledgerfs) instead.
 
 ## Modules
@@ -41,12 +41,12 @@ crate](https://github.com/Sing-Security/ledgerfs) instead.
 |---|---|
 | *(none)* | the format and the CoW operations, `no_std` + `alloc` |
 | `std` | pulls the `lz4` and `zstd` decoders that `compression` gates, so a record written under either policy decodes |
-| `reader` | compiles the ATA PIO path and its six port-I/O instructions. Ring-0 code, x86-64 only. Off by default. |
+| `reader` | compiles the ATA PIO path and its four port-I/O instructions. Ring-0 code, x86-64 only. Off by default. |
 | `data-encryption` | transparent XTS-AES-256 over a volume's raw blocks, applied below the object model, chosen at format time |
-| `temper_sealing` | ML-DSA-65 and SLH-DSA sealing of audit records, via the [`temper`](https://crates.io/crates/temper) crate |
+| `temper_sealing` | ML-DSA-65 and SLH-DSA sealing of audit records, via the [`temper-rs`](https://crates.io/crates/temper-rs) crate |
 
 ```sh
-cargo test -p crucible-ledgerfs-kernel --all-features
+cargo test -p ledgerfs --all-features
 ```
 
 The full matrix, including the combinations that catch people, is in
@@ -60,7 +60,7 @@ modules directly. For a volume you can actually write files to, use the host
 crate:
 
 ```sh
-cargo run --example app_store -p crucible-ledgerfs-host
+cargo run --example app_store -p ledgerfs-host
 ```
 
 ## Notes on the format

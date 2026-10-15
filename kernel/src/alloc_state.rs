@@ -1,6 +1,6 @@
 //! Allocation state tracking for LedgerFS v7
 //!
-//! Per §14 and §23 of ledgerfs-spec-v7.md:
+//! Per §14 and §23 of FORMAT.md:
 //! - Tracks allocation state of physical blocks
 //! - State machine: Free → Allocated → PendingFree/Pinned → Free
 //! - Reserved blocks for emergency operations

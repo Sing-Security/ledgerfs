@@ -16,18 +16,26 @@ carry the whole filesystem around as a byte string.
 
 | crate | | owns |
 |---|---|---|
-| `crucible-ledgerfs-kernel` | `no_std` + `alloc` | the on-disk format — superblock, `ObjectRecord` framing, object model — and the copy-on-write operations, generic over an `ObjectStore`. No I/O of its own. |
-| `crucible-ledgerfs-host` | `std` | one `ObjectStore` over a `BlockDevice`, the path and mount plumbing, and `Store`: `mkfs`, mount, and the mutation verbs. This is what an application links. |
+| `ledgerfs` | `no_std` + `alloc` | the on-disk format — superblock, `ObjectRecord` framing, object model — and the copy-on-write operations, generic over an `ObjectStore`. No I/O of its own. |
+| `ledgerfs-host` | `std` | one `ObjectStore` over a `BlockDevice`, the path and mount plumbing, and `Store`: `mkfs`, mount, and the mutation verbs. This is what an application links. |
 
 The kernel crate is the only place any on-disk offset or checksum is defined.
 The host crate re-derives neither. Where the kernel is compiled into a kernel,
 it also carries an ATA PIO reader and writer (`reader` feature); a userspace
 consumer takes the crate without it.
 
+Two more directories are in the workspace and are not published. `benchmarks/`
+is the comparison harness behind `BENCHMARKS.md`. `pending/` holds the
+subsystems that are implemented and tested but that nothing in the shipping path
+calls — the dedupe index, snapshots, the scrubber, GC safety rules and
+content-defined chunking. `FORMAT.md` §44 calls those Tier B and tells a reader
+to treat them as "not available", so they build and test here and are shipped to
+nobody.
+
 ## Example
 
 ```rust
-use crucible_ledgerfs_host::{MemBlockDevice, Result, Store};
+use ledgerfs_host::{MemBlockDevice, Result, Store};
 
 fn main() -> Result<()> {
 	// 8 MiB of volume living in this process's heap. The clone is how we get
@@ -62,9 +70,10 @@ partition. Runnable versions: `cargo run --example app_store` (the contract in
 
 ## What it guarantees
 
-- **Atomic commit.** A mutation is one transaction: place the objects, write the
-  allocator snapshot, write the superblock copies, with a device barrier between
-  each stage. The order is load-bearing and not interchangeable.
+- **Atomic commit.** A mutation is one transaction: place the objects and write
+  the allocator snapshot, one device barrier, then the superblock copies, then
+  the barrier that commits them. The order is load-bearing and not
+  interchangeable.
 - **Crash consistency.** The superblock is the last write, and it names the root
   by content. A crash yields the old tree or the new one, never a blend. The
   snapshot-before-superblock order exists specifically so a published root always
@@ -112,13 +121,17 @@ partition. Runnable versions: `cargo run --example app_store` (the contract in
 ## Building
 
 ```sh
-cargo test -p crucible-ledgerfs-kernel --all-features
-cargo test -p crucible-ledgerfs-host
+cargo test -p ledgerfs --all-features
+cargo test -p ledgerfs-host
 ```
 
 The kernel is `no_std` and has a feature matrix; see
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full list. Both published crates
-build on stable Rust 1.89. The benchmark harness is not published and needs 1.90.
+build on stable Rust 1.89. The benchmark harness is not published and needs 1.90,
+because `redb` does.
+
+[`rust-toolchain.toml`](rust-toolchain.toml) pins development to current stable
+with rustfmt and clippy, and says why it is not pinned to the floor.
 
 ## License
 

@@ -4,7 +4,7 @@
 //! writable side. Two kinds of target, which is the whole point of the
 //! [`BlockDevice`] seam:
 //!
-//! - a **Crucible image**, where the volume is a partition (`--part`), and
+//! - a **partitioned image**, where the volume is a partition (`--part`), and
 //! - a **bare file**, where the file *is* the volume (`--bare`).
 //!
 //! Both go through the same `Store`, the same commit protocol and the same
@@ -22,13 +22,13 @@
 //! lfs-write <SRC>    compact <DEST>  [--bare]
 //! ```
 //!
-//! [`BlockDevice`]: crucible_ledgerfs_host::BlockDevice
+//! [`BlockDevice`]: ledgerfs_host::BlockDevice
 
 use std::path::{Path, PathBuf};
 
-use crucible_ledgerfs_host::{
-	BLOCK_SIZE, BlockDevice, Error, FileBlockDevice, InodeKind, PartitionKind, Result, Store,
-	find_partition, rebuild_into,
+use ledgerfs_host::{
+	BLOCK_SIZE, BlockDevice, Error, FileBlockDevice, InodeKind, PartitionKind, Result, Store, find_partition,
+	rebuild_into,
 };
 
 // region:    --- Cli
@@ -45,8 +45,8 @@ struct Cli {
 }
 
 /// Which partition `mkfs`/`mkdir`/`put` touch when `--bare` is not given.
-/// `/data` is the volume an application writes to; `/system` is the OS image,
-/// built by `forge-builder` and not something a host tool should be mutating.
+/// The data volume is what an application writes to; the system volume is the
+/// sealed OS image, and not something a host tool should be mutating.
 const DEFAULT_PART: PartitionKind = PartitionKind::Data;
 
 const USAGE: &str = "\
@@ -83,17 +83,22 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 				continue;
 			}
 			"--part" => {
-				let value = it.next().ok_or_else(|| Error::Usage(format!("--part needs a value\n\n{USAGE}")))?;
-				part = PartitionKind::parse(&value).ok_or_else(|| {
-					Error::Usage(format!("unknown partition '{value}' — expected system or data"))
-				})?;
+				let value = it
+					.next()
+					.ok_or_else(|| Error::Usage(format!("--part needs a value\n\n{USAGE}")))?;
+				part = PartitionKind::parse(&value)
+					.ok_or_else(|| Error::Usage(format!("unknown partition '{value}' — expected system or data")))?;
 				continue;
 			}
 			"--blocks" => {
-				let value = it.next().ok_or_else(|| Error::Usage(format!("--blocks needs a value\n\n{USAGE}")))?;
-				blocks = Some(value.parse::<u64>().map_err(|_| {
-					Error::Usage(format!("--blocks: '{value}' is not a block count"))
-				})?);
+				let value = it
+					.next()
+					.ok_or_else(|| Error::Usage(format!("--blocks needs a value\n\n{USAGE}")))?;
+				blocks = Some(
+					value
+						.parse::<u64>()
+						.map_err(|_| Error::Usage(format!("--blocks: '{value}' is not a block count")))?,
+				);
 				continue;
 			}
 			_ => {}
@@ -217,8 +222,19 @@ fn cmd_mkfs(cli: &Cli) -> Result<()> {
 	let store = Store::format(device, total_blocks)?;
 
 	println!("formatted   {}", cli.target.display());
-	println!("  target    {}", if cli.bare { "bare volume file".to_string() } else { format!("{} partition", cli.part.label()) });
-	println!("  blocks    {} ({} bytes)", total_blocks, total_blocks * BLOCK_SIZE as u64);
+	println!(
+		"  target    {}",
+		if cli.bare {
+			"bare volume file".to_string()
+		} else {
+			format!("{} partition", cli.part.label())
+		}
+	);
+	println!(
+		"  blocks    {} ({} bytes)",
+		total_blocks,
+		total_blocks * BLOCK_SIZE as u64
+	);
 	println!("  commit    seq {}", store.commit_seq());
 	println!("  root      {}", store.persisted_root_ref().object_id.to_hex());
 
@@ -242,14 +258,26 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 	println!("  blocks    {}", volume.total_blocks());
 	println!("  commit    seq {}", store.commit_seq());
 	println!("  root      {}", store.persisted_root_ref().object_id.to_hex());
-	println!("  root_hint {}{}", store.persisted_root_ref().hint.0, if store.persisted_root_ref().hint.0 == 0 { "  (0 = scan for it)" } else { "" });
+	println!(
+		"  root_hint {}{}",
+		store.persisted_root_ref().hint.0,
+		if store.persisted_root_ref().hint.0 == 0 {
+			"  (0 = scan for it)"
+		} else {
+			""
+		}
+	);
 
 	let status = volume.copy_status();
 	println!(
 		"  copies    {}/{} decoded{}",
 		status.decoded_count(),
 		status.lbas.len(),
-		if status.is_healthy() { ", all agree" } else { " — they DISAGREE" }
+		if status.is_healthy() {
+			", all agree"
+		} else {
+			" — they DISAGREE"
+		}
 	);
 
 	println!();
@@ -430,7 +458,7 @@ fn cmd_compact(cli: &Cli) -> Result<()> {
 		_ => {
 			return Err(Error::Usage(format!(
 				"compact takes exactly one destination path\n\n{USAGE}"
-			)))
+			)));
 		}
 	};
 	if dest.exists() {
@@ -506,8 +534,18 @@ fn cmd_compact(cli: &Cli) -> Result<()> {
 	}
 
 	println!("compacted   {} -> {}", cli.target.display(), dest.display());
-	println!("  entries   {} ({} dirs, {} files, {} bytes)", expected.len(), stats.dirs, stats.files, stats.bytes);
-	println!("  free      {} -> {} bytes", free_before.unwrap_or(0), free_after.unwrap_or(0));
+	println!(
+		"  entries   {} ({} dirs, {} files, {} bytes)",
+		expected.len(),
+		stats.dirs,
+		stats.files,
+		stats.bytes
+	);
+	println!(
+		"  free      {} -> {} bytes",
+		free_before.unwrap_or(0),
+		free_after.unwrap_or(0)
+	);
 	println!("  verified  every path, size and byte matches the source");
 	println!("  next      rename {} over {}", dest.display(), cli.target.display());
 	Ok(())
@@ -538,9 +576,7 @@ fn open_target(cli: &Cli, access: Access) -> Result<(BoxedDevice, u64)> {
 	if cli.bare {
 		let device = match access {
 			Access::Create => FileBlockDevice::create(&cli.target, bare_size(cli)?)?,
-			Access::ReadWrite => {
-				FileBlockDevice::open_rw(&cli.target, 0, existing_len(&cli.target)?)?
-			}
+			Access::ReadWrite => FileBlockDevice::open_rw(&cli.target, 0, existing_len(&cli.target)?)?,
 			Access::ReadOnly => FileBlockDevice::open(&cli.target, 0, existing_len(&cli.target)?)?,
 		};
 
@@ -554,9 +590,7 @@ fn open_target(cli: &Cli, access: Access) -> Result<(BoxedDevice, u64)> {
 			Access::ReadOnly => Box::new(FileBlockDevice::open(&cli.target, start, size)?),
 			// `mkfs` on a partition cannot choose its size — the partition table
 			// already fixed it — so creating and re-opening are the same thing.
-			Access::Create | Access::ReadWrite => {
-				Box::new(FileBlockDevice::open_rw(&cli.target, start, size)?)
-			}
+			Access::Create | Access::ReadWrite => Box::new(FileBlockDevice::open_rw(&cli.target, start, size)?),
 		};
 
 		Ok((device, size / BLOCK_SIZE as u64))
@@ -597,7 +631,11 @@ type BoxedDevice = Box<dyn BlockDevice>;
 fn normalise(path: &str) -> String {
 	let trimmed = path.trim_end_matches('/');
 	if trimmed.starts_with('/') {
-		return if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() };
+		return if trimmed.is_empty() {
+			"/".to_string()
+		} else {
+			trimmed.to_string()
+		};
 	}
 	format!("/{trimmed}")
 }

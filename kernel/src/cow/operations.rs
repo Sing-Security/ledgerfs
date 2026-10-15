@@ -210,9 +210,103 @@ pub fn write<S: ObjectStore>(
 	Ok(txn)
 }
 
+/// Create a new regular file under `parent_dir_ref`, already containing
+/// `data`.
+///
+/// [`create_file`] and [`write()`] as one transaction. They are one operation
+/// here because a caller that wants a file *with* content pays twice
+/// otherwise: the create writes a file inode and a directory node that the
+/// write immediately rewrites, and on a volume whose durability point is the
+/// commit, two commits are two durability points for one logical operation.
+///
+/// `data` must fit in a single object. Splitting a longer payload across
+/// objects is the caller's job, exactly as it is for [`write()`].
+///
+/// `file_inode` is the file's identity — `Inode::new_file(uid, gid, mode)`,
+/// the same inode [`create_file`] builds — taken **in its unwritten state**:
+/// this function fills in `size` and `content_ref` and computes the final
+/// `object_id`. It is a parameter rather than three (`uid`, `gid`, `mode`)
+/// because the owner and mode are the caller's and this function's job is the
+/// half that depends on `data`; passing them separately would also put the
+/// function over the argument-count limit the rest of this crate keeps to.
+/// Anything but a regular file is refused, so the signature cannot be used to
+/// build a directory holding a chunk.
+///
+/// `new_root.file_tree_root` ends up at the CoW copy of the **immediate
+/// parent**, not at the volume root — the same single-level caveat
+/// [`create_file`] documents.
+pub fn create_file_with_data<S: ObjectStore>(
+	store: &S,
+	root: &Root,
+	parent_dir_ref: ObjectRef,
+	name: &str,
+	mut file_inode: Inode,
+	data: &[u8],
+) -> Result<TxnPlan> {
+	if file_inode.kind != InodeKind::RegularFile {
+		return Err(Error::invalid_operation(
+			"create_file_with_data: the inode must name a regular file",
+		));
+	}
+
+	// Same construction as `write`, and the same trap: the chunk's *stored*
+	// id must come from its canonical (postcard-wrapped) bytes, never from
+	// `chunk.object_id`, or every read of it fails to decode. See `write`'s
+	// comment for the full account.
+	let chunk = Chunk::new(data.to_vec());
+	let chunk_canonical = chunk.encode_canonical()?;
+	let chunk_stored_id = ObjectId::from_content(&chunk_canonical);
+
+	let extent = ExtentDescriptor {
+		logical_offset: 0,
+		length: data.len() as u64,
+		chunk_id: chunk_stored_id,
+		chunk_hint: StorageHint::zero(),
+		chunk_offset: 0,
+	};
+
+	let mut extent_node = ExtentNode::new_leaf();
+	extent_node.insert_extent(extent)?;
+	extent_node.update_object_id();
+
+	// The caller's inode, taken straight to its written state rather than
+	// created empty and rewritten.
+	file_inode.size = data.len() as u64;
+	file_inode.content_ref = ObjectRef::from_id(extent_node.object_id);
+	file_inode.update_object_id();
+
+	let mut txn = TxnPlan::new(ObjectRef::from_id(root.object_id), root.next_commit());
+	txn.add_object(NewObject::new(chunk_stored_id, chunk_canonical));
+	txn.add_object(
+		NewObject::new(extent_node.object_id, extent_node.encode_canonical()?).with_dependency(chunk_stored_id),
+	);
+	txn.add_object(
+		NewObject::new(file_inode.object_id, file_inode.encode_canonical()?).with_dependency(extent_node.object_id),
+	);
+
+	if !parent_dir_ref.is_zero() {
+		let (parent_dir_node, parent_inode) =
+			cow_insert_dir_entry(store, parent_dir_ref, name, ObjectRef::from_id(file_inode.object_id))?;
+
+		txn.add_object(
+			NewObject::new(parent_dir_node.object_id, parent_dir_node.encode_canonical()?)
+				.with_dependency(file_inode.object_id),
+		);
+		txn.add_object(
+			NewObject::new(parent_inode.object_id, parent_inode.encode_canonical()?)
+				.with_dependency(parent_dir_node.object_id),
+		);
+		txn.new_root.file_tree_root = ObjectRef::from_id(parent_inode.object_id);
+	} else {
+		txn.new_root.file_tree_root = ObjectRef::from_id(file_inode.object_id);
+	}
+
+	Ok(txn)
+}
+
 /// CoW-copy `parent_inode_ref`'s directory to re-point an **existing**
 /// entry named `name` at `new_child_ref`, without inserting or removing an
-/// entry. This is [`write`]'s missing "propagate to parent" half — see
+/// entry. This is [`write()`]'s missing "propagate to parent" half — see
 /// `write`'s doc comment — and is also reused by [`rename`] internally.
 ///
 /// Errors if `name` doesn't exist in the parent (nothing to update).
@@ -246,14 +340,12 @@ pub fn cow_update_dir_entry<S: ObjectStore>(
 
 /// Remove `name` from the directory at `parent_dir_ref`.
 ///
-/// Ports the semantics the runtime volume driver's in-memory `Unlink`
-/// handler already established and tested: a missing source is an error (not
-/// a silent no-op), and unlinking a directory is refused (POSIX
-/// semantics — use a dedicated `rmdir` for that, not implemented in this
-/// module).
+/// The semantics are the POSIX ones: a missing source is an error (not a
+/// silent no-op), and unlinking a directory is refused — use a dedicated
+/// `rmdir` for that, not implemented in this module.
 ///
-/// Unlike the runtime volume driver's old `BTreeMap`-based tree, there's no separate "free
-/// the node" step here: the removed inode simply becomes unreachable from
+/// There is no separate "free the node" step here: the removed inode simply
+/// becomes unreachable from
 /// the new root once this txn commits (nothing in `new_objects`
 /// references it), which is what makes it eligible for GC — there's no
 /// flat node table to leak from in a content-addressed model.
@@ -302,9 +394,9 @@ pub fn unlink<S: ObjectStore>(store: &S, root: &Root, parent_dir_ref: ObjectRef,
 /// from `dir_inode_ref` (including `dir_inode_ref` itself)?
 ///
 /// Used by [`rename`]'s cycle guard. This content-addressed model has no
-/// `.parent` back-pointers (unlike the runtime volume driver's old in-memory tree, which
-/// could check "moving into own descendant" by walking *up* from the
-/// destination) — the only way to ask "is B inside A?" is to walk down
+/// `.parent` back-pointers, so there is no way to check "moving into own
+/// descendant" by walking *up* from the destination — the only way to ask
+/// "is B inside A?" is to walk down
 /// from A looking for B. `depth_budget` is a defensive backstop against
 /// pathological/malformed trees, not a realistic limit — mirrors the
 /// bounded-hop-count pattern already used elsewhere in this codebase for
@@ -320,7 +412,9 @@ fn dir_contains_inode<S: ObjectStore>(
 		return Ok(true);
 	}
 	if depth_budget == 0 {
-		return Err(Error::invalid_operation("rename: directory tree too deep to safely check for cycles"));
+		return Err(Error::invalid_operation(
+			"rename: directory tree too deep to safely check for cycles",
+		));
 	}
 	let inode = store.get_inode(dir_inode_ref)?;
 	if inode.kind != InodeKind::Directory || inode.content_ref.is_zero() {
@@ -342,14 +436,11 @@ fn dir_contains_inode<S: ObjectStore>(
 /// `new_parent_dir_ref` (pass the same ref for both for a same-directory
 /// rename).
 ///
-/// Ports the semantics the runtime volume driver's in-memory `Rename`
-/// handler already established and tested: a missing source is an error,
-/// overwriting an existing destination is only permitted when neither side
-/// is a directory (the old destination node simply becomes unreachable —
-/// see [`unlink`]'s doc comment on why there's no separate free step), and
-/// moving a directory into itself or one of its own descendants is
-/// refused. The cycle check necessarily works differently than the runtime
-/// volume driver's old version — see [`dir_contains_inode`].
+/// A missing source is an error, overwriting an existing destination is only
+/// permitted when neither side is a directory (the old destination node simply
+/// becomes unreachable — see [`unlink`]'s doc comment on why there's no
+/// separate free step), and moving a directory into itself or one of its own
+/// descendants is refused, by the downward walk in `dir_contains_inode`.
 ///
 /// # `file_tree_root` caveat for cross-directory renames
 ///
@@ -397,26 +488,35 @@ pub fn rename<S: ObjectStore>(
 	if moved_inode.kind == InodeKind::Directory
 		&& dir_contains_inode(store, moved_ref, new_parent_dir_ref.object_id, 10_000)?
 	{
-		return Err(Error::invalid_operation("rename: cannot move a directory into itself or a descendant"));
+		return Err(Error::invalid_operation(
+			"rename: cannot move a directory into itself or a descendant",
+		));
 	}
 
 	let new_parent_inode_current = store.get_inode(new_parent_dir_ref)?;
 	if new_parent_inode_current.kind != InodeKind::Directory {
-		return Err(Error::invalid_operation("rename: destination parent is not a directory"));
+		return Err(Error::invalid_operation(
+			"rename: destination parent is not a directory",
+		));
 	}
-	let existing_new_dir_node =
-		if new_parent_inode_current.content_ref.is_zero() { None } else { Some(store.get_dir_node(new_parent_inode_current.content_ref)?) };
-	if let Some(ref dn) = existing_new_dir_node {
-		if let Ok(existing_pos) = dn.entries.binary_search_by(|e| e.name.as_str().cmp(new_name)) {
-			let existing_entry = &dn.entries[existing_pos];
-			if existing_entry.inode_id != moved_entry.inode_id {
-				let existing_inode = store.get_inode(ObjectRef::from_id(existing_entry.inode_id))?;
-				if existing_inode.kind == InodeKind::Directory || moved_inode.kind == InodeKind::Directory {
-					return Err(Error::invalid_operation("rename: destination exists and is a directory"));
-				}
-				// Overwriting a file is fine — the replaced node just
-				// becomes unreachable from the new root once committed.
+	let existing_new_dir_node = if new_parent_inode_current.content_ref.is_zero() {
+		None
+	} else {
+		Some(store.get_dir_node(new_parent_inode_current.content_ref)?)
+	};
+	if let Some(ref dn) = existing_new_dir_node
+		&& let Ok(existing_pos) = dn.entries.binary_search_by(|e| e.name.as_str().cmp(new_name))
+	{
+		let existing_entry = &dn.entries[existing_pos];
+		if existing_entry.inode_id != moved_entry.inode_id {
+			let existing_inode = store.get_inode(ObjectRef::from_id(existing_entry.inode_id))?;
+			if existing_inode.kind == InodeKind::Directory || moved_inode.kind == InodeKind::Directory {
+				return Err(Error::invalid_operation(
+					"rename: destination exists and is a directory",
+				));
 			}
+			// Overwriting a file is fine — the replaced node just
+			// becomes unreachable from the new root once committed.
 		}
 	}
 
@@ -429,7 +529,10 @@ pub fn rename<S: ObjectStore>(
 	new_old_parent_inode.update_object_id();
 
 	let mut txn = TxnPlan::new(ObjectRef::from_id(root.object_id), root.next_commit());
-	txn.add_object(NewObject::new(new_old_dir_node.object_id, new_old_dir_node.encode_canonical()?));
+	txn.add_object(NewObject::new(
+		new_old_dir_node.object_id,
+		new_old_dir_node.encode_canonical()?,
+	));
 	txn.add_object(
 		NewObject::new(new_old_parent_inode.object_id, new_old_parent_inode.encode_canonical()?)
 			.with_dependency(new_old_dir_node.object_id),
@@ -448,7 +551,9 @@ pub fn rename<S: ObjectStore>(
 		pi.content_ref = ObjectRef::from_id(dn.object_id);
 		pi.update_object_id();
 
-		txn.add_object(NewObject::new(dn.object_id, dn.encode_canonical()?).with_dependency(new_old_dir_node.object_id));
+		txn.add_object(
+			NewObject::new(dn.object_id, dn.encode_canonical()?).with_dependency(new_old_dir_node.object_id),
+		);
 		txn.add_object(NewObject::new(pi.object_id, pi.encode_canonical()?).with_dependency(dn.object_id));
 		txn.new_root.file_tree_root = ObjectRef::from_id(pi.object_id);
 	} else {
@@ -463,7 +568,8 @@ pub fn rename<S: ObjectStore>(
 		new_parent_inode.update_object_id();
 
 		txn.add_object(
-			NewObject::new(new_dir_node.object_id, new_dir_node.encode_canonical()?).with_dependency(moved_entry.inode_id),
+			NewObject::new(new_dir_node.object_id, new_dir_node.encode_canonical()?)
+				.with_dependency(moved_entry.inode_id),
 		);
 		txn.add_object(
 			NewObject::new(new_parent_inode.object_id, new_parent_inode.encode_canonical()?)
@@ -483,6 +589,10 @@ pub fn rename<S: ObjectStore>(
 ///
 /// Returns the bytes read.  Returns an empty `Vec` when the file is empty or
 /// `offset` is at/beyond the end of the file.
+///
+/// This is [`read_inode`] plus the fetch of the inode it needs. A caller that
+/// already holds the inode — anything that resolved the path before deciding
+/// how much to ask for — should call `read_inode` and save the device read.
 pub fn read<S: ObjectStore>(
 	store: &S,
 	_root: &Root,
@@ -499,13 +609,36 @@ pub fn read<S: ObjectStore>(
 		return Err(Error::invalid_operation("not a regular file"));
 	}
 
+	read_inode(store, &inode, offset, length)
+}
+
+/// Read up to `length` bytes from a file whose [`Inode`] the caller already has.
+///
+/// # Why this is a separate entry point
+///
+/// [`read`] fetches the inode to answer three questions — is it a regular file,
+/// how long is it, and where is its content — and *then* reads the bytes. A
+/// caller that has already resolved the inode to decide what to ask for (the
+/// host's path walk holds one before it asks for a range) has those three
+/// answers in hand, and re-fetching the same object is a second read of the
+/// same block for information the caller is holding. `read` is this function
+/// plus that fetch, so the two cannot drift.
+///
+/// The inode is still validated here rather than trusted: kind, empty content
+/// and the clamped range are all checked exactly as [`read`] checks them, so a
+/// caller that skips the wrapper gets the same errors and the same bytes.
+pub fn read_inode<S: ObjectStore>(store: &S, inode: &Inode, offset: u64, length: usize) -> Result<Vec<u8>> {
+	if inode.kind != InodeKind::RegularFile {
+		return Err(Error::invalid_operation("not a regular file"));
+	}
+
 	// Empty file.
 	if inode.content_ref.is_zero() || inode.size == 0 {
 		return Ok(Vec::new());
 	}
 
 	// Clamp the read range to [offset, file_size).
-	if offset >= inode.size {
+	if offset >= inode.size || length == 0 {
 		return Ok(Vec::new());
 	}
 	let read_end = (offset + length as u64).min(inode.size);
@@ -764,7 +897,7 @@ mod tests {
 		let txn = mkdir(&store, &root, parent_ref, "testdir", 1000, 1000, 0o755)?;
 
 		// -- Check
-		assert!(txn.new_objects.len() >= 1);
+		assert!(!txn.new_objects.is_empty());
 		assert_eq!(txn.new_root.commit_seq, root.commit_seq + 1);
 
 		Ok(())
@@ -783,7 +916,10 @@ mod tests {
 		let txn = mkdir(&store, &root, ObjectRef::zero(), "toplevel", 0, 0, 0o755)?;
 
 		// -- Check
-		assert!(!txn.new_root.file_tree_root.is_zero(), "file_tree_root must be populated, not left zero");
+		assert!(
+			!txn.new_root.file_tree_root.is_zero(),
+			"file_tree_root must be populated, not left zero"
+		);
 		let root_dir_inode = txn
 			.new_objects
 			.values()
@@ -810,14 +946,21 @@ mod tests {
 		// -- Check: file_tree_root must point at the (CoW-copied) *parent*,
 		// not the new file inode — the parent is what changed at the top of
 		// this one-level chain.
-		assert_ne!(txn.new_root.file_tree_root.object_id, parent_ref.object_id, "must be a NEW object id (CoW)");
+		assert_ne!(
+			txn.new_root.file_tree_root.object_id, parent_ref.object_id,
+			"must be a NEW object id (CoW)"
+		);
 		let top = txn
 			.new_objects
 			.values()
 			.find(|obj| obj.object_id == txn.new_root.file_tree_root.object_id)
 			.expect("file_tree_root must point at an object actually in this txn");
 		let decoded = Inode::decode_canonical(&top.canonical_bytes)?;
-		assert_eq!(decoded.kind, InodeKind::Directory, "file_tree_root after create_file(with parent) must be the parent dir, not the file");
+		assert_eq!(
+			decoded.kind,
+			InodeKind::Directory,
+			"file_tree_root after create_file(with parent) must be the parent dir, not the file"
+		);
 
 		Ok(())
 	}
@@ -833,8 +976,110 @@ mod tests {
 		let txn = create_file(&store, &root, parent_ref, "test.txt", 1000, 1000, 0o644)?;
 
 		// -- Check
-		assert!(txn.new_objects.len() >= 1);
+		assert!(!txn.new_objects.is_empty());
 		assert_eq!(txn.new_root.commit_seq, root.commit_seq + 1);
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_operations_create_file_with_data_commits_the_file_already_written() -> TestResult<()> {
+		// -- Setup & Fixtures: a committed parent to create into.
+		let mut store = InMemoryObjectStore::new();
+		let root = Root::new();
+		let genesis = mkdir(&store, &root, ObjectRef::zero(), "", 0, 0, 0o755)?;
+		store.apply_txn(&genesis);
+		let parent_ref = ObjectRef::from_id(genesis.new_root.file_tree_root.object_id);
+		let payload = b"one transaction, not two";
+
+		// -- Exec
+		let txn = create_file_with_data(
+			&store,
+			&genesis.new_root,
+			parent_ref,
+			"f.txt",
+			Inode::new_file(1000, 1000, 0o644),
+			payload,
+		)?;
+
+		// -- Check: follow the committed root down to the entry, the way a
+		// reader would, and confirm the inode it reaches is already written.
+		// This is the whole point of the operation: `create_file` + `write`
+		// reaches the same shape in two transactions, the second of which
+		// rewrites this inode and this directory node.
+		let top = txn
+			.new_objects
+			.values()
+			.find(|obj| obj.object_id == txn.new_root.file_tree_root.object_id)
+			.expect("file_tree_root must point at an object actually in this txn");
+		let top_inode = Inode::decode_canonical(&top.canonical_bytes)?;
+		assert_eq!(
+			top_inode.kind,
+			InodeKind::Directory,
+			"the root of this txn is the parent"
+		);
+
+		let dir_obj = txn
+			.new_objects
+			.values()
+			.find(|obj| obj.object_id == top_inode.content_ref.object_id)
+			.expect("the parent's directory node must be in this txn too");
+		let dir = DirNode::decode_canonical(&dir_obj.canonical_bytes)?;
+		let file_id = dir
+			.entries
+			.iter()
+			.find(|e| e.name == "f.txt")
+			.expect("the new file must be entered in its parent")
+			.inode_id;
+
+		let file_obj = txn
+			.new_objects
+			.values()
+			.find(|obj| obj.object_id == file_id)
+			.expect("the entry must name an object in this txn");
+		let file_inode = Inode::decode_canonical(&file_obj.canonical_bytes)?;
+		assert_eq!(file_inode.kind, InodeKind::RegularFile);
+		assert_eq!(
+			file_inode.size,
+			payload.len() as u64,
+			"the size is the write's, not zero"
+		);
+		assert!(
+			!file_inode.content_ref.is_zero(),
+			"a file created with data must point at its extent node"
+		);
+
+		// ...and once committed, the content is readable straight back through
+		// the chain this one transaction placed.
+		store.apply_txn(&txn);
+		let read_back = read(&store, &txn.new_root, ObjectRef::from_id(file_id), 0, payload.len())?;
+		assert_eq!(read_back, payload);
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_operations_create_file_with_data_refuses_a_directory_inode() -> TestResult<()> {
+		// -- Setup & Fixtures: an inode that is not a regular file.
+		let store = InMemoryObjectStore::new();
+		let root = Root::new();
+
+		// -- Exec
+		let result = create_file_with_data(
+			&store,
+			&root,
+			ObjectRef::zero(),
+			"d",
+			Inode::new_directory(0, 0, 0o755),
+			b"a directory cannot hold a chunk",
+		);
+
+		// -- Check: refused, rather than a directory that decodes as one and
+		// carries content nothing will ever read.
+		assert!(
+			result.is_err(),
+			"the inode parameter is the file's identity and must be a file's"
+		);
 
 		Ok(())
 	}
@@ -869,9 +1114,16 @@ mod tests {
 		let result = create_file(&store, &current, parent, "one-too-many", 0, 0, 0o644);
 
 		// -- Check: a clean error, and everything already there still reads.
-		assert!(result.is_err(), "the insert crossing the leaf bound must fail, not silently over-fill the node");
+		assert!(
+			result.is_err(),
+			"the insert crossing the leaf bound must fail, not silently over-fill the node"
+		);
 		let entries = readdir(&store, &current, parent)?;
-		assert_eq!(entries.len(), DirNode::MAX_ENTRIES, "every previously committed entry must remain readable");
+		assert_eq!(
+			entries.len(),
+			DirNode::MAX_ENTRIES,
+			"every previously committed entry must remain readable"
+		);
 
 		Ok(())
 	}
@@ -903,7 +1155,10 @@ mod tests {
 		let result = engine.commit(&txn, alloc_node, &mut allocator, 0, &mut NullBlockDevice);
 
 		// -- Check
-		assert!(result.is_err(), "an object over max_object_bytes must be refused before it reaches the disk");
+		assert!(
+			result.is_err(),
+			"an object over max_object_bytes must be refused before it reaches the disk"
+		);
 
 		Ok(())
 	}
@@ -948,7 +1203,10 @@ mod tests {
 		let mut buf = vec![0u8; record.total_size()];
 		record.encode(&mut buf)?;
 		let (header, decoded) = crate::record::ObjectRecordReader::read(&buf)?;
-		assert_eq!(header.object_id, chunk_obj.object_id.0, "stored object_id must match what decode independently recomputes");
+		assert_eq!(
+			header.object_id, chunk_obj.object_id.0,
+			"stored object_id must match what decode independently recomputes"
+		);
 		assert_eq!(decoded, chunk_obj.canonical_bytes);
 
 		Ok(())
@@ -1257,7 +1515,14 @@ mod tests {
 		let parent_ref = ObjectRef::from_id(parent_txn.new_root.file_tree_root.object_id);
 
 		// -- Exec & Check
-		let result = rename(&store, &parent_txn.new_root, parent_ref, "nope", parent_ref, "still-nope");
+		let result = rename(
+			&store,
+			&parent_txn.new_root,
+			parent_ref,
+			"nope",
+			parent_ref,
+			"still-nope",
+		);
 		assert!(result.is_err());
 
 		Ok(())
@@ -1283,8 +1548,14 @@ mod tests {
 		// -- Check
 		let new_parent_inode = store.get_inode(ObjectRef::from_id(txn.new_root.file_tree_root.object_id))?;
 		let new_dir_node = store.get_dir_node(new_parent_inode.content_ref)?;
-		assert!(new_dir_node.entries.iter().all(|e| e.name.as_str() != "old.txt"), "old name must be gone");
-		assert!(new_dir_node.entries.iter().any(|e| e.name.as_str() == "new.txt"), "new name must be present");
+		assert!(
+			new_dir_node.entries.iter().all(|e| e.name.as_str() != "old.txt"),
+			"old name must be gone"
+		);
+		assert!(
+			new_dir_node.entries.iter().any(|e| e.name.as_str() == "new.txt"),
+			"new name must be present"
+		);
 
 		Ok(())
 	}
@@ -1306,8 +1577,18 @@ mod tests {
 		store.apply_txn(&b_txn);
 		let root_ref = ObjectRef::from_id(b_txn.new_root.file_tree_root.object_id);
 		let root_dir_node = store.get_dir_node(store.get_inode(root_ref)?.content_ref)?;
-		let a_ref = root_dir_node.entries.iter().find(|e| e.name.as_str() == "a").unwrap().inode_ref();
-		let b_ref = root_dir_node.entries.iter().find(|e| e.name.as_str() == "b").unwrap().inode_ref();
+		let a_ref = root_dir_node
+			.entries
+			.iter()
+			.find(|e| e.name.as_str() == "a")
+			.unwrap()
+			.inode_ref();
+		let b_ref = root_dir_node
+			.entries
+			.iter()
+			.find(|e| e.name.as_str() == "b")
+			.unwrap()
+			.inode_ref();
 
 		let file_txn = create_file(&store, &b_txn.new_root, a_ref, "f.txt", 0, 0, 0o644)?;
 		store.apply_txn(&file_txn);
@@ -1344,7 +1625,12 @@ mod tests {
 		store.apply_txn(&a_txn);
 		let root_ref = ObjectRef::from_id(a_txn.new_root.file_tree_root.object_id);
 		let root_dir_node = store.get_dir_node(store.get_inode(root_ref)?.content_ref)?;
-		let a_ref = root_dir_node.entries.iter().find(|e| e.name.as_str() == "a").unwrap().inode_ref();
+		let a_ref = root_dir_node
+			.entries
+			.iter()
+			.find(|e| e.name.as_str() == "a")
+			.unwrap()
+			.inode_ref();
 
 		let b_txn = mkdir(&store, &a_txn.new_root, a_ref, "b", 0, 0, 0o755)?;
 		store.apply_txn(&b_txn);
@@ -1353,10 +1639,17 @@ mod tests {
 		// Manually propagate the updated "a" (now containing "b") up into
 		// root, since mkdir itself only went one level.
 		let (root_dir_node, root_inode) = cow_update_dir_entry(&store, root_ref, "a", a_ref)?;
-		let mut propagate_txn = TxnPlan::new(ObjectRef::from_id(b_txn.new_root.object_id), b_txn.new_root.next_commit());
-		propagate_txn.add_object(NewObject::new(root_dir_node.object_id, root_dir_node.encode_canonical()?));
+		let mut propagate_txn = TxnPlan::new(
+			ObjectRef::from_id(b_txn.new_root.object_id),
+			b_txn.new_root.next_commit(),
+		);
+		propagate_txn.add_object(NewObject::new(
+			root_dir_node.object_id,
+			root_dir_node.encode_canonical()?,
+		));
 		propagate_txn.add_object(
-			NewObject::new(root_inode.object_id, root_inode.encode_canonical()?).with_dependency(root_dir_node.object_id),
+			NewObject::new(root_inode.object_id, root_inode.encode_canonical()?)
+				.with_dependency(root_dir_node.object_id),
 		);
 		propagate_txn.new_root.file_tree_root = ObjectRef::from_id(root_inode.object_id);
 		store.apply_txn(&propagate_txn);
@@ -1367,7 +1660,14 @@ mod tests {
 
 		// -- Exec & Check: moving "a" into "a/b" must be refused — it would
 		// create a cycle unreachable from the real root.
-		let result = rename(&store, &propagate_txn.new_root, root_ref, "a", b_ref, "a-moved-into-child");
+		let result = rename(
+			&store,
+			&propagate_txn.new_root,
+			root_ref,
+			"a",
+			b_ref,
+			"a-moved-into-child",
+		);
 		assert!(result.is_err());
 
 		Ok(())

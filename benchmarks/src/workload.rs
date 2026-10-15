@@ -1,0 +1,434 @@
+//! The workloads, and the discipline that makes them comparable.
+//!
+//! # Like for like
+//!
+//! Every engine is asked for the same thing and told the same thing: one write,
+//! durable before the call returns. Nothing is tuned differently between them
+//! and no engine gets a warmer cache than another — each workload gets a fresh
+//! engine on a fresh location, populates it outside the timed section, and is
+//! then timed over the same number of operations.
+//!
+//! # Repetition
+//!
+//! A single timing is a rumour. Each workload runs `repeats` times and the
+//! reported number is the **median** of the per-repetition means, so one
+//! scheduler hiccup does not become the result. Each repetition does the same
+//! amount of work; where a workload writes, the keys differ between repetitions
+//! so nothing is overwritten (LedgerFS frees nothing, and an overwrite would
+//! make the repetitions unequal for a different reason).
+//!
+//! # Gaps
+//!
+//! An engine that cannot express a workload is recorded with `missing` set, not
+//! with a zero. Three rows are expected to be gaps somewhere: the batch row
+//! (LedgerFS has no caller-visible batch transaction), the reopen row for the
+//! raw-file control (a directory tree has no recovery step), and anything on a
+//! platform where an engine will not open.
+
+use std::time::Instant;
+
+use crate::config::Config;
+use crate::engine::{Engine, KEYS_PER_DIR, Op, shard_dirs, shard_key};
+use crate::error::{Error, Result};
+use crate::report::Sample;
+
+/// Bytes in a value for the insert workloads. Small enough to be dominated by
+/// the commit rather than by the data: 256 bytes is one block on the volume and
+/// one page on the filesystem.
+pub const VALUE_BYTES: usize = 256;
+
+/// Bytes per append in the log workload — large enough that the per-append cost
+/// has a data component as well as a commit component, which is the honest
+/// shape of an append-only log.
+pub const LOG_CHUNK: usize = 64 * 1024;
+
+/// What one workload is, and the space it needs on a volume it will grow.
+pub struct Workload {
+	pub id: &'static str,
+	/// Volume blocks to format for engines that need to be told (LedgerFS).
+	///
+	/// Sized for what the workload *writes*, which is much larger than its
+	/// payload: LedgerFS frees nothing (`FORMAT.md` §22) and every commit
+	/// rewrites the directory node that contains its entry. A volume sized to
+	/// the payload alone fails partway with an out-of-space error and no number,
+	/// which is how these sizes were arrived at. They were derived when a `put`
+	/// was two commits and are left alone: a `put` is now one, so a volume here
+	/// is generous rather than tight, and shrinking it would change what the
+	/// checked-in run measured.
+	pub blocks: u64,
+	pub run: fn(&mut dyn Engine, &Config) -> Result<Sample>,
+}
+
+/// The roster, in report order.
+pub const WORKLOADS: &[Workload] = &[
+	Workload {
+		id: "insert_durable_256b",
+		blocks: 262144,
+		run: insert_durable,
+	},
+	Workload {
+		id: "insert_batched_256b",
+		blocks: 262144,
+		run: insert_batched,
+	},
+	Workload {
+		id: "read_point_256b",
+		blocks: 131072,
+		run: read_point,
+	},
+	Workload {
+		id: "append_log_64k",
+		blocks: 65536,
+		run: append_log,
+	},
+	Workload {
+		id: "scan_10",
+		blocks: 8192,
+		run: |engine, cfg| scan(engine, cfg, 10),
+	},
+	Workload {
+		id: "scan_100",
+		blocks: 16384,
+		run: |engine, cfg| scan(engine, cfg, 100),
+	},
+	Workload {
+		id: "scan_1000",
+		blocks: 131072,
+		run: |engine, cfg| scan(engine, cfg, 1000),
+	},
+	Workload {
+		id: "reopen_and_read",
+		blocks: 131072,
+		run: reopen_and_read,
+	},
+];
+
+pub fn by_id(id: &str) -> Option<&'static Workload> {
+	WORKLOADS.iter().find(|w| w.id == id)
+}
+
+// region:    --- Timing
+
+/// Run `body` `repeats` times and report the median of the per-repetition
+/// per-operation times.
+///
+/// `ops` and `bytes` are what one repetition performs and must be the same for
+/// every repetition — the caller guarantees that by construction, which is why
+/// a writing workload varies its keys per repetition rather than overwriting.
+/// The repetition index is handed to `body` for exactly that.
+fn measure(
+	engine_name: &'static str,
+	workload: &'static str,
+	ops: u64,
+	bytes: u64,
+	repeats: usize,
+	mut body: impl FnMut(usize) -> Result<()>,
+) -> Result<Sample> {
+	let mut per_op = Vec::with_capacity(repeats);
+	for r in 0..repeats {
+		let started = Instant::now();
+		body(r)?;
+		let elapsed = started.elapsed().as_secs_f64();
+		per_op.push(elapsed / ops as f64);
+	}
+	per_op.sort_by(|a, b| a.partial_cmp(b).expect("durations are never NaN"));
+
+	let median = per_op[per_op.len() / 2];
+	Ok(Sample {
+		workload: workload.to_string(),
+		engine: engine_name.to_string(),
+		durability: String::new(), // filled in by the runner from the engine
+		repeats,
+		ops_per_repeat: ops,
+		bytes_per_repeat: bytes,
+		ns_per_op: median * 1e9,
+		comparable: true,
+		note: None,
+		missing: None,
+		space_per_op: None,
+	})
+}
+
+/// The record for a workload an engine cannot express.
+///
+/// `ns_per_op` is NaN rather than zero: a zero is a measurement, and this is
+/// the absence of one.
+fn unsupported(engine: &'static str, workload: &'static str, why: &str) -> Sample {
+	Sample {
+		workload: workload.to_string(),
+		engine: engine.to_string(),
+		durability: String::new(),
+		repeats: 0,
+		ops_per_repeat: 0,
+		bytes_per_repeat: 0,
+		ns_per_op: f64::NAN,
+		comparable: false,
+		note: None,
+		missing: Some(why.to_string()),
+		space_per_op: None,
+	}
+}
+
+/// A deterministic 256-byte value. Content matters: an all-zero buffer would be
+/// compressed, deduplicated, or written sparsely by some engine and not others.
+fn value(tag: &str, i: usize) -> Vec<u8> {
+	let mut out = Vec::with_capacity(VALUE_BYTES);
+	// FNV-1a's 64-bit prime, as the odd multiplier that keeps distinct `i`
+	// apart before the mixing rounds below.
+	let mut x = 0x9E37_79B9_7F4A_7C15u64 ^ (i as u64).wrapping_mul(0x0000_0100_0000_01B3);
+	for byte in tag.bytes() {
+		x = splitmix(x ^ byte as u64);
+	}
+	while out.len() < VALUE_BYTES {
+		x = splitmix(x);
+		out.extend_from_slice(&x.to_le_bytes());
+	}
+	out.truncate(VALUE_BYTES);
+	out
+}
+
+fn splitmix(mut x: u64) -> u64 {
+	x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+	x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+	x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+	x ^ (x >> 31)
+}
+
+/// Record what the measured operations cost in backing-store space.
+///
+/// Called *after* the timed section, from the free-space figure the engine
+/// reports before and after it. A free-space delta rather than a file size
+/// because the engines do not share a file layout: SQLite's database and
+/// LedgerFS's image are both one file, but what grew inside it is not
+/// comparable, whereas "bytes the medium no longer has" is.
+///
+/// Left `None` when the engine reports no figure, or when the delta is not
+/// positive — a workload that freed space, or one whose engine cannot say, is
+/// reported as not measured rather than as zero.
+fn record_space(sample: &mut Sample, engine: &dyn Engine, before: Option<u64>, ops: u64) {
+	let (Some(before), Some(after)) = (before, engine.space_used()) else {
+		return;
+	};
+	if before > after && ops > 0 {
+		sample.space_per_op = Some((before - after) / ops);
+	}
+}
+
+/// One bucket-name prefix per repetition, so a repetition's keys are its own
+/// and nothing is overwritten (an overwrite would make the repetitions unequal).
+fn tags_for(base: &str, repeats: usize) -> Vec<String> {
+	(0..repeats).map(|r| format!("{base}{r}")).collect()
+}
+
+/// Hand the engine every directory the workload's keys will land in, before
+/// anything is timed.
+fn prepare_all(engine: &mut dyn Engine, tags: &[String], n: usize) -> Result<()> {
+	for tag in tags {
+		engine.prepare(&shard_dirs(tag, n))?;
+	}
+	Ok(())
+}
+
+// endregion: --- Timing
+
+// region:    --- The workloads
+
+/// One durable insert per operation — the headline number.
+fn insert_durable(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	let n = cfg.insert_n;
+	let tags = tags_for("i", cfg.repeats);
+	prepare_all(engine, &tags, n)?;
+	let before = engine.space_used();
+	let mut sample = measure(
+		name,
+		"insert_durable_256b",
+		n as u64,
+		(n * VALUE_BYTES) as u64,
+		cfg.repeats,
+		|r| {
+			for i in 0..n {
+				engine.put(&shard_key(&tags[r], i), &value("kv", i))?;
+			}
+			Ok(())
+		},
+	)?;
+	record_space(&mut sample, engine, before, n as u64);
+	Ok(sample)
+}
+
+/// The same inserts, all in one transaction.
+///
+/// Not comparable with the row above and marked so: the per-insert number this
+/// produces is the cost of *1/N* of a commit. It is here because the gap between
+/// the two rows is the whole argument for batching, and because LedgerFS cannot
+/// produce it at all.
+fn insert_batched(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	if !engine.supports(Op::Batch) {
+		return Ok(unsupported(
+			name,
+			"insert_batched_256b",
+			"no caller-visible batch transaction; every put is its own commit",
+		));
+	}
+	let n = cfg.insert_n;
+	let tags = tags_for("b", cfg.repeats);
+	prepare_all(engine, &tags, n)?;
+	let before = engine.space_used();
+	let mut sample = measure(
+		name,
+		"insert_batched_256b",
+		n as u64,
+		(n * VALUE_BYTES) as u64,
+		cfg.repeats,
+		|r| {
+			let items: Vec<(String, Vec<u8>)> = (0..n).map(|i| (shard_key(&tags[r], i), value("kb", i))).collect();
+			engine.put_batch(&items)
+		},
+	)?;
+	sample.comparable = false;
+	sample.note = Some(format!(
+		"{n} inserts in one transaction; the per-insert figure is 1/{n} of a commit"
+	));
+	record_space(&mut sample, engine, before, n as u64);
+	Ok(sample)
+}
+
+/// Point reads over a populated store.
+///
+/// The population is outside the timed section on purpose: this measures the
+/// read path, and mixing in the write cost of building the data would make the
+/// two engines' different write costs show up here as well.
+fn read_point(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	let n = cfg.insert_n;
+	let tag = "r";
+	prepare_all(engine, std::slice::from_ref(&tag.to_string()), n)?;
+	for i in 0..n {
+		engine.put(&shard_key(tag, i), &value("kr", i))?;
+	}
+	let mut sample = measure(
+		name,
+		"read_point_256b",
+		n as u64,
+		(n * VALUE_BYTES) as u64,
+		cfg.repeats,
+		|_| {
+			for i in 0..n {
+				let got = engine.get(&shard_key(tag, i))?;
+				if got.len() != VALUE_BYTES {
+					return Err(Error::engine(
+						name,
+						format!("read {} bytes, wrote {VALUE_BYTES}", got.len()),
+					));
+				}
+			}
+			Ok(())
+		},
+	)?;
+	sample.note = Some(format!("{n} reads over a store populated outside the timed section"));
+	Ok(sample)
+}
+
+/// Append-only log: one durable append of `LOG_CHUNK` per operation.
+fn append_log(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	if !engine.supports(Op::Append) {
+		return Ok(unsupported(name, "append_log_64k", "no append path"));
+	}
+	let m = cfg.log_appends;
+	let chunk: Vec<u8> = value("log", 7).repeat(LOG_CHUNK / VALUE_BYTES);
+	let before = engine.space_used();
+	let mut sample = measure(
+		name,
+		"append_log_64k",
+		m as u64,
+		(m * LOG_CHUNK) as u64,
+		cfg.repeats,
+		|_| {
+			for _ in 0..m {
+				engine.append("default", &chunk)?;
+			}
+			Ok(())
+		},
+	)?;
+	sample.note = Some(format!("{m} appends of {} KiB, one fsync each", LOG_CHUNK / 1024));
+	record_space(&mut sample, engine, before, m as u64);
+	Ok(sample)
+}
+
+/// Enumerate every key in the store — a directory listing for the filesystems,
+/// a full scan for the databases.
+///
+/// Laid out `KEYS_PER_DIR` to a directory on every engine, because that is the
+/// layout LedgerFS forces on an embedding application: see [`shard_key`] and
+/// `KNOWN_ISSUES.md`. The 10- and
+/// 100-entry workloads are one directory deep and the 1000-entry one is ten, so
+/// the three sizes differ by how much data lives in the leaves rather than by
+/// how deep the walk goes.
+fn scan(engine: &mut dyn Engine, cfg: &Config, entries: usize) -> Result<Sample> {
+	let name = engine.name();
+	let workload = match entries {
+		10 => "scan_10",
+		100 => "scan_100",
+		_ => "scan_1000",
+	};
+	let tag = "s";
+	prepare_all(engine, std::slice::from_ref(&tag.to_string()), entries)?;
+	for i in 0..entries {
+		engine.put(&shard_key(tag, i), &value("ks", i))?;
+	}
+	let mut sample = measure(
+		name,
+		workload,
+		entries as u64,
+		(entries * VALUE_BYTES) as u64,
+		cfg.repeats,
+		|_| {
+			let keys = engine.keys()?;
+			if keys.len() != entries {
+				return Err(Error::engine(
+					name,
+					format!("enumerated {} keys, expected {entries}", keys.len()),
+				));
+			}
+			Ok(())
+		},
+	)?;
+	sample.note = Some(format!(
+		"{entries} entries, populated outside the timed section; {KEYS_PER_DIR} per directory"
+	));
+	Ok(sample)
+}
+
+/// What a restart costs: reopen, then touch the data once.
+///
+/// The read is inside the timed section deliberately. SQLite recovers a WAL
+/// lazily — `open` returns before the recovery happens — so timing the open
+/// alone would report near zero for the engine with the most recovery to do.
+fn reopen_and_read(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	if !engine.supports(Op::Reopen) {
+		return Ok(unsupported(
+			name,
+			"reopen_and_read",
+			"no recovery step: there is no journal to replay and no root to select",
+		));
+	}
+	let n = cfg.insert_n;
+	let tag = "o";
+	prepare_all(engine, std::slice::from_ref(&tag.to_string()), n)?;
+	for i in 0..n {
+		engine.put(&shard_key(tag, i), &value("ko", i))?;
+	}
+	let mut sample = measure(name, "reopen_and_read", 1, 0, cfg.repeats, |_| {
+		engine.reopen()?;
+		engine.get(&shard_key(tag, 0))?;
+		Ok(())
+	})?;
+	sample.note = Some("reopen plus one read, so lazy recovery is inside the timed section".to_string());
+	Ok(sample)
+}
+
+// endregion: --- The workloads

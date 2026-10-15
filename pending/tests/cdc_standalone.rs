@@ -1,7 +1,7 @@
 //! Standalone CDC integration tests
 //!
-//! These tests verify the Content-Defined Chunking implementation
-//! without depending on other ledgerfs modules that may have build issues.
+//! These tests verify the Content-Defined Chunking implementation in isolation,
+//! without depending on other ledgerfs modules.
 
 extern crate alloc;
 
@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crucible_ledgerfs_kernel::cdc::{AVG_CHUNK_SIZE, Chunker, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, StreamingChunker};
+use ledgerfs_pending::cdc::{Chunker, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, StreamingChunker};
 
 type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
@@ -355,7 +355,7 @@ fn test_cdc_standalone_cross_platform_determinism() -> TestResult<()> {
 
 	// Also verify that boundaries are non-trivial (not just [data.len()])
 	// For 128KB of varying data, we should get multiple chunks
-	assert!(boundaries1.len() >= 1, "Should produce at least one chunk");
+	assert!(!boundaries1.is_empty(), "Should produce at least one chunk");
 
 	Ok(())
 }

@@ -5,11 +5,11 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use crucible_ledgerfs_kernel::alloc_node::AllocNode;
-use crucible_ledgerfs_kernel::dedupe::{DedupeIndex, DedupeNode, PhysicalLocator, StorageTier};
-use crucible_ledgerfs_kernel::gc::{GcEngine, GcMode};
-use crucible_ledgerfs_kernel::object::ObjectId;
-use crucible_ledgerfs_kernel::snapshot::{SnapshotMetadata, SnapshotRegistry};
+use ledgerfs::alloc_node::AllocNode;
+use ledgerfs::object::ObjectId;
+use ledgerfs_pending::dedupe::{DedupeIndex, PhysicalLocator};
+use ledgerfs_pending::gc::{GcEngine, GcMode};
+use ledgerfs_pending::snapshot::{SnapshotMetadata, SnapshotRegistry};
 
 type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
@@ -53,7 +53,6 @@ fn test_incremental_cycle_skips_nonzero_refcount() -> TestResult<()> {
 	// Add object with refcount > 0
 	let object_id = ObjectId::from_bytes(&[1u8; 32]);
 	let locator = PhysicalLocator::new(1000, 100);
-	let node = DedupeNode::with_refcount(object_id, locator, 2); // refcount = 2
 	dedupe_index.insert(object_id, locator)?;
 	dedupe_index.increment_refcount(&object_id)?; // refcount = 3
 
@@ -115,7 +114,7 @@ fn test_conservative_skips_when_snapshots_exist() -> TestResult<()> {
 	let mut alloc_node = AllocNode::new();
 
 	// Create and register a snapshot
-	use crucible_ledgerfs_kernel::object::ObjectRef;
+	use ledgerfs::object::ObjectRef;
 	let snapshot_id = snapshot_registry.allocate_id()?;
 	let metadata = SnapshotMetadata::new(
 		snapshot_id,

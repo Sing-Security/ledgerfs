@@ -285,33 +285,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
-name = "crucible-ledgerfs-host"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "crucible-ledgerfs-kernel",
-]
-
-[[package]]
-name = "crucible-ledgerfs-kernel"
-version = "0.7.0"
-dependencies = [
- "aes",
- "blake3",
- "heapless",
- "log",
- "lz4",
- "postcard",
- "serde",
- "serde_json",
- "spin",
- "temper-rs",
- "xts-mode",
- "zeroize",
- "zstd",
-]
-
-[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -622,14 +595,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "ledgerfs"
+version = "0.7.0"
+dependencies = [
+ "aes",
+ "blake3",
+ "heapless",
+ "log",
+ "lz4",
+ "postcard",
+ "serde",
+ "serde_json",
+ "spin",
+ "temper-rs",
+ "xts-mode",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
 name = "ledgerfs-benchmarks"
 version = "0.1.0"
 dependencies = [
- "crucible-ledgerfs-host",
+ "ledgerfs-host",
+ "libc",
  "redb",
  "rusqlite",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "ledgerfs-host"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "ledgerfs",
+]
+
+[[package]]
+name = "ledgerfs-pending"
+version = "0.7.0"
+dependencies = [
+ "blake3",
+ "ledgerfs",
+ "postcard",
+ "serde",
 ]
 
 [[package]]

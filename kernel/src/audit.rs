@@ -1,6 +1,6 @@
-//! Audit chain for LedgerFS v7 (W7-A, W7-B)
+//! Audit chain for LedgerFS v7
 //!
-//! Per §37 of ledgerfs-spec-v7.md:
+//! Per §37 of FORMAT.md:
 //! - Hash-linked audit records for tamper-evident trail
 //! - Canonical encoding with deterministic BTreeMap ordering
 //! - Optional ML-DSA sealing for quantum-safe signatures
@@ -23,7 +23,7 @@
 //! - Event type and data
 //! - Previous record hash (BLAKE3)
 //! - This record hash (BLAKE3)
-//! - Optional ML-DSA seal (compressed) — W7-B
+//! - Optional ML-DSA seal (compressed)
 //!
 //! # ML-DSA Sealing
 //!
@@ -517,36 +517,35 @@ impl SealVerificationResult {
 	}
 }
 
-// Note: Actual sealing/verification implementation requires temper crate integration.
-// The functions below provide the interface and would be implemented when temper
-// is available in the ledgerfs crate dependencies.
+// The two functions below are the halves of one interface, and they are not in
+// the same state. Verification is implemented and calls the `temper` crate's
+// `verify_seal`; sealing is not implemented at all, because producing a seal
+// needs a key type to sign with and this signature takes a `dyn Any` stand-in
+// rather than naming one. See `KNOWN_ISSUES.md` §11.
 
 /// Seal a commit audit record with ML-DSA
 ///
-/// This function would integrate with the Temper crate to create a dual
-/// post-quantum signature seal over the audit record's canonical encoding.
+/// This is the sealing half of the pair whose verification half is
+/// `verify_seal`, and it does not seal: it returns the record's canonical
+/// encoding unchanged. A caller that stores the returned bytes and later calls
+/// `verify_seal` gets `DeserializationFailed` — the bytes are not a seal — so
+/// the failure is in the safe direction, but the record is not protected in the
+/// meantime and nothing on this path says so at the time of the call.
 ///
 /// # Arguments
 ///
 /// * `record` - Audit record to seal (must have valid hash)
-/// * `keypair` - Temper keypair (ML-DSA-65 + SLH-DSA keys)
-/// * `metadata` - Additional metadata for seal context
+/// * `keypair` - Reserved for the signing key; currently unused
+/// * `metadata` - Reserved for seal context; currently unused
 ///
 /// # Returns
 ///
-/// Compressed seal bytes to attach to record via `attach_seal()`
-///
-/// # Note
-///
-/// This is a placeholder for integration. Actual implementation requires:
-/// 1. Add temper dependency to ledgerfs Cargo.toml
-/// 2. Import temper::{create_seal, TemperKeypair, TemperEntropy}
-/// 3. Call create_seal() with record canonical bytes
-/// 4. Compress and return seal bytes
+/// The record's canonical encoding, which is what the current implementation
+/// returns and *not* seal bytes. See `KNOWN_ISSUES.md` §11.
 #[cfg(feature = "temper_sealing")]
 pub fn seal_commit_record(
 	record: &CommitAuditRecord,
-	_keypair: &dyn core::any::Any, // Placeholder for TemperKeypair
+	_keypair: &dyn core::any::Any, // Reserved for a TemperKeypair
 	_metadata: BTreeMap<String, String>,
 ) -> Result<Vec<u8>> {
 	// Verify record hash is valid first
@@ -557,17 +556,13 @@ pub fn seal_commit_record(
 	// Get canonical encoding
 	let canonical = record.encode_canonical()?;
 
-	// TODO: Integrate with Temper
-	// let mut rng = TemperEntropy::from_seed([...]);
-	// let seal = temper::create_seal(&mut rng, &canonical, keypair, metadata)?;
-	// let compressed = seal.to_compressed_bytes()?;
-	// Ok(compressed)
-
-	// Placeholder return
+	// No seal is produced. `temper::create_seal` takes a concrete keypair and an
+	// entropy source; the signature above carries neither, which is the whole
+	// of the gap between this function and its name.
 	Ok(canonical)
 }
 
-/// Verify ML-DSA seal on audit record (/ Track J10)
+/// Verify ML-DSA seal on audit record
 ///
 /// Decodes the seal bytes stored in `record.seal`, deserializes the Temper
 /// `Seal` via postcard, then calls `temper::verify_seal()` which
@@ -633,7 +628,11 @@ pub fn seal_root(
 	_keypair: &dyn core::any::Any,
 	_metadata: BTreeMap<String, String>,
 ) -> Result<Vec<u8>> {
-	// TODO: Same Temper integration as seal_commit_record
+	// Same state as `seal_commit_record`: the interface exists and the sealing
+	// does not. This one returns no bytes at all rather than an unsealed copy,
+	// so `verify_seal` reports `DeserializationFailed` — `SealMissing` is
+	// reserved for a record whose seal field is absent, which is a different
+	// case from one whose seal field is empty.
 	Ok(Vec::new())
 }
 
@@ -858,7 +857,7 @@ fn iso_date_to_approx_days(ts: &str) -> Option<u64> {
 fn parse_digits(b: &[u8]) -> Option<u32> {
 	let mut n: u32 = 0;
 	for &c in b {
-		if c < b'0' || c > b'9' {
+		if !c.is_ascii_digit() {
 			return None;
 		}
 		n = n * 10 + (c - b'0') as u32;
@@ -929,7 +928,7 @@ pub fn apply_retention(
 		let total_bytes = (records.len() as u64).saturating_mul(estimated_bytes_per_record);
 		if total_bytes > quota_bytes {
 			let excess_bytes = total_bytes - quota_bytes;
-			let excess_records = (excess_bytes + estimated_bytes_per_record - 1) / estimated_bytes_per_record;
+			let excess_records = excess_bytes.div_ceil(estimated_bytes_per_record);
 			// Evict oldest `excess_records` records
 			let cutoff_idx = (excess_records as usize).min(records.len().saturating_sub(1));
 			if cutoff_idx > 0 {

@@ -1,6 +1,6 @@
 //! Non-temporal write helpers for LedgerFS cache-pollution mitigation.
 //!
-//! Per §15.3 of ledgerfs-spec-v7.md:
+//! Per §15.3 of FORMAT.md:
 //! - Object payload writes use NT stores to bypass L1/L2, keeping BTree metadata hot.
 //! - Intent log ring writes use NT stores for the same reason.
 //! - An SFENCE MUST be issued after any sequence of NT stores, before any

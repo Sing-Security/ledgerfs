@@ -1,6 +1,15 @@
 //! Snapshot operations for LedgerFS v7
 //!
-//! Per §24, §30, and §22.3 of ledgerfs-spec-v7.md:
+//! # Status
+//!
+//! Registration, the `ALLOCATED` → `PINNED` extent transitions, and the root
+//! swap of a rollback are implemented. The tree walks that would keep the
+//! dedupe index and the deadlist consistent with a snapshot are not, so a
+//! snapshot's sharing is invisible to the index and nothing reaches the
+//! deadlist when a snapshot is deleted. Nothing in the host `Store` calls any
+//! of it — `KNOWN_ISSUES.md` §11.
+//!
+//! Per §24, §30, and §22.3 of FORMAT.md:
 //! - Atomic snapshot creation (pin → commit → register)
 //! - Atomic snapshot deletion (unregister → unpin → deadlist)
 //! - Snapshot rollback (restore prior root)
@@ -28,15 +37,15 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::alloc_node::AllocNode;
-use crate::alloc_state::AllocationState;
 use crate::dedupe::DedupeIndex;
-use crate::object::{ObjectId, ObjectRef, Root};
 use crate::{Error, Result};
+use ledgerfs::alloc_node::AllocNode;
+use ledgerfs::alloc_state::AllocationState;
+use ledgerfs::object::{ObjectId, ObjectRef, Root};
 
 // region:    --- SnapshotId
 
-/// Snapshot identifier (u32 per spec §6)
+/// Snapshot identifier (u32 per FORMAT.md §6)
 ///
 /// Maximum 2^32 snapshots per filesystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -249,10 +258,11 @@ impl SnapshotRegistry {
 
 	/// Check if object is referenced by any snapshot
 	pub fn is_object_pinned(&self, _object_id: &ObjectId) -> bool {
-		// Conservative default: assume pinned if any snapshots exist.
-		// This prevents GC from freeing snapshot-referenced objects.
-		// Worst case: temporary space leak until traversal is implemented.
-		// TODO: Implement actual reference checking via snapshot root tree traversal.
+		// Conservative default: assume pinned if any snapshots exist, which
+		// keeps the GC from freeing a snapshot-referenced object. Answering the
+		// question exactly needs a traversal of the snapshot's root tree and
+		// there is none, so with a snapshot present this is true for every
+		// object: the error costs space and never costs data.
 		!self.snapshots.is_empty()
 	}
 
@@ -352,27 +362,30 @@ pub fn create_snapshot(
 	description: Option<String>,
 	timestamp_ns: u64,
 ) -> Result<(SnapshotMetadata, Root)> {
-	// -- Phase 1: Allocate snapshot ID
+	// -- 1. Allocate snapshot ID
 	let snapshot_id = registry.allocate_id()?;
 
-	// -- Phase 2: Pin all ALLOCATED extents
+	// -- 2. Pin all ALLOCATED extents
 	let pinned_count = pin_allocated_extents(alloc_node)?;
 
 	// If no blocks were pinned, we can still create the snapshot
 	// (it will be an empty snapshot)
 
-	// -- Phase 3: Increment refcounts for all objects in current root
-	// TODO: Traverse current root and increment refcounts in dedupe_index
-	// For now, this is a placeholder - actual implementation would walk the tree
+	// -- 3. Increment refcounts for all objects in current root
+	//
+	// No refcount is incremented: that requires walking the current root's
+	// tree, which this function does not do. A snapshot pins its extents (step
+	// 2) but adds nothing to the dedupe index, so the index describes sharing
+	// as it stood before the snapshot existed.
 	let _ = dedupe_index; // Suppress unused warning
 
-	// -- Phase 4: Create new root (commit phase)
+	// -- 4. Create new root (commit phase)
 	// The new root is identical to current root except commit_seq
 	let mut new_root = current_root.next_commit();
 	new_root.timestamp_ns = timestamp_ns;
 	new_root.update_object_id();
 
-	// -- Phase 5: Create snapshot metadata
+	// -- 5. Create snapshot metadata
 	let mut metadata = SnapshotMetadata::new(
 		snapshot_id,
 		ObjectRef::from_id(current_root.object_id),
@@ -390,7 +403,7 @@ pub fn create_snapshot(
 
 	metadata.add_metadata("pinned_blocks".into(), alloc::format!("{}", pinned_count));
 
-	// -- Phase 6: Register snapshot
+	// -- 6. Register snapshot
 	registry.register(metadata.clone())?;
 
 	Ok((metadata, new_root))
@@ -409,23 +422,27 @@ pub fn delete_snapshot(
 	dedupe_index: &mut DedupeIndex,
 	snapshot_id: SnapshotId,
 ) -> Result<SnapshotMetadata> {
-	// -- Phase 1: Unregister snapshot
+	// -- 1. Unregister snapshot
 	let metadata = registry.unregister(snapshot_id)?;
 
-	// -- Phase 2: Unpin extents (PINNED → PendingFree)
+	// -- 2. Unpin extents (PINNED → PendingFree)
 	// Only unpin if no other snapshots reference the same objects
 	// For now, we conservatively unpin all extents that were pinned for this snapshot
 	let unpinned_count = unpin_extents(alloc_node)?;
 
-	// -- Phase 3: Decrement refcounts
-	// TODO: Traverse snapshot root and decrement refcounts in dedupe_index
-	// For now, this is a placeholder
+	// -- 3. Decrement refcounts
+	//
+	// Nothing is decremented, for the same reason `create_snapshot` increments
+	// nothing: there is no tree walk here. The unpinning below is driven by the
+	// allocator's own state, not by what the snapshot referenced.
 	let _ = dedupe_index; // Suppress unused warning
 	let _ = unpinned_count; // Suppress unused warning
 
-	// -- Phase 4: Add objects to deadlist
-	// TODO: Objects with refcount=0 should be added to deadlist
-	// This will be implemented when deadlist management is added
+	// -- 4. Add objects to deadlist
+	//
+	// None are added: reaching a refcount of zero takes the decrement step 3
+	// does not perform, and there is no deadlist management in this crate that
+	// would consume the entries if it did.
 
 	Ok(metadata)
 }
@@ -446,11 +463,14 @@ pub fn rollback_to_snapshot(registry: &SnapshotRegistry, snapshot_id: SnapshotId
 	new_root.timestamp_ns = current_root.timestamp_ns;
 	new_root.update_object_id();
 
-	// -- TODO: Update allocation tree to reflect rollback
-	// This would involve:
-	// 1. Comparing current root vs snapshot root trees
-	// 2. Adding current-only objects to deadlist
-	// 3. Ensuring snapshot objects remain pinned
+	// -- Update allocation tree to reflect rollback
+	//
+	// The allocation tree is not touched. A complete rollback would compare the
+	// current and snapshot trees, add the objects only the current tree reaches
+	// to the deadlist, and confirm the snapshot's own objects stay pinned; none
+	// of those three walks exists here, so the root returned below names the
+	// snapshot's `file_tree_root` while the allocator still describes the
+	// pre-rollback state.
 
 	Ok(new_root)
 }
@@ -475,11 +495,11 @@ fn pin_allocated_extents(alloc_node: &mut AllocNode) -> Result<u64> {
 
 	// Pin each extent
 	for lba in lbas_to_pin {
-		if let Some(extent) = alloc_node.extents.get_mut(&lba) {
-			if extent.state == AllocationState::Allocated {
-				extent.state = AllocationState::Pinned;
-				pinned_count += extent.block_count as u64;
-			}
+		if let Some(extent) = alloc_node.extents.get_mut(&lba)
+			&& extent.state == AllocationState::Allocated
+		{
+			extent.state = AllocationState::Pinned;
+			pinned_count += extent.block_count as u64;
 		}
 	}
 
@@ -505,11 +525,11 @@ fn unpin_extents(alloc_node: &mut AllocNode) -> Result<u64> {
 
 	// Unpin each extent (PINNED → PendingFree)
 	for lba in lbas_to_unpin {
-		if let Some(extent) = alloc_node.extents.get_mut(&lba) {
-			if extent.state == AllocationState::Pinned {
-				extent.state = AllocationState::PendingFree;
-				unpinned_count += extent.block_count as u64;
-			}
+		if let Some(extent) = alloc_node.extents.get_mut(&lba)
+			&& extent.state == AllocationState::Pinned
+		{
+			extent.state = AllocationState::PendingFree;
+			unpinned_count += extent.block_count as u64;
 		}
 	}
 
@@ -770,7 +790,7 @@ mod tests {
 
 	#[test]
 	fn test_snapshot_operations_create() -> TestResult<()> {
-		use crate::alloc_state::PhysicalExtent;
+		use ledgerfs::alloc_state::PhysicalExtent;
 
 		// -- Setup & Fixtures
 		let mut registry = SnapshotRegistry::new();
@@ -778,8 +798,8 @@ mod tests {
 		let mut dedupe_index = DedupeIndex::new();
 
 		// Add some allocated extents
-		alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated));
-		alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Allocated));
+		alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Allocated))?;
+		alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Allocated))?;
 		alloc_node.recompute_stats();
 
 		let current_root = Root::new();
@@ -812,7 +832,7 @@ mod tests {
 
 	#[test]
 	fn test_snapshot_operations_delete() -> TestResult<()> {
-		use crate::alloc_state::PhysicalExtent;
+		use ledgerfs::alloc_state::PhysicalExtent;
 
 		// -- Setup & Fixtures
 		let mut registry = SnapshotRegistry::new();
@@ -820,8 +840,8 @@ mod tests {
 		let mut dedupe_index = DedupeIndex::new();
 
 		// Add some pinned extents (simulating a snapshot was created)
-		alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Pinned));
-		alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Pinned));
+		alloc_node.add_extent(PhysicalExtent::new(1000, 100, AllocationState::Pinned))?;
+		alloc_node.add_extent(PhysicalExtent::new(2000, 200, AllocationState::Pinned))?;
 		alloc_node.recompute_stats();
 
 		// Register snapshot

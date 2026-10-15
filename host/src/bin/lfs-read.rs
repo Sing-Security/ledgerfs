@@ -14,9 +14,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use crucible_ledgerfs_host::{
-	Error, FileBlockDevice, HostFs, InodeKind, ObjectId, PartitionKind, Result, Volume,
-	find_partition, read_partitions,
+use ledgerfs_host::{
+	Error, FileBlockDevice, HostFs, InodeKind, ObjectId, PartitionKind, Result, Volume, find_partition, read_partitions,
 };
 
 // region:    --- Cli
@@ -28,10 +27,10 @@ struct Cli {
 	part: PartitionKind,
 }
 
-/// Default to `/system`: it is the partition an image always has a committed
-/// root on. `/data` gets one only after the image's first boot, when `fs-cbl`
-/// bootstraps a genesis root — so it mounts on a booted image but not on a
-/// freshly built one (see the crate docs).
+/// Default to the system volume: it is the partition an image always has a
+/// committed root on. The data volume gets one only after the image's first
+/// boot, when a runtime bootstraps a genesis root — so it mounts on a booted
+/// image but not on a freshly built one (see the crate docs).
 const DEFAULT_PART: PartitionKind = PartitionKind::System;
 
 const USAGE: &str = "\
@@ -57,12 +56,11 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 			return Err(Error::Usage(USAGE.to_string()));
 		}
 		if arg == "--part" {
-			let value = it.next().ok_or_else(|| {
-				Error::Usage(format!("--part needs a value\n\n{USAGE}"))
-			})?;
-			part = PartitionKind::parse(&value).ok_or_else(|| {
-				Error::Usage(format!("unknown partition '{value}' — expected system or data"))
-			})?;
+			let value = it
+				.next()
+				.ok_or_else(|| Error::Usage(format!("--part needs a value\n\n{USAGE}")))?;
+			part = PartitionKind::parse(&value)
+				.ok_or_else(|| Error::Usage(format!("unknown partition '{value}' — expected system or data")))?;
 			continue;
 		}
 		if image.is_none() {
@@ -181,30 +179,70 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 	let sb = &volume.superblock;
 
 	println!("image          {}", cli.image.display());
-	println!("partition      {} (type 0x{:02X})", partition.kind.label(), partition.part_type);
-	println!("  start        {} (byte {})", partition.start_lba, partition.start_bytes());
-	println!("  size         {} bytes ({} blocks)", partition.size_bytes(), sb.total_blocks);
+	println!(
+		"partition      {} (type 0x{:02X})",
+		partition.kind.label(),
+		partition.part_type
+	);
+	println!(
+		"  start        {} (byte {})",
+		partition.start_lba,
+		partition.start_bytes()
+	);
+	println!(
+		"  size         {} bytes ({} blocks)",
+		partition.size_bytes(),
+		sb.total_blocks
+	);
 	println!();
 	println!("superblock");
 	println!("  version      {}", sb.version);
 	println!("  block_size   {}", sb.block_size);
 	println!("  commit_seq   {}", sb.active_commit_seq);
 	println!("  root_id      {}", ObjectId::from_bytes(&sb.active_root_id).to_hex());
-	println!("  root_hint    {}{}", sb.active_root_hint, if sb.active_root_hint == 0 { "  (0 = scan for it)" } else { "" });
+	println!(
+		"  root_hint    {}{}",
+		sb.active_root_hint,
+		if sb.active_root_hint == 0 {
+			"  (0 = scan for it)"
+		} else {
+			""
+		}
+	);
 	println!("  rlr          head={} tail={}", sb.rlr_head, sb.rlr_tail);
-	println!("  features     compat=0x{:X} ro=0x{:X} incompat=0x{:X}", sb.features_compat, sb.features_ro_compat, sb.features_incompat);
+	println!(
+		"  features     compat=0x{:X} ro=0x{:X} incompat=0x{:X}",
+		sb.features_compat, sb.features_ro_compat, sb.features_incompat
+	);
 	println!("  encrypted    {}", sb.is_data_encrypted());
-	println!("  limits       object={}B range={}B scan={} blocks", sb.max_object_bytes(), sb.max_range_read_bytes(), sb.max_scan_blocks());
+	println!(
+		"  limits       object={}B range={}B scan={} blocks",
+		sb.max_object_bytes(),
+		sb.max_range_read_bytes(),
+		sb.max_scan_blocks()
+	);
 	println!();
 	println!("mount");
 	println!("  mode         {:?}", volume.selection.mode);
 	println!("  replay       {:?}", volume.selection.replay_decision);
-	println!("  selected     commit_seq={} from {:?}", volume.selection.selected_root.commit_seq, volume.selection.selected_root.source);
+	println!(
+		"  selected     commit_seq={} from {:?}",
+		volume.selection.selected_root.commit_seq, volume.selection.selected_root.source
+	);
 
 	// The four copies exist so one damaged copy is survivable. A copy that
 	// names a different root than the selected one cannot answer for it.
 	let status = volume.copy_status();
-	println!("  copies       {}/{} decoded{}", status.decoded_count(), status.lbas.len(), if status.is_healthy() { ", all agree" } else { " — see below" });
+	println!(
+		"  copies       {}/{} decoded{}",
+		status.decoded_count(),
+		status.lbas.len(),
+		if status.is_healthy() {
+			", all agree"
+		} else {
+			" — see below"
+		}
+	);
 	if !status.is_healthy() {
 		for (i, lba) in status.lbas.iter().enumerate() {
 			let state = if !status.decoded[i] {
@@ -221,7 +259,8 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 	}
 
 	// Then the root, via a full open — a volume with no valid root is a real
-	// and expected state (/data before its first boot), not a tool error.
+	// and expected state (the data volume before its first boot), not a tool
+	// error.
 	match HostFs::open_partition(&cli.image, &partition) {
 		Ok(fs) => {
 			let inode = fs.store.inode(fs.root_inode_ref)?;
@@ -254,13 +293,7 @@ fn cmd_ls(cli: &Cli) -> Result<()> {
 	}
 
 	for e in entries {
-		println!(
-			"{} {:>10} {:o} {}",
-			kind_char(e.kind),
-			e.size,
-			e.mode,
-			e.name
-		);
+		println!("{} {:>10} {:o} {}", kind_char(e.kind), e.size, e.mode, e.name);
 	}
 	Ok(())
 }
@@ -300,15 +333,16 @@ fn cmd_stat(cli: &Cli) -> Result<()> {
 
 /// Printed when the superblock copies disagree on the root.
 ///
-/// This is the state `/data` is in on a booted image: `fs-cbl`'s
-/// `persist_superblock` updates the primary copy only, so a runtime commit
-/// leaves the other three behind. Worth saying out loud, because the mount
-/// still succeeds — nothing else in the stack surfaces it.
+/// This is the state a volume is in after a writer that updates the primary
+/// copy only has committed to it: the other three are left behind. Worth
+/// saying out loud, because the mount still succeeds — nothing else in the
+/// stack surfaces it.
 const COPY_WARNING: &str = "\
 note: the copies disagree, so the redundancy this format is built around is not
-  currently being maintained. `fs-cbl`'s `persist_superblock` updates the
-  primary copy only. Damage to the selected copy rolls this volume back to
-  whatever the surviving copies name, not forward to the committed state.";
+  currently being maintained — a writer that updates the primary copy only
+  leaves the others behind. Damage to the selected copy rolls this volume
+  back to whatever the surviving copies name, not forward to the committed
+  state.";
 
 fn kind_char(kind: InodeKind) -> char {
 	match kind {
@@ -317,6 +351,5 @@ fn kind_char(kind: InodeKind) -> char {
 		InodeKind::Symlink => 'l',
 	}
 }
-
 
 // endregion: --- Support

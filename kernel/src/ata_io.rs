@@ -18,7 +18,7 @@
 //!
 //! Every function here is `unsafe` because it performs raw x86 port I/O.
 //! Callers must ensure ring 0 execution with I/O port access enabled and
-//! (for anything beyond the bare `outb`/`inb`/`inw`/`outw` primitives) that
+//! (for anything beyond the bare `outb`/`inb` primitives) that
 //! `ATA_LOCK` is held for the duration of a whole command sequence.
 
 // region: --- Constants
@@ -68,12 +68,7 @@ pub(crate) const MAX_48BIT_LBA: u64 = 0x0000_FFFF_FFFF_FFFF;
 ///
 /// Caller holds the ATA bus lock and is running in ring 0 with I/O access.
 #[cfg(target_arch = "x86_64")]
-pub(crate) unsafe fn program_taskfile(
-	lba: u64,
-	sector_count: u32,
-	cmd_28: u8,
-	cmd_48: u8,
-) -> Result<u8, AtaError> {
+pub(crate) unsafe fn program_taskfile(lba: u64, sector_count: u32, cmd_28: u8, cmd_48: u8) -> Result<u8, AtaError> {
 	if sector_count == 0 {
 		return Err(AtaError::InvalidBufferSize);
 	}
@@ -121,7 +116,7 @@ pub(crate) unsafe fn program_taskfile(
 
 // region: --- ATA error type
 
-/// Minimal ATA error (mirrors forge-boot `ata::AtaError`).
+/// Minimal ATA error.
 #[derive(Debug, Clone, Copy)]
 pub enum AtaError {
 	/// Drive did not respond within the polling timeout.
@@ -196,7 +191,7 @@ impl Drop for AtaBusGuard {
 /// different task that also touches the ATA bus, that second task spins
 /// forever on a lock whose holder can never be rescheduled to release it —
 /// a hard, unrecoverable deadlock, not a slowdown. That is exactly what a
-/// `/data` open was hitting: a `read_object` block read would hang the
+/// data-volume open was hitting: a `read_object` block read would hang the
 /// whole disk path permanently, midway through a path walk whose earlier
 /// reads of the *same* blocks had succeeded moments before.
 ///
@@ -214,20 +209,23 @@ pub(crate) fn lock_ata_bus() -> AtaBusGuard {
 			core::arch::asm!("cli", options(nomem, nostack));
 		}
 	}
-	AtaBusGuard { _lock: ATA_LOCK.lock(), irq_was_enabled }
+	AtaBusGuard {
+		_lock: ATA_LOCK.lock(),
+		irq_was_enabled,
+	}
 }
 
 // endregion: --- Crate-level ATA lock
 
 // region: --- Inline port I/O
 
-// The four scalar accessors, re-exported under their conventional names so the
-// call sites below and in `reader.rs`/`writer.rs` read as ATA code rather than
-// as port-I/O plumbing. See `arch::x86_port` for the instructions themselves
-// and their constraint annotations.
+// The scalar accessors this module and the read/write paths below use,
+// re-exported under their conventional names so the call sites read as ATA
+// code rather than as port-I/O plumbing. See `arch::x86_port` for the
+// instructions themselves and their constraint annotations.
 
 #[cfg(target_arch = "x86_64")]
-pub(crate) use crate::arch::x86_port::{inb, inw, outb, outw};
+pub(crate) use crate::arch::x86_port::{inb, outb};
 
 // The bulk string ops keep their local names; `rep insw`/`rep outsw` are what
 // make a sector read one VM exit instead of 256.
@@ -259,7 +257,6 @@ pub(crate) unsafe fn ata_wait_ready() -> Result<(), AtaError> {
 	}
 	Err(AtaError::Timeout)
 }
-
 
 /// Wait for the drive to clear BSY.
 ///

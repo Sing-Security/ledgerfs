@@ -72,11 +72,11 @@ impl GearTable {
 		let mut table = [0u64; 256];
 		let mut rng = GEAR_SEED;
 
-		for i in 0..256 {
+		for slot in &mut table {
 			// Simple LCG: X_{n+1} = (a * X_n + c) mod m
 			// Constants from Numerical Recipes (good period, fast)
 			rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-			table[i] = rng;
+			*slot = rng;
 		}
 
 		Self { table }
@@ -96,6 +96,11 @@ impl GearTable {
 use core::cell::UnsafeCell;
 
 struct GearTableCell(UnsafeCell<Option<GearTable>>);
+// SAFETY: the wrapped cell is only ever written by `get_gear_table` on its
+// first call and is read-only thereafter, and that initialization runs
+// single-threaded in the boot path (see that function's `# Safety` notes).
+// Since the value is only published once fully constructed, sharing the cell
+// across threads cannot expose a torn or partially-initialized table.
 unsafe impl Sync for GearTableCell {}
 
 static GEAR_TABLE: GearTableCell = GearTableCell(UnsafeCell::new(None));
@@ -109,6 +114,9 @@ static GEAR_TABLE: GearTableCell = GearTableCell(UnsafeCell::new(None));
 /// 2. Table is read-only after initialization
 /// 3. No concurrent modification (single-threaded kernel context during init)
 fn get_gear_table() -> &'static GearTable {
+	// SAFETY: see this function's `# Safety` section above — initialization
+	// is idempotent, runs single-threaded in the boot path, and the table is
+	// read-only once published.
 	unsafe {
 		let ptr = GEAR_TABLE.0.get();
 		if (*ptr).is_none() {

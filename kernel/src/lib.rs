@@ -1,7 +1,7 @@
 //! LedgerFS v7 Core On-Disk Substrate
 //!
-//! This crate implements the Phase 1 on-disk format and mount/replay core
-//! for LedgerFS v7 as specified in ledgerfs-spec-v7.md.
+//! This crate implements the on-disk format and mount/replay core
+//! for LedgerFS v7 as specified in FORMAT.md.
 //!
 //! # Architecture
 //!
@@ -26,7 +26,6 @@
 //! - `cow`: Copy-on-write operations and transaction planning
 
 #![no_std]
-#![allow(dead_code)] // Phase 1 APIs not fully used yet
 
 extern crate alloc;
 
@@ -40,19 +39,16 @@ pub(crate) mod arch;
 #[cfg(all(feature = "reader", target_arch = "x86_64"))]
 pub(crate) mod ata_io;
 pub mod audit;
-pub mod cdc;
 pub mod commit;
 pub mod compression;
-pub mod lz4_block;
 pub mod cow;
 #[cfg(feature = "data-encryption")]
 pub mod data_crypto;
-pub mod dedupe;
 pub mod encoding;
 pub mod error;
-pub mod gc;
 pub mod intent_log;
 pub mod keyslot;
+pub mod lz4_block;
 pub mod mode;
 pub mod nt_write;
 pub mod object;
@@ -62,10 +58,8 @@ pub mod reader;
 pub mod record;
 pub mod replication;
 pub mod seal_record;
-pub mod scrubber;
 #[cfg(all(feature = "reader", target_arch = "x86_64"))]
 pub mod selftest;
-pub mod snapshot;
 pub mod superblock;
 #[cfg(all(feature = "reader", target_arch = "x86_64"))]
 pub mod writer;
@@ -78,7 +72,7 @@ pub use mode::FsMode;
 // region:    --- Constants
 
 /// Magic number for ObjectRecord (8 bytes fitting in u64)
-pub const OBJECT_RECORD_MAGIC: u64 = 0x4C4547_4552_4653; // "LEGERFS"
+pub const OBJECT_RECORD_MAGIC: u64 = 0x004C_4547_4552_4653; // "LEGERFS"
 
 /// Magic number for Superblock (8 bytes fitting in u64)
 pub const SUPERBLOCK_MAGIC: u64 = 0x5355504552424C4B; // "SUPERBLK"
@@ -100,11 +94,11 @@ pub const NUM_SUPERBLOCK_COPIES: usize = 4;
 /// (blocks 2-3), genesis audit record (block 4), plus one block of slack
 /// (block 5). No `ObjectRecord` is ever placed here — `reader::START_BLOCK`
 /// (the boot-time object scan's starting point) and any `AllocNode`
-/// initialization that marks a fresh volume's free space (e.g. fs-cbl's
-/// `MountedVolume::bootstrap_genesis`) must both respect this, or the
+/// initialization that marks a fresh volume's free space (e.g. the runtime
+/// volume driver's volume bootstrap) must both respect this, or the
 /// placement engine can allocate a real object on top of the superblock
 /// itself — found live: a genesis commit placed its root directory's
-/// `Inode` at block 0, which a later `persist_superblock()` call then
+/// `Inode` at block 0, which a later superblock-persist call then
 /// silently overwrote, permanently orphaning the object.
 pub const RESERVED_HEADER_BLOCKS: u64 = 6;
 
@@ -129,8 +123,9 @@ pub const RESERVED_TRAILER_BLOCKS: u64 = 2;
 /// Nothing else on disk records which blocks are in use. The object graph
 /// reachable from the root implies it, but reconstructing that requires
 /// walking the whole partition. Without a snapshot, a volume that already
-/// has content can only be resumed **read-only** — which meant `/data` was
-/// writable exactly once per disk image, on the boot that formatted it.
+/// has content can only be resumed **read-only** — which meant the data
+/// volume was writable exactly once per disk image, on the boot that
+/// formatted it.
 ///
 /// # Why a fixed block rather than a normal object
 ///
@@ -154,9 +149,14 @@ pub const MAX_OBJECT_SIZE: usize = 256 * 1024;
 pub const ALLOC_SNAPSHOT_MAGIC: u64 = 0x414C4C4F43534E50;
 
 /// Number of RLR entries in superblock
-/// Sizing: 56 entries × 60 bytes = 3,360 bytes RLR
-/// Total superblock: 80 (header) + 3,360 (RLR) + 24 (features) + 8 (checksum) = 3,472 bytes
-/// Leaves 624 bytes slack in 4096-byte block for future fields
+///
+/// Sizing: 56 entries × 60 bytes = 3 360 bytes, ending at byte 3 440.
+/// The block is laid out 80 (header) + 3 360 (RLR) + 24 (feature flags) = 3 464
+/// bytes, after which come fixed-offset extensions — `ext_rlr_lba` and
+/// `ext_rlr_block_count` at 3 464, a human-readable label at 3 476, the
+/// `LedgerFsLimits` block at 3 736, `active_root_hint` at 3 764, the keyslots,
+/// and the checksum in the last 8 bytes. See `superblock` for the full table;
+/// the slack this constant's sizing leaves is not contiguous.
 pub const RLR_SIZE: usize = 56;
 
 /// BLAKE3 hash size (32 bytes)

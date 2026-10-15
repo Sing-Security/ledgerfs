@@ -1,11 +1,11 @@
-//! Integration tests for W8 replication (send/receive)
+//! Integration tests for replication (send/receive)
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crucible_ledgerfs_kernel::object::{ObjectId, Root};
-use crucible_ledgerfs_kernel::replication::*;
+use ledgerfs::object::{ObjectId, Root};
+use ledgerfs::replication::*;
 
 type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
@@ -240,7 +240,7 @@ fn test_integration_receive_verify_all_objects() -> TestResult<()> {
 
 // endregion: --- Receive Stream Integration Tests
 
-// region:    --- W8 End-to-End Tests
+// region:    --- End-to-End Tests
 
 #[test]
 fn test_integration_full_send_receive_roundtrip() -> TestResult<()> {
@@ -297,4 +297,4 @@ fn test_integration_incremental_send_receive_roundtrip() -> TestResult<()> {
 	Ok(())
 }
 
-// endregion: --- W8 End-to-End Tests
+// endregion: --- End-to-End Tests

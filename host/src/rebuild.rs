@@ -13,8 +13,8 @@
 //! untouched until the caller has verified the copy. The swap is the caller's
 //! business (a `rename` of the new image over the old one, after verification).
 //!
-//! Measured on a real `bugs` campaign: 554 KiB of transcript content had grown
-//! the volume to 124 MiB. Rebuilding it returns the difference.
+//! Measured on a real volume: 554 KiB of transcript content had grown the
+//! volume to 124 MiB. Rebuilding it returns the difference.
 
 use crate::{Error, InodeKind, Result, Store};
 
@@ -71,8 +71,17 @@ impl Store {
 		let mut entries = self.read_dir(dir)?;
 		entries.sort_by(|a, b| a.name.cmp(&b.name));
 		for e in entries {
-			let path = if dir == "/" { format!("/{}", e.name) } else { format!("{dir}/{}", e.name) };
-			out.push(WalkEntry { path: path.clone(), kind: e.kind, size: e.size, mode: e.mode });
+			let path = if dir == "/" {
+				format!("/{}", e.name)
+			} else {
+				format!("{dir}/{}", e.name)
+			};
+			out.push(WalkEntry {
+				path: path.clone(),
+				kind: e.kind,
+				size: e.size,
+				mode: e.mode,
+			});
 			if e.kind == InodeKind::Directory {
 				self.walk_into(&path, out, depth + 1)?;
 			}
@@ -94,7 +103,7 @@ impl Store {
 /// the link's name and quietly change what the tree means.
 ///
 /// The caller is expected to verify before trusting the result; `walk()` on
-/// both volumes is the check (see `bugs`'s `compact`).
+/// both volumes is the check a compaction pass uses.
 pub fn rebuild_into(src: &Store, dst: &mut Store) -> Result<RebuildStats> {
 	let mut stats = RebuildStats::default();
 	for entry in src.walk()? {
@@ -146,8 +155,16 @@ mod tests {
 		s.write_new_file("top.txt", b"top", 0o644)?;
 
 		let paths: Vec<String> = s.walk()?.into_iter().map(|e| e.path).collect();
-		let pos = |p: &str| paths.iter().position(|x| x == p).unwrap_or_else(|| panic!("{p} missing from {paths:?}"));
-		assert!(pos("/a") < pos("/a/b"), "a directory must precede its children: {paths:?}");
+		let pos = |p: &str| {
+			paths
+				.iter()
+				.position(|x| x == p)
+				.unwrap_or_else(|| panic!("{p} missing from {paths:?}"))
+		};
+		assert!(
+			pos("/a") < pos("/a/b"),
+			"a directory must precede its children: {paths:?}"
+		);
 		assert!(pos("/a/b") < pos("/a/b/deep.txt"), "{paths:?}");
 		// Sorted siblings: the identity file sorts before `a`.
 		assert_eq!(paths[0], "/.ledgerfs", "{paths:?}");
@@ -193,7 +210,11 @@ mod tests {
 		let mut dst = volume()?;
 		rebuild_into(&src, &mut dst)?;
 
-		assert_eq!(dst.app()?, Some("testapp".to_string()), "identity files survive the copy");
+		assert_eq!(
+			dst.app()?,
+			Some("testapp".to_string()),
+			"identity files survive the copy"
+		);
 		assert_eq!(dst.read_file("big.bin")?, vec![7u8; 40_000]);
 		assert_eq!(dst.stat("big.bin")?.mode, 0o600, "mode is replayed, not defaulted");
 		Ok(())

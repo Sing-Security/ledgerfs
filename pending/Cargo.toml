@@ -1,0 +1,30 @@
+[package]
+name = "ledgerfs-pending"
+version = "0.7.0"
+edition = "2024"
+rust-version = "1.89"
+description = "LedgerFS subsystems that are implemented and tested but not driven by the shipping path: dedupe index, snapshots, scrubber, GC safety rules, content-defined chunking."
+license = "Apache-2.0"
+repository = "https://github.com/Sing-Security/ledgerfs"
+# Not published. FORMAT.md §44.1 calls these subsystems Tier B — "implemented in
+# the kernel crate with tests, but not driven by the host `Store` on a live
+# volume" — and says a reader deciding whether to depend on LedgerFS should read
+# Tier B as "not available". A crate nobody should depend on does not belong on
+# crates.io, but deleting the code would throw away work that is real and
+# tested, so it lives here instead: same workspace, no release.
+publish = false
+
+[lib]
+doctest = false
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]
+# The on-disk format and CoW core these subsystems are built on.
+ledgerfs = { path = "../kernel" }
+# -- Serialization (no_std compatible)
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+# -- Hashing (no_std)
+blake3 = { version = "1.8.4", default-features = false }

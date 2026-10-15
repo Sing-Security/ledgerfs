@@ -1,15 +1,16 @@
 //! Shared `BootSealRecord` type — the single canonical definition.
 //!
-//! This struct was previously identically duplicated in 5 places
-//! (forge-boot, forge-builder, crucible-keygen-seal ×2, crucible-installer).
-//! All consumers MUST import from this crate to prevent postcard decode
-//! breakage when fields are added or reordered.
+//! Consumers MUST import this type rather than restating it. It is
+//! `postcard`-encoded, so a copy with a field added or reordered still compiles
+//! while silently changing the wire format.
 //!
 //! # Wire Format
 //!
 //! Stored as a `postcard`-serialized blob at LedgerFS block 5, prefixed by a
-//! 4-byte little-endian length field (see `write_padded_block` in the
-//! installer).  Also used for `.elf.sig` sidecar files (TCB verification).
+//! 4-byte little-endian length field so it can sit inside a padded block
+//! without the block's padding being mistaken for record bytes. The same
+//! encoding appears in `.elf.sig` sidecar files, where the record seals an
+//! executable rather than a root.
 //!
 //! # Schema Version
 //!
@@ -35,12 +36,13 @@ pub const ROOT_SEAL_SCHEMA_V2: u16 = 2;
 
 /// Compact root seal record stored at LedgerFS block 5 for boot verification.
 ///
-/// The installer produces a full dual-sig [`temper::Seal`] (ML-DSA-65
-/// + SLH-DSA) via [`temper::create_seal`].  Only the primary
-/// (ML-DSA-65) data and the signing binding are stored here so the record fits
-/// in a single 4 KiB block.  The complete `Seal` (including the SLH-DSA backup)
-/// is preserved for post-boot TCB-level verification, which is not yet
-/// implemented.
+/// A seal is produced outside this crate: a full dual-sig `temper::Seal`
+/// (ML-DSA-65 + SLH-DSA) comes from the tool that seals an image, and only the
+/// primary (ML-DSA-65) half and the signing binding are stored here, so the
+/// record fits in a single 4 KiB block. The complete `Seal`, including the
+/// SLH-DSA backup, stays with the tool for verification of the executables it
+/// sealed. This module defines the type and nothing else: it neither produces
+/// a seal nor checks one.
 ///
 /// # Approximate Sizes
 ///

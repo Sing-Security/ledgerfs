@@ -3,8 +3,8 @@
 //! LedgerFS is an embeddable filesystem, so "at once" means two things that a
 //! single-process, single-threaded design never has to answer: several threads
 //! inside one embedding application, and several processes over one file (a
-//! `bugs serve` writing a campaign while `bugs cat` reads it — the case that
-//! made read-only opens lock-free in the first place).
+//! live writer appending while a reader inspects it — the case that made
+//! read-only opens lock-free in the first place).
 //!
 //! # The rules this file pins
 //!
@@ -40,7 +40,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
-use crucible_ledgerfs_host::{BlockDevice, Error, FileBlockDevice, MemBlockDevice, Result, Store};
+use ledgerfs_host::{BlockDevice, Error, FileBlockDevice, MemBlockDevice, Result, Store};
 
 mod common;
 use common::{TempImage, bytes, expect_err, watched};
@@ -109,7 +109,7 @@ fn test_a_store_can_be_moved_to_a_thread() -> Result<()> {
 
 	// -- Check: the work really happened on the volume, seen from outside
 	joined?;
-	let fs = crucible_ledgerfs_host::HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(bytes(&watch))?))?;
+	let fs = ledgerfs_host::HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(bytes(&watch))?))?;
 	assert_eq!(fs.read_file("/d/from-a-thread")?, b"moved");
 	Ok(())
 }
@@ -132,31 +132,33 @@ fn test_a_second_writer_in_another_thread_is_refused() -> Result<()> {
 	let other = std::thread::spawn(move || FileBlockDevice::open_rw(&path, 0, 64 * BS).err());
 
 	// -- Check
-	let e = other.join().expect("the contender thread panicked").expect("a second writer was allowed");
+	let e = other
+		.join()
+		.expect("the contender thread panicked")
+		.expect("a second writer was allowed");
 	assert!(matches!(e, Error::Locked { .. }), "got {e:?}");
 	drop(first);
 
 	// -- Check: and releasing it in the first thread lets the next one through
 	let again = std::thread::spawn(move || FileBlockDevice::open_rw(&image.path, 0, 64 * BS).is_ok());
-	assert!(again.join().expect("the retry thread panicked"), "the lock did not outlive the handle");
+	assert!(
+		again.join().expect("the retry thread panicked"),
+		"the lock did not outlive the handle"
+	);
 	Ok(())
 }
 
 #[test]
 fn test_a_reader_and_a_writer_can_share_a_file_across_threads() -> Result<()> {
-	// -- Setup & Fixtures: the `bugs cat` case. A reader holding a volume open
-	// must not stop a writer, and the reader must see the writer's committed
-	// changes without reopening — otherwise every inspection of a live volume
-	// would need a copy of it first.
+	// -- Setup & Fixtures: the read-only-inspector case. A reader holding a
+	// volume open must not stop a writer, and the reader must see the writer's
+	// committed changes without reopening — otherwise every inspection of a live
+	// volume would need a copy of it first.
 	let image = TempImage::new("reader-writer");
 	let mut writer = Store::format(Box::new(FileBlockDevice::create(&image.path, 256 * BS)?), 256)?;
 	writer.write_new_file("/state", b"v0", 0o644)?;
 
-	let reader = crucible_ledgerfs_host::HostFs::mount_device(Box::new(FileBlockDevice::open(
-		&image.path,
-		0,
-		256 * BS,
-	)?))?;
+	let reader = ledgerfs_host::HostFs::mount_device(Box::new(FileBlockDevice::open(&image.path, 0, 256 * BS)?))?;
 
 	// -- Exec: the writer commits; the reader, opened earlier, reads again
 	writer.write_file("/state", b"v1", 0o644)?;
@@ -168,13 +170,17 @@ fn test_a_reader_and_a_writer_can_share_a_file_across_threads() -> Result<()> {
 	// need the writer to close first.
 	let raw = std::fs::read(&image.path)?;
 	assert!(raw.len() >= 256 * BS as usize);
-	let fresh = crucible_ledgerfs_host::HostFs::mount_device(Box::new(FileBlockDevice::open(
-		&image.path,
-		0,
-		256 * BS,
-	)?))?;
-	assert_eq!(fresh.read_file("/state")?, b"v1", "the writer's commit is not visible to a reader");
-	assert_eq!(reader.read_file("/state")?, b"v0", "an already-mounted reader follows its own root");
+	let fresh = ledgerfs_host::HostFs::mount_device(Box::new(FileBlockDevice::open(&image.path, 0, 256 * BS)?))?;
+	assert_eq!(
+		fresh.read_file("/state")?,
+		b"v1",
+		"the writer's commit is not visible to a reader"
+	);
+	assert_eq!(
+		reader.read_file("/state")?,
+		b"v0",
+		"an already-mounted reader follows its own root"
+	);
 	Ok(())
 }
 
@@ -231,7 +237,10 @@ fn test_no_reader_ever_sees_half_of_a_block() -> Result<()> {
 	for h in handles {
 		h.join().expect("a thread panicked");
 	}
-	assert!(reads.load(Ordering::Relaxed) > 1000, "the readers did not do enough work to count");
+	assert!(
+		reads.load(Ordering::Relaxed) > 1000,
+		"the readers did not do enough work to count"
+	);
 	Ok(())
 }
 
@@ -285,7 +294,7 @@ fn test_a_snapshot_taken_during_a_commit_is_always_a_mountable_volume() -> Resul
 	let mut truncated = 0u64;
 	while written.load(Ordering::Relaxed) < 60 {
 		let snapshot = bytes(&watch);
-		let fs = crucible_ledgerfs_host::HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(snapshot)?))?;
+		let fs = ledgerfs_host::HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(snapshot)?))?;
 
 		// -- Check: the file is either whole, empty, or not there at all.
 		//
@@ -322,7 +331,10 @@ fn test_a_snapshot_taken_during_a_commit_is_always_a_mountable_volume() -> Resul
 	// -- Check
 	stop.store(true, Ordering::Relaxed);
 	handle.join().expect("the writer thread panicked")?;
-	assert!(present >= 1, "no snapshot caught a whole version, so the check proved nothing");
+	assert!(
+		present >= 1,
+		"no snapshot caught a whole version, so the check proved nothing"
+	);
 	assert!(
 		present + absent + truncated >= 1,
 		"the loop must have taken at least one snapshot"
@@ -403,7 +415,11 @@ fn test_two_stores_over_one_in_memory_buffer_both_work_and_that_is_the_caller_s_
 
 	// -- Check: `b` mounts the same tree `a` committed, because it is the same
 	// volume — that part is ordinary.
-	assert_eq!(b.read_file("/a")?, b"from a", "two handles on one volume must agree on what is on it");
+	assert_eq!(
+		b.read_file("/a")?,
+		b"from a",
+		"two handles on one volume must agree on what is on it"
+	);
 
 	// -- Check: and both believe they are writable. Neither warns; the volume
 	// has one allocator and no lock behind it, so keeping the rule is the
@@ -430,9 +446,9 @@ fn test_a_store_and_a_raw_device_handle_see_the_same_volume() -> Result<()> {
 
 	// -- Check: the raw handle sees the commit
 	let snapshot = bytes(&watch);
-	let fs = crucible_ledgerfs_host::HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(snapshot)?))?;
+	let fs = ledgerfs_host::HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(snapshot)?))?;
 	assert_eq!(fs.read_dir("/d")?.len(), 0);
-	assert_eq!(fs.stat("/d")?.kind, crucible_ledgerfs_host::InodeKind::Directory);
+	assert_eq!(fs.stat("/d")?.kind, ledgerfs_host::InodeKind::Directory);
 	Ok(())
 }
 
@@ -454,11 +470,7 @@ fn test_a_volume_formatted_by_one_handle_mounts_in_another_thread() -> Result<()
 	.expect("the formatting thread panicked")?;
 
 	// -- Check
-	let fs = crucible_ledgerfs_host::HostFs::mount_device(Box::new(FileBlockDevice::open(
-		&image.path,
-		0,
-		256 * BS,
-	)?))?;
+	let fs = ledgerfs_host::HostFs::mount_device(Box::new(FileBlockDevice::open(&image.path, 0, 256 * BS)?))?;
 	assert_eq!(fs.read_file("/made")?, b"here");
 	Ok(())
 }

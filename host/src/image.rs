@@ -1,14 +1,14 @@
 //! MBR partition table parsing.
 //!
 //! Reads the partitioning the image already carries rather than recomputing
-//! `CrucibleDiskLayout`'s layout formula from the disk size. The two agree
-//! today, but only the former stays correct for an image written by an
-//! installer with an explicit `/system` size (`for_disk_mb_with_system`) or a
-//! real disk formatted on target — and it is ~20 lines.
+//! the disk layout's formula from the disk size. The two agree today, but only
+//! the former stays correct for an image written by an installer with an
+//! explicit system-partition size, or a real disk formatted on target — and it
+//! is ~20 lines.
 //!
-//! The three entries are written by `forge-builder/src/partition.rs`'s
-//! `write_mbr`: `/boot` as type `0x83`, then `/system` and `/data` as type
-//! `0xC0` (`PART_TYPE_CRUCIBLE_LFS`), in that order.
+//! An image carries three entries: the boot partition as type `0x83`, then the
+//! system and data volumes as type `0xC0` (`PART_TYPE_LEDGERFS`), in that
+//! order.
 
 use std::fs::File;
 use std::io::Read;
@@ -30,22 +30,24 @@ const MBR_SIGNATURE: [u8; 2] = [0x55, 0xAA];
 /// Partition type byte for `/boot` (Linux, per `PART_TYPE_BOOT`).
 pub const PART_TYPE_BOOT: u8 = 0x83;
 
-/// Partition type byte for a LedgerFS volume (`PART_TYPE_CRUCIBLE_LFS`).
-pub const PART_TYPE_CRUCIBLE_LFS: u8 = 0xC0;
+/// Partition type byte for a LedgerFS volume (`PART_TYPE_LEDGERFS`).
+pub const PART_TYPE_LEDGERFS: u8 = 0xC0;
 
-/// Which of the three Crucible partitions an entry is.
+/// Which of the three image partitions an entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartitionKind {
 	/// The FAT/EFI-bootable partition. Not a LedgerFS volume.
 	Boot,
-	/// The sealed TCB volume — populated and committed by `forge-builder`.
+	/// The sealed system volume — populated and committed when the image is
+	/// built.
 	System,
-	/// The writable data volume — formatted by `fs_init`, populated at boot.
+	/// The writable data volume — formatted by the image initialiser, populated
+	/// at boot.
 	Data,
 }
 
 impl PartitionKind {
-	/// The name this partition is mounted at, matching `fs_init`'s labels.
+	/// The mount point this partition's volume is expected to appear at.
 	pub fn label(self) -> &'static str {
 		match self {
 			Self::Boot => "/boot",
@@ -90,7 +92,7 @@ impl Partition {
 ///
 /// Kinds are assigned by type byte and order: the first `0x83` entry is
 /// `/boot`, then the first `0xC0` is `/system` and the second is `/data` —
-/// the order `write_mbr` emits them in.
+/// the order the MBR writer emits them in.
 ///
 /// "First" and "second" are limits, not a description of the likely case: an
 /// entry past those two has no kind to carry, so it is dropped exactly as an
@@ -132,7 +134,7 @@ pub fn read_partitions(path: &Path) -> Result<Vec<Partition>> {
 		let kind = if part_type == PART_TYPE_BOOT && !boot_taken {
 			boot_taken = true;
 			PartitionKind::Boot
-		} else if part_type == PART_TYPE_CRUCIBLE_LFS && lfs_seen < 2 {
+		} else if part_type == PART_TYPE_LEDGERFS && lfs_seen < 2 {
 			// Two, and only two. This used to name every `0xC0` entry — the
 			// first `/system`, and *everything after it* `/data` — so a table
 			// with three of them produced two partitions claiming the same

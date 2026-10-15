@@ -1,6 +1,6 @@
 //! Compression support for LedgerFS chunks
 //!
-//! Per §28 of ledgerfs-spec-v7.md:
+//! Per §28 of FORMAT.md:
 //! - Supports None, LZ4, ZSTD (level 3 default), ZSTD_HIGH
 //! - Compression threshold: size > 4 KiB and ratio > 1.1
 //! - Stored bytes are compressed, canonical bytes remain uncompressed for ObjectId
@@ -84,9 +84,9 @@ pub fn compress(data: &[u8], algorithm: CompressionAlgorithm) -> Result<Option<V
 		CompressionAlgorithm::Lz4 => {
 			// `crate::lz4_block` is the block format in safe Rust over `alloc`,
 			// so this works in ring 0. It replaced a `std`-gated binding to the
-			// C library that made LZ4 unavailable in every build the kernel
-			// and fs-cbl actually use — the algorithm was reachable only from
-			// tests. Format-compatible with the reference implementation;
+			// C library, under which LZ4 was unavailable on target: the
+			// algorithm was reachable only from tests. Format-compatible with the
+			// reference implementation;
 			// `lz4_block::tests::test_interop_with_reference_lz4` pins that.
 			let compressed = crate::lz4_block::compress(data);
 			check_compression_ratio(data.len(), compressed.len(), compressed)
@@ -256,8 +256,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_compression_zstd_compressible_data() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -280,8 +280,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_compression_zstd_high_better_ratio() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -300,8 +300,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_compression_random_data_may_not_compress() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -327,8 +327,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_compression_deterministic() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -346,8 +346,8 @@ mod tests {
 
 	#[test]
 	// Exercises LZ4/ZSTD, which `std = ["dep:lz4", "dep:zstd"]` gates.
-	// The kernel and fs-cbl take this crate with `default-features = false`,
-	// so compression is unavailable on target and this cannot run there.
+	// This crate is built on target with `default-features = false`, so the
+	// `lz4` and `zstd` decoders are absent there and this test cannot run.
 	#[cfg(feature = "std")]
 	fn test_decompression_size_mismatch_error() -> TestResult<()> {
 		// -- Setup & Fixtures

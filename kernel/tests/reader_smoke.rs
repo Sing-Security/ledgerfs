@@ -14,8 +14,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::TryInto;
 
-use crucible_ledgerfs_kernel::OBJECT_RECORD_MAGIC;
-use crucible_ledgerfs_kernel::object::{
+use ledgerfs::OBJECT_RECORD_MAGIC;
+use ledgerfs::object::{
 	DirEntry, DirNode, ExtentDescriptor, ExtentNode, Inode, InodeKind, ObjectId, ObjectRef, StorageHint,
 };
 

@@ -1,0 +1,33 @@
+# The toolchain this repository is developed and tested against.
+#
+# This file and the `rust-version` key in each manifest answer different
+# questions, and both are needed:
+#
+#   * `rust-version` is the floor a *consumer* may build with. For `kernel/` and
+#     `host/` that is 1.89. `benchmarks/` declares 1.90, because `redb`, which it
+#     links against, does.
+#   * This file is the toolchain *this* repository's CI and local builds use.
+#     For a library that should be a recent stable rather than the floor:
+#     building on the floor permanently hides new lints, new warnings, and new
+#     inference changes until a user meets them first.
+#
+# Tracking `stable` rather than pinning an exact version is deliberate. Nothing
+# here is coupled to a particular compiler's internals — no `-Zbuild-std`, no
+# patched sysroot — so a new stable release is a signal to fix something, not a
+# reason to hold still, and a pin would rot silently until someone bumped it.
+#
+# That is not hypothetical: the first build of this tree on a stable newer than
+# 1.94 failed the lint job, because a newer clippy widened `for_kv_map` to cover
+# `for (_, v) in map.iter_mut()`, which four lines of a kernel test used. The
+# fix was four lines. Had the tree been pinned to an exact version, that would
+# instead have surfaced as a user filing a lint failure on a build they could
+# not reproduce.
+#
+# The floors are checked rather than asserted: the CI `msrv` job builds both
+# published crates on 1.89.
+#
+# `cargo +1.89 build …` overrides this file for a single command, which is how
+# that job works.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

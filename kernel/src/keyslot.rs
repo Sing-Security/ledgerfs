@@ -32,8 +32,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-
 use crate::error::{Error, Result};
 
 // region: --- Constants
@@ -139,7 +137,11 @@ impl KeySlot {
 	pub const fn empty() -> Self {
 		Self {
 			kind: SlotKind::Empty,
-			kdf: KdfParams { algorithm: 1, iterations: 0, salt: [0u8; 16] },
+			kdf: KdfParams {
+				algorithm: 1,
+				iterations: 0,
+				salt: [0u8; 16],
+			},
 			wrapped_key: [0u8; MASTER_KEY_LEN],
 			iv: [0u8; 16],
 			key_checksum: 0,
@@ -190,7 +192,6 @@ pub fn derive_kek(passphrase: &[u8], params: &KdfParams) -> Result<[u8; 32]> {
 
 #[cfg(feature = "data-encryption")]
 mod wrap {
-	use super::*;
 	use aes::Aes256;
 	use aes::cipher::{Array, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 
@@ -229,6 +230,10 @@ mod wrap {
 }
 
 /// Checksum of a plaintext master key, used to recognise a correct unwrap.
+///
+/// Only the sealing path below calls this, so it is gated with it: a build
+/// without `data-encryption` parses key slots but never wraps or unwraps a key.
+#[cfg(feature = "data-encryption")]
 fn master_key_checksum(key: &[u8; MASTER_KEY_LEN]) -> u64 {
 	let mut h = blake3::Hasher::new();
 	h.update(b"LedgerFS.VolumeKeyslot.KeyCheck.v1");
@@ -251,7 +256,13 @@ pub fn seal_slot(
 	}
 	let mut wrapped = *master_key;
 	wrap::cbc_encrypt(kek, &iv, &mut wrapped);
-	Ok(KeySlot { kind, kdf, wrapped_key: wrapped, iv, key_checksum: master_key_checksum(master_key) })
+	Ok(KeySlot {
+		kind,
+		kdf,
+		wrapped_key: wrapped,
+		iv,
+		key_checksum: master_key_checksum(master_key),
+	})
 }
 
 /// Recover the master key from `slot` using `kek`.
@@ -374,9 +385,16 @@ mod tests {
 	type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
 	fn params(iters: u32) -> KdfParams {
-		KdfParams { algorithm: 1, iterations: iters, salt: [0x5A; 16] }
+		KdfParams {
+			algorithm: 1,
+			iterations: iters,
+			salt: [0x5A; 16],
+		}
 	}
 
+	/// Sealing and opening a slot is the only thing that consumes a master
+	/// key, and it is behind `data-encryption` — so this helper is too.
+	#[cfg(feature = "data-encryption")]
 	fn master() -> [u8; MASTER_KEY_LEN] {
 		let mut k = [0u8; MASTER_KEY_LEN];
 		for (i, b) in k.iter_mut().enumerate() {
@@ -412,7 +430,10 @@ mod tests {
 	fn test_unknown_kdf_algorithm_is_refused() {
 		let mut p = params(4);
 		p.algorithm = 99;
-		assert!(derive_kek(b"x", &p).is_err(), "an unimplemented KDF must not silently fall back to a known one");
+		assert!(
+			derive_kek(b"x", &p).is_err(),
+			"an unimplemented KDF must not silently fall back to a known one"
+		);
 	}
 
 	#[cfg(feature = "data-encryption")]
@@ -424,7 +445,10 @@ mod tests {
 		let slot = seal_slot(SlotKind::Passphrase, params(128), &kek, [0x11; 16], &mk)?;
 
 		// The stored bytes must not be the master key.
-		assert_ne!(slot.wrapped_key, mk, "wrapped key must not equal the plaintext master key");
+		assert_ne!(
+			slot.wrapped_key, mk,
+			"wrapped key must not equal the plaintext master key"
+		);
 
 		assert_eq!(open_slot(&slot, &kek)?, mk);
 		Ok(())
@@ -440,7 +464,10 @@ mod tests {
 		let bad = derive_kek(b"wrong", &params(128))?;
 		let slot = seal_slot(SlotKind::Passphrase, params(128), &good, [0x22; 16], &master())?;
 
-		assert!(open_slot(&slot, &bad).is_err(), "a wrong KEK must be refused, never returned as a key");
+		assert!(
+			open_slot(&slot, &bad).is_err(),
+			"a wrong KEK must be refused, never returned as a key"
+		);
 		Ok(())
 	}
 
@@ -453,7 +480,10 @@ mod tests {
 		// Flip a ciphertext bit.
 		let mut t = good;
 		t.wrapped_key[0] ^= 0x01;
-		assert!(open_slot(&t, &kek).is_err(), "modified ciphertext must fail the checksum");
+		assert!(
+			open_slot(&t, &kek).is_err(),
+			"modified ciphertext must fail the checksum"
+		);
 
 		// Flip an IV bit — corrupts only the first block, still detectable.
 		let mut t2 = good;
@@ -553,8 +583,15 @@ mod tests {
 		sb.encode(&mut block)?;
 		let back = Superblock::decode(&block)?;
 
-		assert_eq!(back.keyslots[0], sb.keyslots[0], "keyslot must survive a superblock round trip");
-		assert_eq!(open_slot(&back.keyslots[0], &kek)?, mk, "master key must still unwrap after the round trip");
+		assert_eq!(
+			back.keyslots[0], sb.keyslots[0],
+			"keyslot must survive a superblock round trip"
+		);
+		assert_eq!(
+			open_slot(&back.keyslots[0], &kek)?,
+			mk,
+			"master key must still unwrap after the round trip"
+		);
 
 		// And a *second* rewrite (what a commit does repeatedly) must not
 		// erode them either.
@@ -562,7 +599,11 @@ mod tests {
 		let mut sb2 = back;
 		sb2.encode(&mut block2)?;
 		let back2 = Superblock::decode(&block2)?;
-		assert_eq!(open_slot(&back2.keyslots[0], &kek)?, mk, "repeated superblock writes must preserve key material");
+		assert_eq!(
+			open_slot(&back2.keyslots[0], &kek)?,
+			mk,
+			"repeated superblock writes must preserve key material"
+		);
 
 		Ok(())
 	}

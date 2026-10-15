@@ -1,14 +1,19 @@
-//! The six x86 port-I/O instructions LedgerFS issues, and nothing else.
+//! The four x86 port-I/O instructions LedgerFS issues, and nothing else.
 //!
 //! # Why these live here rather than in a dependency
 //!
 //! `reader.rs` and `writer.rs` drive an ATA controller through programmed I/O:
-//! four register accessors (`inb`, `inw`, `outb`, `outw`) and the two bulk
-//! string transfers (`rep insw`, `rep outsw`) that make a 512-byte sector one
-//! instruction instead of 256. Those six are the crate's entire hardware
-//! surface, and a filesystem that owns an on-disk format should not take a
-//! dependency on its host OS's assembly crate to reach them — the dependency
-//! would be the only thing tying this crate to CrucibleOS.
+//! two register accessors (`inb`, `outb`) and the two bulk string transfers
+//! (`rep insw`, `rep outsw`) that make a 512-byte sector one instruction
+//! instead of 256. Those four are the crate's entire hardware surface, and a
+//! filesystem that owns an on-disk format should not take a dependency on its
+//! host OS's assembly crate to reach them — the dependency would be the only
+//! thing tying this crate to its host OS.
+//!
+//! The ATA task-file registers are 8-bit; the only 16-bit access the path needs
+//! is a sector's worth of words through the data register, which the two bulk
+//! transfers cover. The scalar 16-bit forms (`inw`, `outw`) were dropped rather
+//! than carried unused.
 //!
 //! # The constraint annotations, and why they are not decoration
 //!
@@ -38,9 +43,7 @@ use core::arch::asm;
 pub(crate) unsafe fn outb(port: u16, val: u8) {
 	// SAFETY: `out` to a port the caller has identified; `nomem`/`nostack`/
 	// `preserves_flags` all hold for it.
-	unsafe {
-		asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags))
-	}
+	unsafe { asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags)) }
 }
 
 /// Read a byte from an I/O port.
@@ -54,45 +57,13 @@ pub(crate) unsafe fn outb(port: u16, val: u8) {
 pub(crate) unsafe fn inb(port: u16) -> u8 {
 	let val: u8;
 	// SAFETY: see `outb`; `in` from a port the caller has identified.
-	unsafe {
-		asm!("in al, dx", out("al") val, in("dx") port, options(nomem, nostack, preserves_flags))
-	}
-	val
-}
-
-/// Write a 16-bit word to an I/O port.
-///
-/// # Safety
-///
-/// See [`outb`].
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-pub(crate) unsafe fn outw(port: u16, val: u16) {
-	// SAFETY: see `outb`; the 16-bit form.
-	unsafe {
-		asm!("out dx, ax", in("dx") port, in("ax") val, options(nomem, nostack, preserves_flags))
-	}
-}
-
-/// Read a 16-bit word from an I/O port.
-///
-/// # Safety
-///
-/// See [`inb`].
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-pub(crate) unsafe fn inw(port: u16) -> u16 {
-	let val: u16;
-	// SAFETY: see `inb`; the 16-bit form.
-	unsafe {
-		asm!("in ax, dx", out("ax") val, in("dx") port, options(nomem, nostack, preserves_flags))
-	}
+	unsafe { asm!("in al, dx", out("al") val, in("dx") port, options(nomem, nostack, preserves_flags)) }
 	val
 }
 
 /// Read `count` 16-bit words from `port` into `dst` with one `rep insw`.
 ///
-/// Worth having as a primitive rather than a loop of [`inw`]: under
+/// Worth having as a primitive rather than a loop of single-word reads: under
 /// virtualization each `in` is its own VM exit, so a 512-byte sector read
 /// costs 256 exits word-at-a-time and one exit as a string operation.
 ///

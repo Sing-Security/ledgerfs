@@ -1,6 +1,6 @@
 //! Intent Log with O(N) ring parsing
 //!
-//! Per §16 and §17 of ledgerfs-spec-v7.md:
+//! Per §16 and §17 of FORMAT.md:
 //! - Intent log is a circular ring buffer
 //! - Records transaction lifecycle events
 //! - O(N) parsing with seq-window selection
@@ -288,70 +288,70 @@ pub fn parse_ring(ring: &[u8], ring_size: usize) -> Result<Vec<IntentLogRecord>>
 	let mut offset = 0;
 	while offset + 8 <= ring_size {
 		// Check for magic at this offset
-		if let Ok(magic) = read_u64(&ring[offset..]) {
-			if magic == INTENT_LOG_MAGIC {
-				// Potential record - need to read record_len
-				// Record header minimum is 30 bytes (before hash)
-				const HEADER_BEFORE_LEN: usize = 26; // magic(8) + seq(8) + tx_id(8) + type(2)
+		if let Ok(magic) = read_u64(&ring[offset..])
+			&& magic == INTENT_LOG_MAGIC
+		{
+			// Potential record - need to read record_len
+			// Record header minimum is 30 bytes (before hash)
+			const HEADER_BEFORE_LEN: usize = 26; // magic(8) + seq(8) + tx_id(8) + type(2)
 
-				// Check if we can read record_len (need at least 30 bytes for header)
-				let can_read_len = if offset + HEADER_BEFORE_LEN + 4 <= ring_size {
+			// Check if we can read record_len (need at least 30 bytes for header)
+			let can_read_len = if offset + HEADER_BEFORE_LEN + 4 <= ring_size {
+				// Can read directly
+				true
+			} else if offset + HEADER_BEFORE_LEN < ring_size {
+				// Header wraps, need to reassemble to read record_len
+				true
+			} else {
+				// Not enough bytes even with wrapping
+				false
+			};
+
+			if can_read_len {
+				// Read record_len (handles wrap-around if needed)
+				let record_len = if offset + HEADER_BEFORE_LEN + 4 <= ring_size {
 					// Can read directly
-					true
-				} else if offset + HEADER_BEFORE_LEN < ring_size {
-					// Header wraps, need to reassemble to read record_len
-					true
+					read_u32(&ring[offset + HEADER_BEFORE_LEN..])?
 				} else {
-					// Not enough bytes even with wrapping
-					false
+					// Need to wrap to read record_len
+					let remaining = ring_size - (offset + HEADER_BEFORE_LEN);
+					let mut len_bytes = [0u8; 4];
+					len_bytes[..remaining].copy_from_slice(&ring[offset + HEADER_BEFORE_LEN..]);
+					len_bytes[remaining..].copy_from_slice(&ring[..4 - remaining]);
+					read_u32(&len_bytes)?
 				};
 
-				if can_read_len {
-					// Read record_len (handles wrap-around if needed)
-					let record_len = if offset + HEADER_BEFORE_LEN + 4 <= ring_size {
-						// Can read directly
-						read_u32(&ring[offset + HEADER_BEFORE_LEN..])?
-					} else {
-						// Need to wrap to read record_len
-						let remaining = ring_size - (offset + HEADER_BEFORE_LEN);
-						let mut len_bytes = [0u8; 4];
-						len_bytes[..remaining].copy_from_slice(&ring[offset + HEADER_BEFORE_LEN..]);
-						len_bytes[remaining..].copy_from_slice(&ring[..4 - remaining]);
-						read_u32(&len_bytes)?
-					};
+				if record_len >= MIN_RECORD_LEN && record_len <= ring_size as u32 {
+					let record_end = offset + record_len as usize;
 
-					if record_len >= MIN_RECORD_LEN && record_len <= ring_size as u32 {
-						let record_end = offset + record_len as usize;
+					// Check if record wraps around ring boundary (§17.3)
+					if record_end > ring_size {
+						// Need to reassemble wrapped record
+						let first_part_len = ring_size - offset;
+						let second_part_len = record_end - ring_size;
 
-						// Check if record wraps around ring boundary (§17.3)
-						if record_end > ring_size {
-							// Need to reassemble wrapped record
-							let first_part_len = ring_size - offset;
-							let second_part_len = record_end - ring_size;
+						// Create contiguous buffer
+						let mut temp_buf = vec![0u8; record_len as usize];
+						temp_buf[..first_part_len].copy_from_slice(&ring[offset..ring_size]);
+						temp_buf[first_part_len..].copy_from_slice(&ring[..second_part_len]);
 
-							// Create contiguous buffer
-							let mut temp_buf = vec![0u8; record_len as usize];
-							temp_buf[..first_part_len].copy_from_slice(&ring[offset..ring_size]);
-							temp_buf[first_part_len..].copy_from_slice(&ring[..second_part_len]);
-
-							// Try to decode from reassembled buffer
-							match IntentLogRecord::decode(&temp_buf) {
-								Ok(record) => {
-									valid_records.push(record);
-								}
-								Err(_) => {
-									// Invalid record, continue scanning
-								}
+						// Try to decode from reassembled buffer
+						match IntentLogRecord::decode(&temp_buf) {
+							Ok(record) => {
+								valid_records.push(record);
 							}
-						} else {
-							// No wrap-around, decode directly
-							match IntentLogRecord::decode(&ring[offset..]) {
-								Ok(record) => {
-									valid_records.push(record);
-								}
-								Err(_) => {
-									// Invalid record, continue scanning
-								}
+							Err(_) => {
+								// Invalid record, continue scanning
+							}
+						}
+					} else {
+						// No wrap-around, decode directly
+						match IntentLogRecord::decode(&ring[offset..]) {
+							Ok(record) => {
+								valid_records.push(record);
+							}
+							Err(_) => {
+								// Invalid record, continue scanning
 							}
 						}
 					}
@@ -386,7 +386,7 @@ pub fn parse_ring(ring: &[u8], ring_size: usize) -> Result<Vec<IntentLogRecord>>
 	// Step 3: Check for seq collision (§17.7)
 	let mut seq_map: BTreeMap<u64, Vec<[u8; BLAKE3_HASH_SIZE]>> = BTreeMap::new();
 	for record in &window_records {
-		seq_map.entry(record.seq).or_insert_with(Vec::new).push(record.record_hash);
+		seq_map.entry(record.seq).or_default().push(record.record_hash);
 	}
 
 	for (seq, hashes) in seq_map {
@@ -421,10 +421,10 @@ pub fn build_tx_views(records: &[IntentLogRecord]) -> BTreeMap<u64, TxView> {
 			IntentRecordType::PrepareRoot => {
 				view.prepare_root_seq = Some(record.seq);
 				// Extract commit_seq from payload if available
-				if record.payload.len() >= 8 {
-					if let Ok(commit_seq) = read_u64(&record.payload) {
-						view.prepare_root_commit_seq = Some(commit_seq);
-					}
+				if record.payload.len() >= 8
+					&& let Ok(commit_seq) = read_u64(&record.payload)
+				{
+					view.prepare_root_commit_seq = Some(commit_seq);
 				}
 			}
 			IntentRecordType::CommitRoot => {
@@ -443,22 +443,22 @@ pub fn build_tx_views(records: &[IntentLogRecord]) -> BTreeMap<u64, TxView> {
 /// Determine replay decision based on mounted commit_seq and intent log (§18.5)
 pub fn determine_replay(mounted_seq: u64, tx_views: &BTreeMap<u64, TxView>) -> Result<ReplayDecision> {
 	// Look for a PREPARE_ROOT with commit_seq = mounted_seq + 1
-	for (_tx_id, view) in tx_views {
-		if let Some(prepare_commit_seq) = view.prepare_root_commit_seq {
-			if prepare_commit_seq == mounted_seq + 1 {
-				// Check base binding matches
-				// (Simplified for Phase 1 - full verification in later phases)
+	for view in tx_views.values() {
+		if let Some(prepare_commit_seq) = view.prepare_root_commit_seq
+			&& prepare_commit_seq == mounted_seq + 1
+		{
+			// Check base binding matches
+			// (Simplified: full base-binding verification is deferred)
 
-				// Check that transaction is not aborted
-				if view.is_aborted() {
-					continue;
-				}
-
-				// Valid replay candidate
-				return Ok(ReplayDecision::ReplayTo {
-					commit_seq: mounted_seq + 1,
-				});
+			// Check that transaction is not aborted
+			if view.is_aborted() {
+				continue;
 			}
+
+			// Valid replay candidate
+			return Ok(ReplayDecision::ReplayTo {
+				commit_seq: mounted_seq + 1,
+			});
 		}
 	}
 

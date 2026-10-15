@@ -41,13 +41,13 @@
 mod common;
 
 use common::*;
-use crucible_ledgerfs_host::{Error, HostFs, MemBlockDevice, Store};
+use ledgerfs_host::{Error, HostFs, MemBlockDevice, Store};
 
-use crucible_ledgerfs_kernel::compression::CompressionAlgorithm;
-use crucible_ledgerfs_kernel::object::{DirEntry, DirNode, Inode, ObjectId, ObjectRef, StorageHint};
-use crucible_ledgerfs_kernel::record::{ObjectRecordWriter, ObjectType};
-use crucible_ledgerfs_kernel::superblock::Superblock;
-use crucible_ledgerfs_kernel::{BLOCK_SIZE, RESERVED_HEADER_BLOCKS};
+use ledgerfs::compression::CompressionAlgorithm;
+use ledgerfs::object::{DirEntry, DirNode, Inode, ObjectId, ObjectRef, StorageHint};
+use ledgerfs::record::{ObjectRecordWriter, ObjectType};
+use ledgerfs::superblock::Superblock;
+use ledgerfs::{BLOCK_SIZE, RESERVED_HEADER_BLOCKS};
 
 use std::thread;
 

@@ -1,6 +1,6 @@
 //! Allocation tree node for LedgerFS v7
 //!
-//! Per §14 of ledgerfs-spec-v7.md:
+//! Per §14 of FORMAT.md:
 //! - Allocation tree is a CoW B-tree tracking block states
 //! - Uses BTreeMap for deterministic extent ordering
 //! - Content-addressed using BLAKE3
@@ -114,7 +114,7 @@ impl AllocNode {
 	/// snapshot when it does not, and a volume with no valid snapshot resumes
 	/// **read-only for the rest of its life**. Measured before this existed,
 	/// the node grew by a fixed ~1098 bytes per commit batch against a 4076
-	/// byte budget, so `/data` became permanently read-only after about a
+	/// byte budget, so the data volume became permanently read-only after about a
 	/// dozen write transactions. Coalescing keeps a sequential allocation
 	/// pattern at a handful of extents no matter how many commits it takes.
 	///
@@ -123,15 +123,21 @@ impl AllocNode {
 		// Merge forward first: absorbing the successor leaves `lba` still
 		// valid as a key, whereas merging backward first would move it.
 		loop {
-			let Some(cur) = self.extents.get(&lba).copied() else { return };
-			let Some((&next_lba, &next)) = self.extents.range(lba + 1..).next() else { break };
+			let Some(cur) = self.extents.get(&lba).copied() else {
+				return;
+			};
+			let Some((&next_lba, &next)) = self.extents.range(lba + 1..).next() else {
+				break;
+			};
 			if cur.lba + cur.block_count as u64 != next_lba || cur.state != next.state {
 				break;
 			}
 			// block_count is a u32; refuse the merge rather than wrap. At 4 KiB
 			// blocks this is 16 TiB, far past any partition here, but a wrapped
 			// count would silently describe the wrong range.
-			let Some(total) = cur.block_count.checked_add(next.block_count) else { break };
+			let Some(total) = cur.block_count.checked_add(next.block_count) else {
+				break;
+			};
 			self.extents.remove(&next_lba);
 			if let Some(e) = self.extents.get_mut(&lba) {
 				e.block_count = total;
@@ -142,12 +148,18 @@ impl AllocNode {
 		// make the next one adjacent too.
 		let mut cur_lba = lba;
 		loop {
-			let Some(cur) = self.extents.get(&cur_lba).copied() else { return };
-			let Some((&prev_lba, &prev)) = self.extents.range(..cur_lba).next_back() else { return };
+			let Some(cur) = self.extents.get(&cur_lba).copied() else {
+				return;
+			};
+			let Some((&prev_lba, &prev)) = self.extents.range(..cur_lba).next_back() else {
+				return;
+			};
 			if prev.lba + prev.block_count as u64 != cur_lba || prev.state != cur.state {
 				return;
 			}
-			let Some(total) = prev.block_count.checked_add(cur.block_count) else { return };
+			let Some(total) = prev.block_count.checked_add(cur.block_count) else {
+				return;
+			};
 			self.extents.remove(&cur_lba);
 			if let Some(e) = self.extents.get_mut(&prev_lba) {
 				e.block_count = total;
@@ -202,12 +214,11 @@ impl AllocNode {
 	/// Find extent containing LBA
 	pub fn find_extent(&self, lba: u64) -> Option<&PhysicalExtent> {
 		// Use range to efficiently find extent that might contain LBA
-		for (_, extent) in self.extents.range(..=lba).rev() {
-			if extent.contains(lba) {
-				return Some(extent);
-			}
-		}
-		None
+		self.extents
+			.range(..=lba)
+			.rev()
+			.map(|(_, extent)| extent)
+			.find(|extent| extent.contains(lba))
 	}
 
 	/// Find free extent with at least the requested block count
@@ -278,7 +289,7 @@ impl AllocNode {
 	/// - Bytes  8–11: payload length (u32 LE)
 	/// - Bytes 12–19: BLAKE3-64 checksum of the payload
 	/// - Bytes 20–..: postcard payload, zero-padded to the end of the block
-    ///
+	///
 	/// The checksum is what makes a torn or half-written block detectable:
 	/// resuming a volume with a *wrong* allocator state is worse than not
 	/// resuming it at all, because the allocator would hand out blocks that
@@ -296,7 +307,9 @@ impl AllocNode {
 		const HEADER: usize = 20;
 		let payload = self.encode_canonical()?;
 		if HEADER + payload.len() > block_size {
-			return Err(Error::custom("AllocNode: snapshot does not fit in one block (too many extents)"));
+			return Err(Error::custom(
+				"AllocNode: snapshot does not fit in one block (too many extents)",
+			));
 		}
 
 		let mut buf = alloc::vec![0u8; block_size];
@@ -320,16 +333,27 @@ impl AllocNode {
 		if buf.len() < HEADER {
 			return Ok(None);
 		}
-		let magic = u64::from_le_bytes(buf[0..8].try_into().map_err(|_| Error::custom("AllocNode: short snapshot block"))?);
+		let magic = u64::from_le_bytes(
+			buf[0..8]
+				.try_into()
+				.map_err(|_| Error::custom("AllocNode: short snapshot block"))?,
+		);
 		if magic != crate::ALLOC_SNAPSHOT_MAGIC {
 			return Ok(None);
 		}
-		let len = u32::from_le_bytes(buf[8..12].try_into().map_err(|_| Error::custom("AllocNode: short snapshot block"))?) as usize;
+		let len = u32::from_le_bytes(
+			buf[8..12]
+				.try_into()
+				.map_err(|_| Error::custom("AllocNode: short snapshot block"))?,
+		) as usize;
 		if len == 0 || HEADER + len > buf.len() {
 			return Ok(None);
 		}
-		let stored_checksum =
-			u64::from_le_bytes(buf[12..20].try_into().map_err(|_| Error::custom("AllocNode: short snapshot block"))?);
+		let stored_checksum = u64::from_le_bytes(
+			buf[12..20]
+				.try_into()
+				.map_err(|_| Error::custom("AllocNode: short snapshot block"))?,
+		);
 		let payload = &buf[HEADER..HEADER + len];
 		if crate::encoding::blake3_checksum(payload) != stored_checksum {
 			return Ok(None);
@@ -357,7 +381,7 @@ mod tests {
 	/// must not grow the node without bound. Before coalescing existed this
 	/// added one extent per allocation, and the encoded node outgrew its
 	/// single 4 KiB snapshot block after roughly a dozen commits, which left
-	/// `/data` permanently read-only.
+	/// the data volume permanently read-only.
 	#[test]
 	fn sequential_allocations_stay_bounded() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -408,8 +432,16 @@ mod tests {
 		let free_end = total_blocks - crate::RESERVED_TRAILER_BLOCKS;
 		let mut node = AllocNode::new();
 		node.add_extent(PhysicalExtent::new(0, free_start as u32, AllocationState::Reserved))?;
-		node.add_extent(PhysicalExtent::new(free_start, (free_end - free_start) as u32, AllocationState::Free))?;
-		node.add_extent(PhysicalExtent::new(free_end, (total_blocks - free_end) as u32, AllocationState::Reserved))?;
+		node.add_extent(PhysicalExtent::new(
+			free_start,
+			(free_end - free_start) as u32,
+			AllocationState::Free,
+		))?;
+		node.add_extent(PhysicalExtent::new(
+			free_end,
+			(total_blocks - free_end) as u32,
+			AllocationState::Reserved,
+		))?;
 		Ok(node)
 	}
 
@@ -424,7 +456,11 @@ mod tests {
 		let block = node.encode_snapshot_block(block_size)?;
 
 		// -- Check
-		assert_eq!(block.len(), block_size, "a snapshot must occupy exactly one whole block");
+		assert_eq!(
+			block.len(),
+			block_size,
+			"a snapshot must occupy exactly one whole block"
+		);
 		let restored = AllocNode::decode_snapshot_block(&block)?.expect("a freshly written snapshot must decode");
 		assert_eq!(restored.extents, node.extents);
 		assert_eq!(restored.free_blocks, node.free_blocks);
@@ -483,7 +519,11 @@ mod tests {
 		// decodable-but-wrong allocator state.
 		let mut node = AllocNode::new();
 		for i in 0..4096u64 {
-			let state = if i % 2 == 0 { AllocationState::Allocated } else { AllocationState::Free };
+			let state = if i % 2 == 0 {
+				AllocationState::Allocated
+			} else {
+				AllocationState::Free
+			};
 			node.add_extent(PhysicalExtent::new(i * 2, 1, state))?;
 		}
 
@@ -491,7 +531,10 @@ mod tests {
 		let result = node.encode_snapshot_block(crate::BLOCK_SIZE as usize);
 
 		// -- Check
-		assert!(result.is_err(), "an oversized snapshot must be an error, not a truncated block");
+		assert!(
+			result.is_err(),
+			"an oversized snapshot must be an error, not a truncated block"
+		);
 
 		Ok(())
 	}
@@ -588,7 +631,7 @@ mod tests {
 		// -- Check
 		let result = node.find_free_extent(75);
 		assert!(result.is_some());
-		let (lba, blocks) = result.unwrap();
+		let (_, blocks) = result.unwrap();
 		assert!(blocks >= 75);
 
 		Ok(())

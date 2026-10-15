@@ -1,6 +1,6 @@
 //! Canonical encoding with strict decode rejection rules
 //!
-//! Per §5 of ledgerfs-spec-v7.md:
+//! Per §5 of FORMAT.md:
 //! - All multi-byte integers are little-endian
 //! - UTF-8 for text strings
 //! - BLAKE3 for hashing

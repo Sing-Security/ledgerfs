@@ -11,8 +11,7 @@
 //! barriers between them. It deliberately stops there: it returns the updated
 //! [`AllocNode`] and a [`CommitResult`] and expects the *caller* to own
 //! persistence and session state, because only the caller knows what survives
-//! a restart. `fs-cbl` is that caller inside CrucibleOS; [`Store`] is it on
-//! the host.
+//! a restart. [`Store`] is that caller in a host process.
 //!
 //! So three things happen here that `commit()` cannot do for itself:
 //!
@@ -23,18 +22,20 @@
 //!    `cow::operations` carries hint `0`. Without the hints, every resolution
 //!    after every commit falls back to a full linear scan, and the cost grows
 //!    with each commit.
-//! 2. **Persist the allocator snapshot, then the superblock — in that order.**
-//!    The reverse leaks nothing but a crash between the two is worse the other
-//!    way round: a snapshot claiming *more* blocks than the root references
-//!    leaks space, which is recoverable; a root published with *no* snapshot
-//!    behind it is not, because a mount with no snapshot resumes read-only and
-//!    a read-only volume cannot write the snapshot that would fix it. `fs-cbl`
-//!    found this on real hardware — a volume that was formatted and then never
-//!    written to was bricked by having been formatted.
+//! 2. **Persist the superblock.** The allocator snapshot is not this module's
+//!    to write any more: the engine writes it inside its own write phase, under
+//!    the same barrier as the objects it placed. So a superblock written here
+//!    can never name a root whose snapshot is not already durable, and the
+//!    ordering the volume needs holds by construction rather than by a second
+//!    barrier. The reverse is concrete: a root published with *no* snapshot
+//!    behind it is unrecoverable, because a mount with no snapshot resumes
+//!    read-only and a read-only volume cannot write the snapshot that would fix
+//!    it. A volume that is formatted and then never written to would be bricked
+//!    by having been formatted.
 //! 3. **Write all four superblock copies.** The format has four so that one
 //!    damaged copy is survivable, and a writer that updates only the primary
 //!    one leaves the other three naming a root the volume no longer has. See
-//!    this crate's `lib.rs` note on the state `/data` is in for exactly that
+//!    this crate's `lib.rs` note on copies that disagree for exactly that
 //!    reason.
 //!
 //! # Which field names the root
@@ -42,25 +43,28 @@
 //! `new_root.file_tree_root` — the root directory's **`Inode`** — is what goes
 //! into `active_root_id`. Not `new_root.object_id`, which is the id of the
 //! in-memory [`Root`] descriptor and names nothing on disk, and not
-//! `CommitResult::root_id`, which carries that same descriptor id. Both other
-//! readers (`reader::walk_path`, `forge-boot`'s) decode the active root as an
-//! `Inode`, and `fs-cbl` persists `file_tree_root` for the same reason.
+//! `CommitResult::root_id`, which carries that same descriptor id. The other
+//! readers (`reader::walk_path` and a boot reader's) decode the active root as
+//! an `Inode`, so any writer that persisted the descriptor id would produce a
+//! volume they cannot mount.
 //! [`Store::persisted_root_ref`] is the single place that decision is made.
 
-use crucible_ledgerfs_kernel::alloc_node::AllocNode;
-use crucible_ledgerfs_kernel::alloc_state::{AllocationState, PhysicalExtent};
-use crucible_ledgerfs_kernel::allocator::{Allocator, AllocatorConfig};
-use crucible_ledgerfs_kernel::commit::{CommitEngine, CommitResult};
-use crucible_ledgerfs_kernel::cow::{mkdir, InMemoryObjectStore, ObjectStore, TxnPlan};
-use crucible_ledgerfs_kernel::object::{Inode, InodeKind, ObjectRef, Root, StorageHint};
-use crucible_ledgerfs_kernel::superblock::Superblock;
-use crucible_ledgerfs_kernel::{ALLOC_SNAPSHOT_BLOCK, BLOCK_SIZE, RESERVED_HEADER_BLOCKS, RESERVED_TRAILER_BLOCKS};
-use crucible_ledgerfs_kernel::{Error as LedgerFsError, Result as LedgerFsResult};
+use ledgerfs::alloc_node::AllocNode;
+use ledgerfs::alloc_state::{AllocationState, PhysicalExtent};
+use ledgerfs::allocator::{Allocator, AllocatorConfig};
+use ledgerfs::commit::{CommitEngine, CommitResult};
+use ledgerfs::cow::{InMemoryObjectStore, ObjectStore, TxnPlan, mkdir};
+use ledgerfs::object::{Inode, InodeKind, ObjectRef, Root, StorageHint};
+use ledgerfs::superblock::Superblock;
+use ledgerfs::{ALLOC_SNAPSHOT_BLOCK, BLOCK_SIZE, RESERVED_HEADER_BLOCKS, RESERVED_TRAILER_BLOCKS};
+use ledgerfs::{Error as LedgerFsError, Result as LedgerFsResult};
 
 use crate::device::BlockDevice;
 use crate::error::{Error, Result};
 use crate::image::PartitionKind;
-use crate::mutate::{build_create_txn, build_rename_txn, build_unlink_txn, build_write_txn, Chain};
+use crate::mutate::{
+	Chain, build_create_txn, build_create_with_data_txn, build_rename_txn, build_unlink_txn, build_write_txn,
+};
 use crate::objstore::to_ledgerfs;
 use crate::path::{Entry, HostFs};
 use crate::volume::{publish_root_into, superblock_copy_lbas};
@@ -175,9 +179,9 @@ impl Store {
 	/// Format `total_blocks` blocks of `device` as a LedgerFS volume and return
 	/// a writable store on it.
 	///
-	/// This is `mkfs`. The order matters and is the one `fs-cbl`'s
-	/// `bootstrap_genesis`/`open_or_bootstrap` pair arrived at, with an erase
-	/// pass added after the first step:
+	/// This is `mkfs`. The order matters and is the one the runtime volume
+	/// driver's genesis-bootstrap path arrived at, with an erase pass added
+	/// after the first step:
 	///
 	/// 1. superblock with a null root, so the volume is a recognisable
 	///    LedgerFS volume from the first byte written (and a crash mid-format
@@ -255,15 +259,7 @@ impl Store {
 		// "create the root", which reads nothing from the store — see this
 		// function's doc comment.
 		let root = Root::new();
-		let txn = mkdir(
-			&InMemoryObjectStore::new(),
-			&root,
-			ObjectRef::zero(),
-			"",
-			0,
-			0,
-			0o755,
-		)?;
+		let txn = mkdir(&InMemoryObjectStore::new(), &root, ObjectRef::zero(), "", 0, 0, 0o755)?;
 
 		// -- Step 4: commit it, through the real engine, to the real device.
 		let (alloc_node, mut allocator) = genesis_allocator(total_blocks)?;
@@ -318,15 +314,14 @@ impl Store {
 		// The allocator snapshot is what makes a volume writable: without it
 		// there is no way to know which blocks are free, and a wrong answer
 		// would place an object on top of live data.
-		let (alloc_node, allocator, origin) =
-			match read_alloc_snapshot(fs.store.device(), total_blocks)? {
-				Some(node) => {
-					let mut allocator = Allocator::new(AllocatorConfig::new(total_blocks));
-					allocator.init_from_tree(&node).map_err(Error::from)?;
-					(Some(node), Some(allocator), Origin::ResumedWritable)
-				}
-				None => (None, None, Origin::ReadOnly),
-			};
+		let (alloc_node, allocator, origin) = match read_alloc_snapshot(fs.store.device(), total_blocks)? {
+			Some(node) => {
+				let mut allocator = Allocator::new(AllocatorConfig::new(total_blocks));
+				allocator.init_from_tree(&node).map_err(Error::from)?;
+				(Some(node), Some(allocator), Origin::ResumedWritable)
+			}
+			None => (None, None, Origin::ReadOnly),
+		};
 
 		let mut root = Root::new();
 		root.commit_seq = superblock.active_commit_seq;
@@ -347,15 +342,11 @@ impl Store {
 		})
 	}
 
-	/// Open the LedgerFS partition `kind` inside a Crucible disk `image`,
+	/// Open the LedgerFS partition `kind` inside a partitioned disk `image`,
 	/// read-write.
 	pub fn open_partition(image: &Path, kind: PartitionKind) -> Result<Self> {
 		let partition = crate::image::find_partition(image, kind)?;
-		let device = crate::device::FileBlockDevice::open_rw(
-			image,
-			partition.start_bytes(),
-			partition.size_bytes(),
-		)?;
+		let device = crate::device::FileBlockDevice::open_rw(image, partition.start_bytes(), partition.size_bytes())?;
 		Self::open(Box::new(device))
 	}
 }
@@ -473,12 +464,11 @@ impl Store {
 		let new_root = root_with_hint(&txn, &result);
 		self.alloc_node = Some(updated_alloc_node);
 
-		// -- Persist, snapshot first. See this module's doc comment.
+		// -- Persist. The allocator snapshot is already durable: the engine
+		// wrote it inside its own write phase, under the same barrier as the
+		// objects, so the ordering the superblock below depends on is already
+		// satisfied. See this module's doc comment.
 		let device = self.fs.store.device();
-		persist_alloc_snapshot(
-			device,
-			self.alloc_node.as_ref().expect("alloc_node was just restored"),
-		)?;
 
 		self.root = new_root;
 
@@ -583,20 +573,43 @@ impl Store {
 
 	/// Write `data` to a new file at `path`, creating it.
 	///
-	/// Two transactions — create, then write — because `create_file` and
-	/// `write` are separate CoW operations and the write needs the inode the
-	/// create produced. Splitting them is also what lets a partially written
-	/// file exist after a crash, which is the weaker but more useful guarantee:
-	/// the file is there with the bytes that committed.
+	/// **One transaction** for content that fits in a single object — the file
+	/// inode, its page of content and its directory entry are placed and
+	/// committed together. The commit is this volume's durability point, so a
+	/// caller waiting for one 256-byte record to be durable should be waiting on
+	/// one commit and not two, and the create-then-write pair also rewrote the
+	/// inode and the directory node it had just written.
 	///
-	/// The data is split into `max_object_bytes` pieces, one transaction each. A
-	/// single larger object would be refused by `CommitEngine` (and skipped
-	/// silently by readers) because it exceeds the volume's own ceiling —
-	/// [`Superblock::max_object_bytes`], which resolves an all-zero
-	/// `LedgerFsLimits` to the compiled-in default rather than to zero.
+	/// Data past the first `max_object_bytes` extends the file in further
+	/// transactions, one per piece. That ceiling belongs to the format, not to
+	/// this transaction: a single larger object would be refused by
+	/// `CommitEngine` (and skipped silently by readers) because it exceeds the
+	/// volume's own limit — [`Superblock::max_object_bytes`], which resolves an
+	/// all-zero `LedgerFsLimits` to the compiled-in default rather than to zero.
 	pub fn write_new_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
-		self.create_file(path, mode)?;
-		self.write_chunks(path, 0, data)
+		let chunk = self.max_object_bytes.max(1);
+		let chain = self.fs.resolve_chain(path)?;
+		self.ensure_absent(path, &chain)?;
+
+		// An empty `data` is the plain create: there is no content to build a
+		// chunk and an extent out of, and a file created empty is exactly what
+		// `create_file` produces.
+		let (head, rest) = if data.len() > chunk {
+			data.split_at(chunk)
+		} else {
+			(data, &[][..])
+		};
+		let txn = if head.is_empty() {
+			build_create_txn(&self.fs.store, &self.root, &chain, 0, 0, mode, false)?
+		} else {
+			build_create_with_data_txn(&self.fs.store, &self.root, &chain, head, 0, 0, mode)?
+		};
+		self.commit(txn)?;
+
+		if !rest.is_empty() {
+			self.write_chunks(path, head.len() as u64, rest)?;
+		}
+		Ok(())
 	}
 
 	/// Write `data` to `path`, replacing whatever was there.
@@ -640,8 +653,11 @@ impl Store {
 				inode.size
 			}
 			Err(Error::NoSuchFile { .. }) => {
-				self.create_file(path, mode)?;
-				0
+				// Creating the file and writing its first record is one logical
+				// operation, so it is one commit — the same combined create the
+				// `write_new_file` path uses.
+				self.write_new_file(path, data, mode)?;
+				return Ok(());
 			}
 			Err(e) => return Err(e),
 		};
@@ -711,14 +727,8 @@ impl Store {
 		let from_chain = self.fs.resolve_chain(from)?;
 		let to_chain = self.fs.resolve_chain(to)?;
 
-		let (from_parent, old_name) = from_chain
-			.last()
-			.cloned()
-			.expect("a resolved chain is never empty");
-		let (to_parent, _) = to_chain
-			.last()
-			.cloned()
-			.expect("a resolved chain is never empty");
+		let (from_parent, old_name) = from_chain.last().cloned().expect("a resolved chain is never empty");
+		let (to_parent, _) = to_chain.last().cloned().expect("a resolved chain is never empty");
 
 		if from_parent.object_id != to_parent.object_id {
 			return Err(Error::Unsupported {
@@ -785,9 +795,7 @@ impl Store {
 	fn ensure_absent(&self, path: &str, chain: &Chain) -> Result<()> {
 		let (parent_ref, name) = chain.last().expect("a resolved chain is never empty");
 		if self.fs.lookup_child(path, *parent_ref, name)?.is_some() {
-			return Err(Error::AlreadyExists {
-				path: path.to_string(),
-			});
+			return Err(Error::AlreadyExists { path: path.to_string() });
 		}
 		Ok(())
 	}
@@ -887,7 +895,7 @@ impl Store {
 /// type.
 struct CommitDevice<'a>(&'a dyn BlockDevice);
 
-impl crucible_ledgerfs_kernel::commit::BlockDevice for CommitDevice<'_> {
+impl ledgerfs::commit::BlockDevice for CommitDevice<'_> {
 	fn write_blocks(&mut self, lba: u64, data: &[u8]) -> LedgerFsResult<()> {
 		self.0.write_blocks(lba, data).map_err(to_ledgerfs)
 	}
@@ -933,11 +941,7 @@ fn run_commit(
 fn root_with_hint(txn: &TxnPlan, result: &CommitResult) -> Root {
 	let mut new_root = txn.new_root.clone();
 	let root_inode_id = new_root.file_tree_root.object_id;
-	let root_hint = result
-		.storage_hints
-		.get(&root_inode_id)
-		.map(|h| h.physical_lba)
-		.unwrap_or(0);
+	let root_hint = result.storage_hints.get(&root_inode_id).map(|h| h.physical_lba).unwrap_or(0);
 	new_root.file_tree_root = ObjectRef::new(root_inode_id, StorageHint(root_hint));
 	new_root
 }
@@ -945,8 +949,9 @@ fn root_with_hint(txn: &TxnPlan, result: &CommitResult) -> Root {
 /// Write the allocator's free-space tree to its snapshot block and make it
 /// durable.
 ///
-/// Always called before the superblock that will depend on it — see this
-/// module's doc comment for why the reverse order can brick a volume.
+/// [`Store::format`]'s initial snapshot is the only caller. Every later one is
+/// written by `CommitEngine`, inside its write phase and under the barrier that
+/// also covers the transaction's objects — see this module's doc comment.
 fn persist_alloc_snapshot(device: &dyn BlockDevice, alloc_node: &AllocNode) -> Result<()> {
 	let snapshot = alloc_node.encode_snapshot_block(BLOCK_SIZE as usize)?;
 	device.write_block(ALLOC_SNAPSHOT_BLOCK, &snapshot)?;
@@ -1064,8 +1069,8 @@ fn write_all_superblock_copies(device: &dyn BlockDevice, superblock: &Superblock
 ///
 /// The other three copies exist so a damaged primary is survivable. A writer
 /// that updates only the primary leaves them naming a root the volume no longer
-/// has — see this crate's `lib.rs` on the state `/data` is in for exactly that
-/// reason.
+/// has — see this crate's `lib.rs` on the state the data volume is in for
+/// exactly that reason.
 fn persist_superblock(device: &dyn BlockDevice, superblock: &Superblock) -> Result<()> {
 	write_all_superblock_copies(device, superblock)?;
 	device.barrier()
@@ -1129,8 +1134,7 @@ mod tests {
 		// the ordinary case — formatting over an existing volume, not into a
 		// fresh one. Nothing of it may survive, or `mkfs` has left the previous
 		// volume's contents readable to anyone who can read the device.
-		let device =
-			MemBlockDevice::from_bytes(vec![0xAB; BLOCKS as usize * BLOCK_SIZE as usize])?;
+		let device = MemBlockDevice::from_bytes(vec![0xAB; BLOCKS as usize * BLOCK_SIZE as usize])?;
 
 		// -- Exec
 		let mut store = Store::format(Box::new(device), BLOCKS)?;
@@ -1208,7 +1212,10 @@ mod tests {
 		// -- Setup & Fixtures: deterministic, and not compressible or repetitive
 		// enough for the byte comparison to pass by accident.
 		let chunk = store.max_object_bytes;
-		assert!(chunk > 0, "an all-zero LedgerFsLimits must resolve to the default, not to 0");
+		assert!(
+			chunk > 0,
+			"an all-zero LedgerFsLimits must resolve to the default, not to 0"
+		);
 		let payload: Vec<u8> = (0..(chunk + chunk / 4)).map(|i| (i % 251) as u8).collect();
 
 		// -- Exec
@@ -1229,7 +1236,7 @@ mod tests {
 		store.mkdir("/d", 0o755)?;
 
 		// -- Exec
-		let err = store.mkdir("/d", 0o755).err().expect("a duplicate create must be refused");
+		let err = store.mkdir("/d", 0o755).expect_err("a duplicate create must be refused");
 
 		// -- Check: refused, and the volume gained no second entry. `cow`'s
 		// insert does not check, and two entries under one name is a corrupt
@@ -1250,10 +1257,13 @@ mod tests {
 		let status = store.fs.volume.copy_status();
 
 		// -- Check
-		// All four, not just the primary: this is the property `fs-cbl`'s
-		// single-copy `persist_superblock` loses, and the one that leaves
-		// `/data` on a booted image with no redundancy at all.
-		assert!(status.is_healthy(), "every copy must carry the committed root: {status:?}");
+		// All four, not just the primary: this is the property the runtime
+		// volume driver's single-copy superblock writer loses, and the one that
+		// leaves the data volume on a booted image with no redundancy at all.
+		assert!(
+			status.is_healthy(),
+			"every copy must carry the committed root: {status:?}"
+		);
 		assert_eq!(status.decoded_count(), 4);
 		assert!(status.agree.iter().all(|a| *a));
 
@@ -1263,8 +1273,8 @@ mod tests {
 	#[test]
 	fn test_store_refuses_commit_without_allocator_snapshot() -> Result<()> {
 		// -- Setup & Fixtures: format, then blank the snapshot block to
-		// simulate the state `fs-cbl` records as having bricked a volume —
-		// formatted, but with no allocator state behind the published root.
+		// simulate the bricking state — formatted, but with no allocator state
+		// behind the published root.
 		let device = MemBlockDevice::new(BLOCKS);
 		let mirror = device.clone();
 		// Formatting is what puts a root and a snapshot on the volume; the store
@@ -1305,12 +1315,10 @@ mod tests {
 		// to it. This was not hypothetical — it is the state `lfs-write` sat in
 		// when a mutating command opened its target with `FileBlockDevice::open`,
 		// where the symptom was `EBADF` from inside `write_at`.
-		let path = std::env::temp_dir()
-			.join(format!("crucible-ledgerfs-store-{}.img", std::process::id()));
+		let path = std::env::temp_dir().join(format!("ledgerfs-store-{}.img", std::process::id()));
 		let size = BLOCKS * BLOCK_SIZE as u64;
 		{
-			let _formatted =
-				Store::format(Box::new(FileBlockDevice::create(&path, size)?), BLOCKS)?;
+			let _formatted = Store::format(Box::new(FileBlockDevice::create(&path, size)?), BLOCKS)?;
 		}
 
 		let mut store = Store::open(Box::new(FileBlockDevice::open(&path, 0, size)?))?;
@@ -1342,18 +1350,23 @@ mod tests {
 	#[test]
 	fn test_store_refuses_a_volume_that_was_never_formatted() -> Result<()> {
 		// -- Setup & Fixtures: a raw superblock and nothing else, which is
-		// what `fs_init` alone leaves behind — every copy valid, no commit ever
-		// made.
+		// what the image initialiser alone leaves behind — every copy valid, no
+		// commit ever made.
 		let device = MemBlockDevice::new(BLOCKS);
 		write_all_superblock_copies(&device, &Superblock::new(BLOCKS))?;
 
 		// -- Exec
-		let err = Store::open(Box::new(device)).err().expect("an unformatted volume must not open");
+		let err = Store::open(Box::new(device))
+			.err()
+			.expect("an unformatted volume must not open");
 
 		// -- Check: the volume is intact and simply has nothing committed to
 		// it. Reporting `NoValidSuperblock` here — which is what the mount
 		// selection itself returns — would call a format state damage.
-		assert!(matches!(err, Error::VolumeUncommitted { total_blocks: BLOCKS }), "got {err:?}");
+		assert!(
+			matches!(err, Error::VolumeUncommitted { total_blocks: BLOCKS }),
+			"got {err:?}"
+		);
 		assert!(err.to_string().contains("never formatted"), "{err}");
 
 		Ok(())
@@ -1369,9 +1382,9 @@ mod tests {
 		// -- Exec
 		let root_ref = store.persisted_root_ref();
 
-		// -- Check: a real hint, not the `0` that means "scan for it". Every
-		// image `forge-builder` writes lands at 0, which is why a mount of one
-		// linearly scans the volume to find its root.
+		// -- Check: a real hint, not the `0` that means "scan for it". A root
+		// written without its placement lands at 0, and a mount of such a
+		// volume linearly scans to find its root.
 		assert_ne!(
 			root_ref.hint.0, 0,
 			"the committed root must carry its placement, or every reopen scans"
@@ -1492,7 +1505,10 @@ mod tests {
 		store.mkdir("/sub", 0o755)?;
 		store.write_new_file("/sub/inner", b"i", 0o644)?;
 		assert!(matches!(store.rename("/sub", "/moved"), Err(Error::Unsupported { .. })));
-		assert!(matches!(store.rename("/c.txt", "/sub/c.txt"), Err(Error::Unsupported { .. })));
+		assert!(matches!(
+			store.rename("/c.txt", "/sub/c.txt"),
+			Err(Error::Unsupported { .. })
+		));
 
 		// -- Check: and the refused moves changed nothing.
 		assert_eq!(names(&store, "/")?, vec!["c.txt", "sub"]);
@@ -1566,10 +1582,10 @@ mod tests {
 		let mirror = device.clone();
 
 		// -- Exec
-		let store = Store::format_app(Box::new(device), "bugs")?;
+		let store = Store::format_app(Box::new(device), "example")?;
 
 		// -- Check: the markers are ordinary files under the one reserved name.
-		assert_eq!(store.app()?, Some("bugs".to_string()));
+		assert_eq!(store.app()?, Some("example".to_string()));
 		assert_eq!(store.contract_version()?, Some(STORE_CONTRACT_VERSION.to_string()));
 		let marker_names = names(&store, STORE_DIR)?;
 		assert!(marker_names.contains(&"APP".to_string()));
@@ -1578,7 +1594,7 @@ mod tests {
 		// -- Exec & Check: the identity survives a reopen — that is the whole
 		// point of writing it down.
 		let reopened = Store::open(Box::new(MemBlockDevice::from_bytes(mirror.bytes_snapshot())?))?;
-		assert_eq!(reopened.app()?, Some("bugs".to_string()));
+		assert_eq!(reopened.app()?, Some("example".to_string()));
 
 		// -- Check: a plainly formatted volume is nobody's app store, which is
 		// the answer a caller opening a stranger's volume needs.
@@ -1627,7 +1643,7 @@ mod tests {
 		store.write_new_file("/etc/passwd", b"inside the volume", 0o644)?;
 
 		for path in ["/../etc/passwd", "/etc/../etc/passwd", "..", "a/.."] {
-			let err = store.read_file(path).err().expect("`..` must be refused");
+			let err = store.read_file(path).expect_err("`..` must be refused");
 			assert!(matches!(err, Error::Usage(_)), "{path}: got {err:?}");
 		}
 
@@ -1644,14 +1660,14 @@ mod tests {
 
 	#[test]
 	fn test_a_missing_parent_directory_is_named_in_the_error() -> Result<()> {
-		// The error has to point at what is actually absent. `write_finding`
-		// creating `findings/FIND-0001.md` in a campaign that never made
-		// `findings/` reported the *file* missing, and a caller that believes it
-		// is a file problem retries the file forever. Naming the directory is
-		// the difference between a one-second fix and an afternoon.
+		// The error has to point at what is actually absent. A writer creating
+		// `findings/FIND-0001.md` in a campaign that never made `findings/`
+		// reported the *file* missing, and a caller that believes it is a file
+		// problem retries the file forever. Naming the directory is the
+		// difference between a one-second fix and an afternoon.
 		let mut store = Store::format(Box::new(MemBlockDevice::new(BLOCKS)), BLOCKS)?;
 
-		let err = store.create_file("findings/FIND-0001.md", 0o644).err().expect("no findings/ dir");
+		let err = store.create_file("findings/FIND-0001.md", 0o644).expect_err("no findings/ dir");
 		match err {
 			Error::NoSuchFile { ref path } => assert_eq!(path, "findings", "must name the directory"),
 			other => panic!("expected NoSuchFile naming the parent, got {other:?}"),
@@ -1659,14 +1675,16 @@ mod tests {
 
 		// Two levels down, the deepest missing component is the one reported.
 		store.mkdir("evidence", 0o755)?;
-		let err = store.create_file("evidence/captures/run.json", 0o644).err().expect("no captures/");
+		let err = store
+			.create_file("evidence/captures/run.json", 0o644)
+			.expect_err("no captures/");
 		match err {
 			Error::NoSuchFile { ref path } => assert_eq!(path, "evidence/captures"),
 			other => panic!("expected NoSuchFile naming evidence/captures, got {other:?}"),
 		}
 
 		// A missing *file* under a directory that does exist still names the file.
-		let err = store.read_file("evidence/absent.json").err().expect("no such file");
+		let err = store.read_file("evidence/absent.json").expect_err("no such file");
 		match err {
 			Error::NoSuchFile { ref path } => assert_eq!(path, "evidence/absent.json"),
 			other => panic!("expected NoSuchFile naming the file, got {other:?}"),

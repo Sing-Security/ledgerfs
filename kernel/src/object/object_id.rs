@@ -49,10 +49,10 @@ impl Default for ObjectId {
 	}
 }
 
-/// Storage hint for physical placement (Phase 1 provides these)
+/// Storage hint for physical placement.
 ///
-/// In Phase 2, we accept hints as inputs but don't implement actual placement.
-/// Phase 1 code will later place/write objects and produce these hints.
+/// The current implementation accepts a hint as an input but does not act on
+/// it for actual placement; hints are produced and carried, not yet consumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StorageHint(pub u64);
 
@@ -115,7 +115,7 @@ impl ObjectRef {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use alloc::{boxed::Box, vec};
+	use alloc::boxed::Box;
 
 	type Result<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 

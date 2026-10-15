@@ -26,8 +26,7 @@
 extern crate alloc;
 
 use crate::ata_io::{
-	ATA_DATA, ATA_DRIVE_HEAD, ATA_LBA_HIGH, ATA_LBA_LOW, ATA_LBA_MID, ATA_LOCK, ATA_PRIMARY_BASE, ATA_SECTOR_COUNT,
-	ATA_STATUS_CMD, AtaError, MAX_28BIT_LBA, SECTOR_SIZE, ata_wait_not_busy, ata_wait_ready, outb, outw,
+	ATA_DATA, ATA_PRIMARY_BASE, ATA_STATUS_CMD, AtaError, SECTOR_SIZE, ata_wait_not_busy, ata_wait_ready, outb,
 };
 
 /// WRITE SECTORS command (28-bit LBA PIO).
@@ -69,7 +68,7 @@ const ATA_CMD_FLUSH_CACHE: u8 = 0xE7;
 ///   overwrite whatever is at the given LBA.
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn ata_pio_write(lba: u64, buf: &[u8]) -> Result<(), AtaError> {
-	if buf.len() % SECTOR_SIZE != 0 {
+	if !buf.len().is_multiple_of(SECTOR_SIZE) {
 		return Err(AtaError::InvalidBufferSize);
 	}
 
@@ -101,12 +100,7 @@ pub(crate) unsafe fn ata_pio_write(lba: u64, buf: &[u8]) -> Result<(), AtaError>
 
 		// SAFETY: bus lock held; picks the 28- or 48-bit form and programs
 		// the taskfile accordingly.
-		let cmd = crate::ata_io::program_taskfile(
-			lba,
-			sector_count,
-			ATA_CMD_WRITE_SECTORS,
-			ATA_CMD_WRITE_SECTORS_EXT,
-		)?;
+		let cmd = crate::ata_io::program_taskfile(lba, sector_count, ATA_CMD_WRITE_SECTORS, ATA_CMD_WRITE_SECTORS_EXT)?;
 
 		// SAFETY: Issuing the write command to register 0x1F7.
 		outb(ATA_PRIMARY_BASE + ATA_STATUS_CMD, cmd);
@@ -123,11 +117,7 @@ pub(crate) unsafe fn ata_pio_write(lba: u64, buf: &[u8]) -> Result<(), AtaError>
 
 			// SAFETY: DRQ asserted, and `sector_buf` is exactly SECTOR_SIZE
 			// bytes, matching the word count passed here.
-			crate::ata_io::outsw_bulk(
-				ATA_PRIMARY_BASE + ATA_DATA,
-				sector_buf.as_ptr(),
-				SECTOR_SIZE / 2,
-			);
+			crate::ata_io::outsw_bulk(ATA_PRIMARY_BASE + ATA_DATA, sector_buf.as_ptr(), SECTOR_SIZE / 2);
 		}
 
 		// The drive processes the last sector's data after the final word

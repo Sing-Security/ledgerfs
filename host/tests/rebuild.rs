@@ -7,8 +7,8 @@
 //! three things load-bearing and worth pinning hard:
 //!
 //! 1. **`walk` is a faithful, deterministic description of the live tree.**
-//!    `rebuild_into` is only as good as its input, and `bugs`'s `compact` uses
-//!    a second `walk` as its verification — so a walk that quietly dropped an
+//!    `rebuild_into` is only as good as its input, and a compaction pass uses a
+//!    second `walk` as its verification — so a walk that quietly dropped an
 //!    entry, or produced the same entry twice, or reordered between runs, would
 //!    both lose data and make the verification a lie.
 //! 2. **A rebuilt volume is a real volume.** Not "the bytes went somewhere" but
@@ -23,13 +23,13 @@
 mod common;
 
 use common::*;
-use crucible_ledgerfs_host::{Error, InodeKind, MemBlockDevice, Store, rebuild_into};
+use ledgerfs_host::{Error, InodeKind, MemBlockDevice, Store, rebuild_into};
 
-use crucible_ledgerfs_kernel::compression::CompressionAlgorithm;
-use crucible_ledgerfs_kernel::object::{DirEntry, DirNode, Inode, ObjectId, ObjectRef, StorageHint};
-use crucible_ledgerfs_kernel::record::{ObjectRecordWriter, ObjectType};
-use crucible_ledgerfs_kernel::superblock::Superblock;
-use crucible_ledgerfs_kernel::{BLOCK_SIZE, RESERVED_HEADER_BLOCKS};
+use ledgerfs::compression::CompressionAlgorithm;
+use ledgerfs::object::{DirEntry, DirNode, Inode, ObjectId, ObjectRef, StorageHint};
+use ledgerfs::record::{ObjectRecordWriter, ObjectType};
+use ledgerfs::superblock::Superblock;
+use ledgerfs::{BLOCK_SIZE, RESERVED_HEADER_BLOCKS};
 
 const BS: usize = BLOCK_SIZE as usize;
 
@@ -274,9 +274,15 @@ fn test_a_deeply_nested_tree_is_listed_parent_first() -> Result<()> {
 	// -- Check: every level is present and in order
 	assert_eq!(entries.len(), depth + 1);
 	for (i, e) in entries.iter().take(depth).enumerate() {
-		assert_eq!(e.path, format!("/{}", (0..=i).map(|j| format!("l{j}")).collect::<Vec<_>>().join("/")));
+		assert_eq!(
+			e.path,
+			format!("/{}", (0..=i).map(|j| format!("l{j}")).collect::<Vec<_>>().join("/"))
+		);
 	}
-	assert_eq!(entries.last().map(|e| e.path.as_str()), Some(format!("{path}/leaf.txt").as_str()));
+	assert_eq!(
+		entries.last().map(|e| e.path.as_str()),
+		Some(format!("{path}/leaf.txt").as_str())
+	);
 	Ok(())
 }
 
@@ -309,7 +315,7 @@ fn test_a_rebuild_reproduces_the_source_tree_exactly() -> Result<()> {
 	rebuild_into(&src, &mut dst)?;
 
 	// -- Check: the walk of the destination is the walk of the source, entry for
-	// entry — the property `bugs compact` verifies with
+	// entry — the property a compaction pass verifies with
 	assert_eq!(dst.walk()?, src.walk()?, "the rebuilt tree is not the source tree");
 
 	// -- Check: and the bytes match on a spot check
@@ -396,7 +402,7 @@ fn test_two_rebuilds_of_one_source_are_byte_identical() -> Result<()> {
 
 #[test]
 fn test_rebuilding_over_the_same_target_twice_is_well_defined() -> Result<()> {
-	// -- Setup & Fixtures: `bugs compact` may resume a rebuild that was
+	// -- Setup & Fixtures: a compaction pass may resume a rebuild that was
 	// interrupted, so replaying a tree into a volume that already carries it
 	// must be a no-op rather than an `AlreadyExists` error. `rebuild_into` uses
 	// `write_file` (create-or-replace) and creates a directory only if absent —
@@ -454,7 +460,11 @@ fn test_rebuilding_an_app_volume_keeps_the_app_identity() -> Result<()> {
 	rebuild_into(&src, &mut dst)?;
 
 	// -- Check: the app still owns the volume...
-	assert_eq!(dst.app()?, Some("demo".to_string()), "the rebuild clobbered the app identity");
+	assert_eq!(
+		dst.app()?,
+		Some("demo".to_string()),
+		"the rebuild clobbered the app identity"
+	);
 	// -- Check: ...its identity files are still there...
 	let identity_after: Vec<String> = dst
 		.walk()?
@@ -586,14 +596,8 @@ fn symlink_volume() -> Result<Vec<u8>> {
 		let lba = next_lba;
 		next_lba += 1;
 		let mut block = vec![0u8; BS];
-		let written = ObjectRecordWriter::write(
-			&mut block,
-			kind,
-			CompressionAlgorithm::None,
-			0,
-			payload,
-		)
-		.map_err(|e| Error::Format(e))?;
+		let written = ObjectRecordWriter::write(&mut block, kind, CompressionAlgorithm::None, 0, payload)
+			.map_err(Error::Format)?;
 		assert!(written <= BS, "a crafted record must fit one block");
 		let start = lba as usize * BS;
 		bytes[start..start + BS].copy_from_slice(&block);
@@ -610,8 +614,10 @@ fn symlink_volume() -> Result<Vec<u8>> {
 
 	// -- The root directory node, naming that inode `link`.
 	let mut node = DirNode::new_leaf();
-	node.insert_entry(DirEntry::new("link", ObjectRef::new(link_ref.0, StorageHint(link_ref.1))).map_err(Error::Format)?)
-		.map_err(Error::Format)?;
+	node.insert_entry(
+		DirEntry::new("link", ObjectRef::new(link_ref.0, StorageHint(link_ref.1))).map_err(Error::Format)?,
+	)
+	.map_err(Error::Format)?;
 	let node_payload = node.encode_canonical().map_err(Error::Format)?;
 	let node_ref = place(&node_payload, ObjectType::BTreeLeaf)?;
 
@@ -682,7 +688,10 @@ fn test_rebuild_refuses_to_follow_a_symlink() -> Result<()> {
 	// caller who ignores the error has not been handed a half-tree that looks
 	// complete. (The source holds only the symlink, so a refusal on it happens
 	// before any write; this asserts the ordering holds.)
-	assert!(dst.walk()?.is_empty(), "a refused rebuild must not leave a partial tree");
+	assert!(
+		dst.walk()?.is_empty(),
+		"a refused rebuild must not leave a partial tree"
+	);
 	Ok(())
 }
 

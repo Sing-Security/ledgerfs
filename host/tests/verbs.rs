@@ -15,7 +15,7 @@
 mod common;
 
 use common::*;
-use crucible_ledgerfs_host::{Error, InodeKind};
+use ledgerfs_host::{Error, InodeKind};
 
 // region:    --- mkdir
 
@@ -32,7 +32,11 @@ fn test_mkdir_creates_a_directory_with_its_mode() -> Result<()> {
 	assert_eq!(inode.kind, InodeKind::Directory);
 	assert_eq!(inode.mode, 0o750);
 	assert_eq!(inode.size, 0);
-	let entry = store.read_dir("/")?.into_iter().find(|e| e.name == "notes").expect("notes is listed");
+	let entry = store
+		.read_dir("/")?
+		.into_iter()
+		.find(|e| e.name == "notes")
+		.expect("notes is listed");
 	assert_eq!(entry.kind, InodeKind::Directory);
 	assert_eq!(entry.mode, 0o750);
 	Ok(())
@@ -131,7 +135,10 @@ fn test_a_top_level_create_never_has_a_missing_parent() -> Result<()> {
 	store.write_file("/deep-name.txt", b"x", 0o644)?;
 
 	// -- Check
-	assert_eq!(names(&store.read_dir("/")?), vec!["deep-name.txt".to_string(), "notes".to_string(), "top".to_string()]);
+	assert_eq!(
+		names(&store.read_dir("/")?),
+		vec!["deep-name.txt".to_string(), "notes".to_string(), "top".to_string()]
+	);
 	Ok(())
 }
 
@@ -314,7 +321,10 @@ fn test_write_new_file_refuses_a_name_that_is_taken() -> Result<()> {
 	store.write_new_file("/f", b"first", 0o644)?;
 
 	// -- Exec
-	let e = expect_err("write_new_file over an existing file", store.write_new_file("/f", b"second", 0o644));
+	let e = expect_err(
+		"write_new_file over an existing file",
+		store.write_new_file("/f", b"second", 0o644),
+	);
 
 	// -- Check
 	assert!(matches!(e, Error::AlreadyExists { .. }), "got {e:?}");
@@ -388,17 +398,22 @@ fn test_write_file_refuses_a_directory() -> Result<()> {
 }
 
 #[test]
-fn test_a_failed_write_new_file_leaves_an_empty_file() -> Result<()> {
-	// -- Setup & Fixtures: `write_new_file` is deliberately two transactions —
-	// create, then write — so a write that fails for want of space leaves the
-	// *created* file behind, empty. That is the documented trade: the weaker
-	// guarantee "the file is there with the bytes that committed" rather than
-	// atomicity, and a caller who needs the replace to be all-or-nothing is
-	// told to write a scratch name and rename.
+fn test_a_failed_write_new_file_of_one_object_leaves_nothing_behind() -> Result<()> {
+	// -- Setup & Fixtures: content that fits in a single object either lands
+	// whole or leaves no file at all, because the create and the write are one
+	// transaction. It used to be two — create, then write — which left the
+	// *created* file behind, empty, when the write ran out of space. An absent
+	// name is the more useful of the two failure states: a caller that sees the
+	// failure and retries retries a create, rather than writing over a file it
+	// did not know it had.
 	let mut store = store(20)?;
 
-	// -- Exec: far more content than a 20-block volume can hold
-	let e = expect_err("a write that cannot fit", store.write_new_file("/over", &vec![0u8; 200_000], 0o644));
+	// -- Exec: far more than a 20-block volume can hold, but under the 256 KiB
+	// object ceiling — so it is one transaction, not three.
+	let e = expect_err(
+		"a write that cannot fit",
+		store.write_new_file("/over", &vec![0u8; 200_000], 0o644),
+	);
 
 	// -- Check: refused on space...
 	match e {
@@ -406,12 +421,51 @@ fn test_a_failed_write_new_file_leaves_an_empty_file() -> Result<()> {
 		other => panic!("expected an out-of-space refusal, got {other:?}"),
 	}
 
-	// -- Check: ...and the file exists, empty, not partial and not absent. A
-	// caller that sees a failure and retries must be able to stat it.
+	// -- Check: ...and the name was never created.
+	assert!(
+		matches!(store.stat("/over"), Err(Error::NoSuchFile { .. })),
+		"a write that fails must leave no file behind"
+	);
+	Ok(())
+}
+
+#[test]
+fn test_a_failed_write_new_file_over_one_object_leaves_a_partial_file() -> Result<()> {
+	// -- Setup & Fixtures: the honest limit of the guarantee above. Content past
+	// one object is written a chunk per transaction, so the create commits
+	// carrying the first chunk and a later chunk can still fail — leaving a file
+	// whose bytes are a *prefix* of what was asked for. Pinned here rather than
+	// left implicit, because "one transaction" is easy to over-read as "atomic":
+	// a caller that needs all-or-nothing must still write a scratch name and
+	// rename it into place.
+	//
+	// The volume is sized deliberately inside a narrow window: big enough for the
+	// first chunk's commit — 256 KiB of content is 64 blocks, plus its metadata,
+	// the snapshot and the four superblock copies — and too small for the
+	// second. Under 100 blocks the *first* commit is the one refused, and the
+	// test would pass for the wrong reason, asserting nothing about partiality.
+	let mut store = store(135)?;
+
+	// -- Exec
+	let e = expect_err(
+		"a two-chunk write that cannot fit",
+		store.write_new_file("/over", &vec![0u8; 400_000], 0o644),
+	);
+
+	// -- Check: refused on space...
+	match e {
+		Error::Format(e) => assert!(e.to_string().contains("space"), "{e}"),
+		other => panic!("expected an out-of-space refusal, got {other:?}"),
+	}
+
+	// -- Check: ...and the first chunk is there, the second is not.
 	let inode = store.stat("/over")?;
 	assert_eq!(inode.kind, InodeKind::RegularFile);
-	assert_eq!(inode.size, 0, "the failed write stored nothing");
-	assert_eq!(store.read_file("/over")?, Vec::<u8>::new());
+	assert_eq!(
+		inode.size,
+		256 * 1024,
+		"the first chunk committed and the second did not"
+	);
 	Ok(())
 }
 
@@ -567,7 +621,7 @@ fn test_an_append_log_survives_a_remount() -> Result<()> {
 	// -- Setup & Fixtures
 	let device = mem(BIG_BLOCKS);
 	let watch = device.clone();
-	let mut store = crucible_ledgerfs_host::Store::format(Box::new(device), BIG_BLOCKS)?;
+	let mut store = ledgerfs_host::Store::format(Box::new(device), BIG_BLOCKS)?;
 	let mut expected = Vec::new();
 	for i in 0..50u32 {
 		let line = format!("entry-{i}\n");
@@ -684,7 +738,10 @@ fn test_remove_unlinks_a_file() -> Result<()> {
 	// -- Check: gone from the listing, absent to `stat`, and its neighbour is
 	// untouched — a CoW unlink must re-root the parent directory, not the tree.
 	assert_eq!(names(&store.read_dir("/")?), vec!["kept".to_string()]);
-	assert!(is_no_such_file(&expect_err("stat a removed file", store.stat("/gone")), "/gone"));
+	assert!(is_no_such_file(
+		&expect_err("stat a removed file", store.stat("/gone")),
+		"/gone"
+	));
 	assert_eq!(store.read_file("/kept")?, b"hi");
 	Ok(())
 }
@@ -775,7 +832,10 @@ fn test_rename_moves_a_file_within_its_directory() -> Result<()> {
 	assert_eq!(names(&store.read_dir("/")?), vec!["new".to_string()]);
 	assert_eq!(store.read_file("/new")?, b"payload");
 	assert_eq!(store.stat("/new")?.mode, 0o644);
-	assert!(is_no_such_file(&expect_err("stat the old name", store.stat("/old")), "/old"));
+	assert!(is_no_such_file(
+		&expect_err("stat the old name", store.stat("/old")),
+		"/old"
+	));
 	Ok(())
 }
 
@@ -928,7 +988,10 @@ fn test_a_whole_session_of_verbs_leaves_the_tree_it_should() -> Result<()> {
 
 	// -- Check
 	assert_eq!(names(&store.read_dir("/")?), vec!["app".to_string()]);
-	assert_eq!(names(&store.read_dir("/app")?), vec!["config.json".to_string(), "logs".to_string()]);
+	assert_eq!(
+		names(&store.read_dir("/app")?),
+		vec!["config.json".to_string(), "logs".to_string()]
+	);
 	assert_eq!(names(&store.read_dir("/app/logs")?), vec!["run.log".to_string()]);
 	assert_eq!(store.read_file("/app/config.json")?, b"{\"v\":2}");
 	assert_eq!(store.stat("/app/config.json")?.mode, 0o600);
@@ -941,7 +1004,7 @@ fn test_the_same_tree_reads_back_after_a_remount() -> Result<()> {
 	// -- Setup & Fixtures
 	let device = mem(BIG_BLOCKS);
 	let watch = device.clone();
-	let mut store = crucible_ledgerfs_host::Store::format(Box::new(device), BIG_BLOCKS)?;
+	let mut store = ledgerfs_host::Store::format(Box::new(device), BIG_BLOCKS)?;
 	store.mkdir("/d", 0o755)?;
 	store.write_new_file("/d/a", b"alpha", 0o644)?;
 	store.write_new_file("/d/b", b"beta", 0o600)?;

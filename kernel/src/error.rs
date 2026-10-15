@@ -2,7 +2,6 @@
 //!
 //! Following the Rust10x error pattern without thiserror/anyhow.
 
-use alloc::string::String;
 use core::fmt;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -78,44 +77,6 @@ pub enum Error {
 	/// B-tree key not found
 	BTreeKeyNotFound(alloc::string::String),
 
-	// -- Dedupe Errors
-	/// Refcount overflow (would exceed u32::MAX)
-	RefcountOverflow { object_id: crate::object::ObjectId },
-	/// Refcount underflow (would go below 0)
-	RefcountUnderflow { object_id: crate::object::ObjectId },
-	/// Dedupe entry not found
-	DedupeEntryNotFound { object_id: crate::object::ObjectId },
-	/// Cannot free object with non-zero refcount
-	CannotFreeObjectWithRefcount {
-		object_id: crate::object::ObjectId,
-		refcount: u32,
-	},
-	/// Cannot free pinned object
-	CannotFreePinnedObject { object_id: crate::object::ObjectId },
-
-	// -- Storage Tier Errors
-	/// Invalid storage tier ID
-	InvalidStorageTier { tier_id: u8 },
-	/// Invalid relocation reason
-	InvalidRelocationReason { reason_id: u8 },
-
-	// -- Snapshot Errors
-	/// Invalid snapshot operation
-	InvalidSnapshot { reason: String },
-
-	// -- GC Errors
-	/// Invalid GC mode
-	InvalidGcMode { mode_id: u8 },
-
-	// -- Scrubber Errors
-	/// Corruption detected during scrub
-	CorruptionDetected {
-		object_id: crate::object::ObjectId,
-		reason: String,
-	},
-	/// Hash verification failed during scrub
-	HashVerificationFailed { object_id: crate::object::ObjectId },
-
 	// -- Generic
 	/// Custom error with message
 	Custom(&'static str),
@@ -177,44 +138,6 @@ impl fmt::Display for Error {
 			Self::InvalidEncoding(msg) => write!(f, "Invalid encoding: {}", msg),
 			Self::InvalidOperation(msg) => write!(f, "Invalid operation: {}", msg),
 			Self::BTreeKeyNotFound(key) => write!(f, "B-tree key not found: {}", key),
-			Self::RefcountOverflow { object_id } => {
-				write!(f, "Refcount overflow for object {}", object_id.to_hex())
-			}
-			Self::RefcountUnderflow { object_id } => {
-				write!(f, "Refcount underflow for object {}", object_id.to_hex())
-			}
-			Self::DedupeEntryNotFound { object_id } => {
-				write!(f, "Dedupe entry not found for object {}", object_id.to_hex())
-			}
-			Self::CannotFreeObjectWithRefcount { object_id, refcount } => {
-				write!(
-					f,
-					"Cannot free object {} with refcount {}",
-					object_id.to_hex(),
-					refcount
-				)
-			}
-			Self::CannotFreePinnedObject { object_id } => {
-				write!(f, "Cannot free pinned object {}", object_id.to_hex())
-			}
-			Self::InvalidStorageTier { tier_id } => {
-				write!(f, "Invalid storage tier: {}", tier_id)
-			}
-			Self::InvalidRelocationReason { reason_id } => {
-				write!(f, "Invalid relocation reason: {}", reason_id)
-			}
-			Self::InvalidSnapshot { reason } => {
-				write!(f, "Invalid snapshot operation: {}", reason)
-			}
-			Self::InvalidGcMode { mode_id } => {
-				write!(f, "Invalid GC mode: {}", mode_id)
-			}
-			Self::CorruptionDetected { object_id, reason } => {
-				write!(f, "Corruption detected in object {}: {}", object_id.to_hex(), reason)
-			}
-			Self::HashVerificationFailed { object_id } => {
-				write!(f, "Hash verification failed for object {}", object_id.to_hex())
-			}
 			Self::Custom(msg) => write!(f, "{}", msg),
 		}
 	}

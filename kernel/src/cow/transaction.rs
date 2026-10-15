@@ -1,7 +1,8 @@
 //! Transaction plan for CoW operations
 //!
 //! TxnPlan lists newly-created objects with their canonical bytes.
-//! Phase 1 will later place/write them as ObjectRecords and produce StorageHints.
+//! Placing/writing them as ObjectRecords and producing StorageHints is not yet
+//! implemented.
 
 extern crate alloc;
 
@@ -51,7 +52,7 @@ impl NewObject {
 /// Transaction plan for CoW operations
 ///
 /// Contains all new objects to write and updated root.
-/// Phase 1 will use this to actually place objects on disk.
+/// Actual placement of these objects on disk is not yet implemented.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxnPlan {
 	/// Previous root (before this transaction)
