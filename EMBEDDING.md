@@ -26,10 +26,12 @@ An application's entry points:
 | open an existing volume | `Store::open(device)` |
 | is this my volume? | `store.app()`, `store.contract_version()` |
 
-A `BlockDevice` is a flat array of 4 KiB blocks. `FileBlockDevice` for a disk
-image or a bare file, `MemBlockDevice` for a volume in the process's own heap.
-The store takes ownership of the device; it does not care which kind it is. That
-seam is the entire embedding story — nothing above it is host-specific.
+A `BlockDevice` is a flat array of 4 KiB blocks. `FileBlockDevice` for a
+partition, a disk image, or a bare file — it opens a region at a byte offset —
+and `MemBlockDevice` for a volume in the process's own heap. The store takes
+ownership of the device; it does not care which kind it is. That seam is the
+entire story — nothing above it is host-specific, and nothing above it can tell
+a volume provisioned onto a real disk from one embedded in a process.
 
 ## 2. The verbs
 

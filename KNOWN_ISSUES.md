@@ -27,8 +27,8 @@ around is that it is on the order of 100 KiB of volume per small file, not per
 *byte written*: see entries 2 and 3 for why.
 
 **Workaround.** Treat a LedgerFS volume as append-only with a known lifetime,
-and reformat rather than reuse. Do not embed it as the primary store for
-anything that must run indefinitely without intervention.
+and reformat rather than reuse. Do not make it the primary store for anything
+that must run indefinitely without intervention.
 
 ---
 
@@ -277,12 +277,19 @@ says work happened when it did not.
 
 ## 12. It is a library, not a filesystem you can mount.
 
-LedgerFS has no kernel driver, no FUSE layer, and no mount point. Nothing here
-registers with a VFS. An embedding application opens a volume with `Store` and
-calls its methods; see `EMBEDDING.md`.
+Nothing here registers with a VFS, and there is no FUSE layer and no mount
+point: no path on your system resolves into a LedgerFS volume. A program opens
+one with `Store` and calls its methods; see `EMBEDDING.md`.
 
-The one exception in shape is `host/src/bin/lfs-read.rs`, which is a debugging
-tool for looking at a volume's bytes and directory tree from a shell.
+That is not the same as saying it only runs in userspace. The crate carries its
+own ATA PIO read and write path (`reader`, `writer`, behind the `reader`
+feature) for the ring-0 case — compiled into a kernel, opening a real disk with
+no OS block layer underneath it, because the crate is the only route to its own
+partition. It is still not a VFS driver: it owns the whole device and serves
+nobody else.
+
+The nearest thing to a tool is `lfs-read` and `lfs-write` in `host/src/bin/`,
+which look at and mutate a volume's bytes and directory tree from a shell.
 
 ---
 

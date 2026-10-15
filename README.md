@@ -1,16 +1,20 @@
 # LedgerFS
 
-A copy-on-write, content-addressed filesystem that an ordinary application can
-embed. A **volume** is a flat array of 4 KiB blocks holding a self-contained tree
-of files. Every object is addressed by `BLAKE3(payload)` and written
-copy-on-write, nothing is ever modified in place, and a write becomes durable at
-one point: the superblock write that ends a commit. Before that write the old
-tree is the filesystem; after it, the new one. There is no interval a crash can
-leave half-applied.
+A copy-on-write, content-addressed filesystem. A **volume** is a flat array of
+4 KiB blocks holding a self-contained tree of files — a partition on a real disk,
+a file, or a buffer in memory. Every object is addressed by `BLAKE3(payload)` and
+written copy-on-write, nothing is ever modified in place, and a write becomes
+durable at one point: the superblock write that ends a commit. Before that write
+the old tree is the filesystem; after it, the new one. There is no interval a
+crash can leave half-applied.
 
-The intended use is not a system disk. It is a store a program owns: format a
-bare file or a heap buffer as a volume, write to it through a small verb set, and
-carry the whole filesystem around as a byte string.
+It is built for two deployments, and neither is a special case of the other. A
+volume can be **provisioned onto a real disk** — its own partition, formatted
+once and opened directly by whatever owns it — or **embedded in a program**,
+where it lives in a file or in that process's heap and can be carried around as a
+byte string. The block device underneath is the only difference:
+`FileBlockDevice` binds a bare file and a partition with the same type, and
+everything above it is identical.
 
 ## Two crates
 
@@ -88,9 +92,12 @@ partition. Runnable versions: `cargo run --example app_store` (the contract in
 
 ## What this is not
 
-- **Not a general-purpose system filesystem.** There is no VFS layer, no page
-  cache, no `mmap`, no POSIX conformance claim. It is a library over a block
-  device.
+- **Not an operating system's root filesystem.** There is no VFS layer, no page
+  cache, no `mmap`, and no POSIX conformance claim; nothing mounts a volume on
+  `/`. It is a library over a block device — and the block device is expected to
+  be a real one. A dedicated partition is the intended place for a volume to
+  live, which is why the crate carries an ATA PIO reader and writer for the case
+  where the crate is the only route to its own partition.
 - **Not a database.** No query engine, no transactions across volumes, no
   concurrent writers.
 - **Not battle-tested at scale.** The format is pre-1.0 and not frozen.

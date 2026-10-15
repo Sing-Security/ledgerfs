@@ -24,16 +24,18 @@ crate](https://github.com/Sing-Security/ledgerfs) instead.
 | `placement` | turns a `TxnPlan` into placed `ObjectRecord`s |
 | `commit` | `CommitEngine`: the ordered write of objects → allocator snapshot → superblocks |
 | `cow` | the operations — `read`, `readdir`, `mkdir`, `create_file`, `write`, `unlink`, `rename` — and the `ObjectStore` trait they are generic over |
-| `dedupe` | the in-memory `ObjectId → physical location` index, refcounts and pins |
-| `gc` | deadlist processing and extent reconciliation |
-| `snapshot` | snapshot registry, pinning, rollback |
-| `cdc`, `compression`, `lz4_block` | content-defined chunking and the per-chunk compression policies |
+| `compression`, `lz4_block` | the per-chunk compression policies |
 | `replication` | send/receive: walking a reachable set, diffing two roots, verifying what arrives |
-| `scrubber`, `selftest` | integrity verification, in the background and at boot |
+| `selftest` | integrity verification at boot |
 | `audit`, `seal_record` | the tamper-evident audit chain and its seals |
 | `keyslot`, `data_crypto` | passphrase-derived key slots and transparent block encryption |
 | `mode` | `FsMode` — `ReadWrite` versus the write-embargoed `ReadOnlySafe` |
 | `reader`, `writer`, `ata_io`, `arch` | the ATA PIO path used when this crate is the only route to its own partition |
+
+`dedupe`, `gc`, `snapshot`, `cdc` and `scrubber` are deliberately absent.
+`FORMAT.md` §44 calls them Tier B — implemented and tested, but driven by nothing
+in the shipping path — so they build and test as the separate, unpublished
+`ledgerfs-pending` crate instead of shipping in this one.
 
 ## Features
 

@@ -27,6 +27,13 @@ exclusive lock and refuses a second writer; a `MemBlockDevice` is a `Vec<u8>`
 behind an `Arc<Mutex<…>>` that can be snapshotted to bytes and rebuilt, which is
 how the durability tests simulate a power cut.
 
+The partition case is a real deployment, not a test shape. `FileBlockDevice`
+opens an existing region at a byte offset, so the same `Store` drives a partition
+inside a disk image or a partition device node; `lfs-write <TARGET> mkfs --part
+data` formats one in place, and `lfs-read <IMAGE> parts` reads the table back to
+locate it. Writing the partition table is the installer's job, not this crate's —
+`image` reads a table that is already there.
+
 ## What is in the crate
 
 | | |

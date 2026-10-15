@@ -62,13 +62,16 @@
 //!
 //! # Where a volume lives
 //!
-//! [`BlockDevice`] is what makes this crate embeddable rather than merely a
-//! partition inspector. A volume is a flat array of 4 KiB blocks; whether that
-//! array is a disk image, a bare file, or a `Vec` in the caller's heap is the
-//! device's business, not the filesystem's. [`FileBlockDevice`] covers the
-//! first two (a whole-file volume is `base_offset = 0`) and
-//! [`MemBlockDevice`] covers the third, including handing the buffer back as
-//! a valid volume file once the store is done with it.
+//! [`BlockDevice`] is the seam that makes a volume's *location* the caller's
+//! business rather than the filesystem's. A volume is a flat array of 4 KiB
+//! blocks; whether that array is a partition on a real disk, a disk image, a
+//! bare file, or a `Vec` in the caller's heap changes nothing above the device.
+//! [`FileBlockDevice`] covers the first three — it opens a region at a byte
+//! offset, and a whole-file volume is simply `base_offset = 0` — and
+//! [`MemBlockDevice`] covers the fourth, including handing the buffer back as a
+//! valid volume file once the store is done with it. A partition is the expected
+//! deployment; the other three exist so the same code can be tested, embedded,
+//! and carried around.
 //!
 //! # The application-store contract
 //!
