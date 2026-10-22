@@ -293,6 +293,34 @@ which look at and mutate a volume's bytes and directory tree from a shell.
 
 ---
 
+## 13. The host crate's file device is Unix-family only.
+
+The format core (`ledgerfs`, the kernel crate) is `no_std` and knows nothing
+about any operating system — no syscalls, no filesystem, no I/O of its own.
+Everything it has, it is told, through the `BlockDevice` seam. That seam is
+the portability contract, and it is where an embedder plugs in their own
+storage: an OS file, a partition, a flash page, a RAM buffer.
+
+What is not portable today is the one convenience `ledgerfs-host` ships for
+people who do not want to write that seam themselves: the file-backed device
+(`host/src/device.rs`) uses `std::os::unix::fs::{FileExt, MetadataExt}` —
+`read_at`/`write_at` for positioned I/O and `dev`/`ino` for the hint-cache's
+volume identity — with no `cfg` gate. The crate therefore compiles on Linux
+and macOS and not on Windows.
+
+**Consequence.** A Windows consumer can use the format core today by
+implementing `BlockDevice` themselves (Windows' `FileExt` has the equivalents
+in `seek_read`/`seek_write`; identity needs its own fields); they cannot use
+the built-in file device.
+
+**Workaround / path out.** Either document Unix-only support for the host
+crate and let the seam carry Windows, or split `device.rs` behind
+`#[cfg(unix)]` / `#[cfg(windows)]` with the Windows implementation written
+and checked. Nothing in the volume logic — commits, CoW, verification —
+touches an OS.
+
+---
+
 ## Reporting
 
 If you find something not on this list, it is a bug rather than a limitation.
