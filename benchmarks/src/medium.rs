@@ -232,9 +232,16 @@ pub fn machine() -> Machine {
 		kernel: fs::read_to_string("/proc/sys/kernel/osrelease")
 			.ok()
 			.map(|s| s.trim().to_string()),
-		hostname: fs::read_to_string("/proc/sys/kernel/hostname")
-			.ok()
-			.map(|s| s.trim().to_string()),
+		// The hostname is a machine fingerprint, and checked-in results are
+		// public: record it only when the operator names the machine for the
+		// run (LEDGERFS_BENCH_HOST); otherwise record it as redacted. The
+		// same field names the result file in report::write_run.
+		hostname: Some(
+			std::env::var("LEDGERFS_BENCH_HOST")
+				.ok()
+				.filter(|v| !v.trim().is_empty())
+				.unwrap_or_else(|| "redacted".into()),
+		),
 	}
 }
 

@@ -87,7 +87,7 @@ pay for, so every durability number measured on one is fiction. If you add a
 workload, keep the guard and keep the machine record: a number without the
 device, filesystem, and durability setting it came from is not a result.
 
-Checked-in results live in `benchmarks/results/`. Regenerate `BENCHMARKS.md`
+Checked-in results live in `benchmarks/results/`. The hostname is a machine fingerprint, so the harness records `redacted` unless you export `LEDGERFS_BENCH_HOST=<label>` for the run — keep private labels out of files you intend to commit. Regenerate `BENCHMARKS.md`
 from them rather than editing the tables by hand.
 
 ## Commits
