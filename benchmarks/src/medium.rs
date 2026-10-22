@@ -435,7 +435,7 @@ mod tests {
 
 		// -- Exec / Check: the deepest mount point wins.
 		assert_eq!(
-			best_for(&entries, "/home/user/x").unwrap().source,
+			best_for(&entries, "/home/demo/x").unwrap().source,
 			"/dev/mapper/luks-abc"
 		);
 		assert_eq!(best_for(&entries, "/home").unwrap().major_minor, (0, 30));

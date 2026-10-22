@@ -142,4 +142,6 @@ with rustfmt and clippy, and says why it is not pinned to the floor.
 
 ## License
 
-Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+Dual-licensed: Apache-2.0 or MIT, at your option. See
+[`LICENSE-APACHE`](LICENSE-APACHE), [`LICENSE-MIT`](LICENSE-MIT), and
+[`NOTICE`](NOTICE).

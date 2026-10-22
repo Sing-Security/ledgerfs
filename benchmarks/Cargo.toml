@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.90"
 publish = false
 description = "The cross-engine comparison harness: LedgerFS against SQLite, redb, and a raw fsync'd file."
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sing-Security/ledgerfs"
 
 [dependencies]

@@ -4,7 +4,7 @@ version = "0.7.0"
 edition = "2024"
 rust-version = "1.89"
 description = "LedgerFS subsystems that are implemented and tested but not driven by the shipping path: dedupe index, snapshots, scrubber, GC safety rules, content-defined chunking."
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sing-Security/ledgerfs"
 # Not published. FORMAT.md §44.1 calls these subsystems Tier B — "implemented in
 # the kernel crate with tests, but not driven by the host `Store` on a live

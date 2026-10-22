@@ -13,6 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+LedgerFS is also available under the MIT License (see LICENSE-MIT); you may
+choose either term for redistribution. The Apache grant above applies when no
+choice is made.
+
 Third-party dependencies carry their own licenses. Read them from the resolved
 graph rather than a list here, which would go stale on the next bump:
 

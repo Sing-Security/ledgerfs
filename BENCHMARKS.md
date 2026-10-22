@@ -141,7 +141,7 @@ was inferred.
 - **Memory** — 15.5 GiB
 - **Kernel** — 7.0.11-1-cachyos
 - **Filesystem** — btrfs
-- **Device** — /dev/mapper/luks-REDACTED (SAMSUNG MZVLB512HAJQ-00000) — **dm-crypt, so an encryption cost is included**
+- **Device** — /dev/mapper/luks-redacted (UUID elided) (SAMSUNG MZVLB512HAJQ-00000) — **dm-crypt, so an encryption cost is included**
 - **Free space** — 108.4 GiB of 474.9 GiB
 - **Workload sizes** — insert_n=200, log_appends=64, repeats=3
 
