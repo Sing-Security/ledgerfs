@@ -5,6 +5,10 @@
 #   pending/     ledgerfs-pending    — Tier B subsystems, publish = false
 #   benchmarks/  ledgerfs-benchmarks — the comparison harness, publish = false
 #
+# Publish order matters for the two published crates: `ledgerfs` (kernel) goes
+# first. `ledgerfs-host` gates it with a version requirement, so its
+# `cargo package` cannot resolve against crates.io until the kernel is up.
+#
 # They share a lockfile and a target directory and nothing else; each carries its
 # own metadata and its own version, because the kernel's is tied to the on-disk
 # format and the host's is not.

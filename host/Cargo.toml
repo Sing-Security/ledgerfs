@@ -22,7 +22,7 @@ unsafe_code = "forbid"
 #    gates, so a record written with either policy decodes. Deliberately NOT
 #    `reader` (that compiles ring-0 ATA port I/O into a userspace binary) and
 #    not `data-encryption` (see lib.rs, "What this does not do yet").
-ledgerfs = { path = "../kernel", features = ["std"] }
+ledgerfs = { path = "../kernel", version = "0.7", features = ["std"] }
 
 [dev-dependencies]
 # The benchmark harness for `benches/store.rs` — one group per `Store` action.
