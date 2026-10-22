@@ -68,9 +68,21 @@ fn main() -> Result<()> {
 ```
 
 Swap `MemBlockDevice` for `FileBlockDevice` and the same calls drive a file or a
-partition. Runnable versions: `cargo run --example app_store` (the contract in
-[`EMBEDDING.md`](EMBEDDING.md) as code) and `cargo run --example embed`
-(in-memory, relocatable volumes).
+partition. Runnable versions, one per way to hold a volume:
+
+- `cargo run --example embed` — in-memory, relocatable volumes (`MemBlockDevice`)
+- `cargo run --example disk_volume` — a hosted volume: a real file, the
+  one-writer lock, a read-only open beside a live writer, the hint sidecar
+- `cargo run --example app_store` — the application-store contract from
+  [`EMBEDDING.md`](EMBEDDING.md) as code
+- `cargo run --example custom_device` — your own storage: implement the four
+  required [`BlockDevice`](host/src/device.rs) methods and the whole filesystem
+  works on top of it unchanged
+
+The crate is portable: the file device's positioned I/O and writer lock are
+gated per family and the crate is tested on Linux and Windows in CI (macOS
+builds the same Unix path); the kernel crate is `no_std` and touches no OS at
+all.
 
 ## What it guarantees
 

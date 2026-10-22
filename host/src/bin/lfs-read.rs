@@ -1,21 +1,26 @@
-//! `lfs-read` — inspect a LedgerFS partition from the host.
+//! `lfs-read` — inspect a LedgerFS volume from the host.
 //!
 //! The acceptance harness for the read path in this crate: point it at a real
 //! built image and it either walks the volume or says exactly where it stopped.
+//! Two kinds of target, the same pair `lfs-write` serves:
+//!
+//! - a **partitioned image**, whose MBR names the volumes (`--part`);
+//! - a **bare file**, where the file *is* the volume (`--bare`).
 //!
 //! ```text
 //! lfs-read <IMAGE> parts
-//! lfs-read <IMAGE> info    [--part system|data]
-//! lfs-read <IMAGE> ls      [PATH] [--part system|data]
-//! lfs-read <IMAGE> cat     <PATH> [--part system|data]
-//! lfs-read <IMAGE> stat    <PATH> [--part system|data]
+//! lfs-read <IMAGE> info    [--bare] [--part system|data]
+//! lfs-read <IMAGE> ls      [PATH] [--bare] [--part system|data]
+//! lfs-read <IMAGE> cat     <PATH> [--bare] [--part system|data]
+//! lfs-read <IMAGE> stat    <PATH> [--bare] [--part system|data]
 //! ```
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use ledgerfs_host::{
-	Error, FileBlockDevice, HostFs, InodeKind, ObjectId, PartitionKind, Result, Volume, find_partition, read_partitions,
+	Error, FileBlockDevice, HostFs, InodeKind, ObjectId, Partition, PartitionKind, Result, Volume, find_partition,
+	read_partitions,
 };
 
 // region:    --- Cli
@@ -25,6 +30,9 @@ struct Cli {
 	command: String,
 	positional: Vec<String>,
 	part: PartitionKind,
+	/// Treat the whole file as one volume — no partition table is read or
+	/// expected. The reader counterpart of `lfs-write --bare`.
+	bare: bool,
 }
 
 /// Default to the system volume: it is the partition an image always has a
@@ -34,7 +42,7 @@ struct Cli {
 const DEFAULT_PART: PartitionKind = PartitionKind::System;
 
 const USAGE: &str = "\
-usage: lfs-read <IMAGE> <COMMAND> [PATH] [--part system|data]
+usage: lfs-read <IMAGE> <COMMAND> [PATH] [--bare] [--part system|data]
 
   parts            list the image's MBR partitions
   info             superblock, mount selection, and root summary
@@ -42,6 +50,7 @@ usage: lfs-read <IMAGE> <COMMAND> [PATH] [--part system|data]
   cat <PATH>       write a file's contents to stdout
   stat <PATH>      show one inode's metadata
 
+  --bare           the file is the volume — no partition table is read
   --part KIND      which partition to open, 'system' (default) or 'data'";
 
 fn parse_args(argv: Vec<String>) -> Result<Cli> {
@@ -49,11 +58,16 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 	let mut command: Option<String> = None;
 	let mut positional = Vec::new();
 	let mut part = DEFAULT_PART;
+	let mut bare = false;
 
 	let mut it = argv.into_iter();
 	while let Some(arg) = it.next() {
 		if arg == "--help" || arg == "-h" {
 			return Err(Error::Usage(USAGE.to_string()));
+		}
+		if arg == "--bare" {
+			bare = true;
+			continue;
 		}
 		if arg == "--part" {
 			let value = it
@@ -82,6 +96,7 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 		command,
 		positional,
 		part,
+		bare,
 	})
 }
 
@@ -149,6 +164,22 @@ fn usage_exit(message: &str) -> ! {
 
 // region:    --- Commands
 
+/// Mount the volume the walking commands operate on.
+///
+/// Partitioned image by default; `--bare` opens the whole file as one volume.
+/// This is the same target fork `lfs-write`'s `open_target` makes, kept in
+/// step so the two tools can always read what the other wrote.
+fn open_fs(cli: &Cli) -> Result<HostFs> {
+	if cli.bare {
+		let len = std::fs::metadata(&cli.image).map_err(Error::Io)?.len();
+		let device = FileBlockDevice::open(&cli.image, 0, len)?;
+		let fs = HostFs::mount_device(Box::new(device))?;
+		fs.require_root()?;
+		return Ok(fs);
+	}
+	HostFs::open(&cli.image, cli.part)
+}
+
 fn cmd_parts(cli: &Cli) -> Result<()> {
 	let partitions = read_partitions(&cli.image)?;
 	if partitions.is_empty() {
@@ -169,31 +200,38 @@ fn cmd_parts(cli: &Cli) -> Result<()> {
 }
 
 fn cmd_info(cli: &Cli) -> Result<()> {
-	let partition = find_partition(&cli.image, cli.part)?;
+	// The frame: where inside the target the volume sits. A partitioned image
+	// answers from its MBR; a bare file is the volume, from byte 0 to the end.
+	let frame = if cli.bare {
+		let len = std::fs::metadata(&cli.image).map_err(Error::Io)?.len();
+		Frame::Bare { size_bytes: len }
+	} else {
+		Frame::Partitioned(find_partition(&cli.image, cli.part)?)
+	};
+	let (start_bytes, size_bytes) = match &frame {
+		Frame::Partitioned(p) => (p.start_bytes(), p.size_bytes()),
+		Frame::Bare { size_bytes } => (0, *size_bytes),
+	};
 
 	// Mount the volume on its own first: this reports superblock-level facts
 	// even when the root turns out to be unreadable, which is the more useful
 	// failure to see.
-	let device = FileBlockDevice::open(&cli.image, partition.start_bytes(), partition.size_bytes())?;
+	let device = FileBlockDevice::open(&cli.image, start_bytes, size_bytes)?;
 	let volume = Volume::mount(&device)?;
 	let sb = &volume.superblock;
 
 	println!("image          {}", cli.image.display());
-	println!(
-		"partition      {} (type 0x{:02X})",
-		partition.kind.label(),
-		partition.part_type
-	);
-	println!(
-		"  start        {} (byte {})",
-		partition.start_lba,
-		partition.start_bytes()
-	);
-	println!(
-		"  size         {} bytes ({} blocks)",
-		partition.size_bytes(),
-		sb.total_blocks
-	);
+	match &frame {
+		Frame::Partitioned(p) => {
+			println!("partition      {} (type 0x{:02X})", p.kind.label(), p.part_type);
+			println!("  start        {} (byte {})", p.start_lba, p.start_bytes());
+		}
+		Frame::Bare { .. } => {
+			println!("partition      whole file (--bare)");
+			println!("  start        0 (byte 0)");
+		}
+	}
+	println!("  size         {} bytes ({} blocks)", size_bytes, sb.total_blocks);
 	println!();
 	println!("superblock");
 	println!("  version      {}", sb.version);
@@ -261,7 +299,7 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 	// Then the root, via a full open — a volume with no valid root is a real
 	// and expected state (the data volume before its first boot), not a tool
 	// error.
-	match HostFs::open_partition(&cli.image, &partition) {
+	match open_fs(cli) {
 		Ok(fs) => {
 			let inode = fs.store.inode(fs.root_inode_ref)?;
 			println!();
@@ -284,7 +322,7 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 
 fn cmd_ls(cli: &Cli) -> Result<()> {
 	let path = cli.one_path()?;
-	let fs = HostFs::open(&cli.image, cli.part)?;
+	let fs = open_fs(cli)?;
 	let entries = fs.read_dir(&path)?;
 
 	if entries.is_empty() {
@@ -300,7 +338,7 @@ fn cmd_ls(cli: &Cli) -> Result<()> {
 
 fn cmd_cat(cli: &Cli) -> Result<()> {
 	let path = cli.required_path()?;
-	let fs = HostFs::open(&cli.image, cli.part)?;
+	let fs = open_fs(cli)?;
 	let data = fs.read_file(&path)?;
 
 	// Raw bytes, not a lossy string: a file on this volume may be anything.
@@ -313,7 +351,7 @@ fn cmd_cat(cli: &Cli) -> Result<()> {
 
 fn cmd_stat(cli: &Cli) -> Result<()> {
 	let path = cli.required_path()?;
-	let fs = HostFs::open(&cli.image, cli.part)?;
+	let fs = open_fs(cli)?;
 	let inode = fs.stat(&path)?;
 
 	println!("path         {path}");
@@ -350,6 +388,13 @@ fn kind_char(kind: InodeKind) -> char {
 		InodeKind::RegularFile => '-',
 		InodeKind::Symlink => 'l',
 	}
+}
+
+/// Where inside the target the volume sits — the one fact `info` prints that
+/// differs between a partitioned image and a bare file.
+enum Frame {
+	Partitioned(Partition),
+	Bare { size_bytes: u64 },
 }
 
 // endregion: --- Support

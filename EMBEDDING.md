@@ -258,3 +258,9 @@ observability, and the export path is how the two are reconciled.
   `store::tests` suite in `src/store.rs`.
 - The in-memory, relocatable half of the story — snapshot the bytes, restore
   them, get your data back — is `examples/embed.rs`.
+- The hosted half — a volume in a real file, the one-writer lock, a read-only
+  open beside a live writer, the hint sidecar written on close — is
+  `examples/disk_volume.rs`.
+- The seam itself, implemented by an embedder over storage of its own, is
+  `examples/custom_device.rs`: four methods, and the filesystem above works
+  unchanged.
