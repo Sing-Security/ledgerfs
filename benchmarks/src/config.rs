@@ -9,6 +9,8 @@ pub struct Config {
 	pub insert_n: usize,
 	/// Appends per repetition in the log workload.
 	pub log_appends: usize,
+	/// Durable batches per repetition in the batched-append workloads.
+	pub append_batches: usize,
 	/// Repetitions per workload. The reported figure is their median.
 	pub repeats: usize,
 }
@@ -18,6 +20,7 @@ impl Default for Config {
 		Config {
 			insert_n: 200,
 			log_appends: 64,
+			append_batches: 512,
 			repeats: 3,
 		}
 	}
@@ -26,8 +29,8 @@ impl Default for Config {
 impl Config {
 	pub fn describe(&self) -> String {
 		format!(
-			"insert_n={}, log_appends={}, repeats={}",
-			self.insert_n, self.log_appends, self.repeats
+			"insert_n={}, log_appends={}, append_batches={}, repeats={}",
+			self.insert_n, self.log_appends, self.append_batches, self.repeats
 		)
 	}
 
@@ -42,10 +45,17 @@ impl Config {
 		/// own file — a row, a key, and the tree or page around them.
 		const PER_KEY: u64 = 4096;
 
+		/// Rough bytes one durable batch costs LedgerFS's free space — the commit
+		/// overhead, not the 960-byte payload. Measured, not modelled: it is the
+		/// same order as the `volume KiB/op` the harness reports, with headroom
+		/// for a volume whose allocator snapshot is larger than the last run's.
+		const PER_BATCH: u64 = 320 * 1024;
+
 		let largest_workload = (1000 + self.insert_n as u64) * PER_KEY;
 		let log = (self.log_appends * self.repeats) as u64 * 64 * 1024;
+		let batched = (self.append_batches * self.repeats) as u64 * PER_BATCH;
 		// Four engines' own files, plus headroom for a table's growth during the
 		// run and for whatever else the machine is doing.
-		4 * (largest_workload + log) + 512 * 1024 * 1024
+		4 * (largest_workload + log) + 2 * batched + 512 * 1024 * 1024
 	}
 }

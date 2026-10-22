@@ -207,12 +207,33 @@ pub fn probe(path: &Path) -> io::Result<Medium> {
 		fs_magic: magic,
 		fs_name,
 		volatile,
-		source: if source.is_empty() { None } else { Some(source) },
+		source: if source.is_empty() {
+			None
+		} else {
+			Some(redact_source(&source))
+		},
 		device_model,
 		encrypted,
 		free_bytes,
 		total_bytes,
 	})
+}
+
+/// The mount source as it is recorded — and it is not always recorded as-is.
+///
+/// A device-mapper source names the volume's UUID (`/dev/mapper/luks-<uuid>`),
+/// which identifies the machine the run happened on rather than anything about
+/// the measurement. The record keeps the shape and drops the identifier, the
+/// same rule the hostname follows: reproducible on the machine it ran on,
+/// anonymous everywhere else. Encryption is still reported — that fact comes
+/// from the dm UUID's `CRYPT-` prefix in `describe_device`, which sees the
+/// unredacted string before this runs.
+fn redact_source(source: &str) -> String {
+	let Some((prefix, suffix)) = source.split_once("luks-") else {
+		return source.to_string();
+	};
+	let name = suffix.split(['/']).next().unwrap_or(suffix);
+	format!("{prefix}luks-redacted{}", &suffix[name.len()..])
 }
 
 pub fn machine() -> Machine {
@@ -449,6 +470,18 @@ mod tests {
 		assert_eq!(best_for(&entries, "/etc/hosts").unwrap().source, "/dev/mapper/luks-abc");
 		assert_eq!(best_for(&entries, "/run/user/1000/doc/x").unwrap().source, "portal");
 		Ok(())
+	}
+
+	#[test]
+	fn test_source_redaction_drops_the_identifier_keeps_the_shape() {
+		assert_eq!(
+			redact_source("/dev/mapper/luks-9f3c1a2b-4d5e-6f70-8192-a3b4c5d6e7f8"),
+			"/dev/mapper/luks-redacted"
+		);
+		// Everything that is not a LUKS mapping records as-is.
+		assert_eq!(redact_source("/dev/sda1"), "/dev/sda1");
+		assert_eq!(redact_source("portal"), "portal");
+		assert_eq!(redact_source("tmpfs"), "tmpfs");
 	}
 
 	#[test]

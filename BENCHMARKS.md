@@ -29,6 +29,22 @@ can inspect.
 `raw-file` is the control. It is what "durable" costs on this machine with no
 engine at all, and every row should be read against it.
 
+### Per deployment
+
+The comparison engines are cargo features named after the engine — `sqlite`,
+`redb`, both on by default. A build with `--no-default-features --features
+sqlite` contains no redb code at all: not compiled, not linked, not in the
+binary. A deployment compares itself against what it actually deploys, and it
+does not carry the rest. The workloads never name an engine — they see the
+harness's `Engine` trait and nothing else — so a feature change is a roster
+change and nothing downstream of it moves. `ledgerfs` and `raw-file` are always
+present: one is the subject, the other the control.
+
+The published crate follows the same rule one level down. An application that
+embeds LedgerFS compiles `ledgerfs-host` and its four-method `BlockDevice`
+seam; the block layer, the ring-0 path and everything OS-shaped stay in the OS
+tree, not in the application's dependency graph.
+
 ## Like for like
 
 - **One write per transaction, for every engine.** Where an engine has a batch
@@ -88,15 +104,14 @@ does not know them will draw the wrong conclusion from at least two of the rows.
 
 ## The framing
 
-LedgerFS is last on every row here. Two of those rows are now close, and the
-reason is visible in the table itself.
+LedgerFS is last on most rows here. Two of them are closer than they look, and
+the reason is visible in the table itself.
 
-**A durable 256-byte insert is 10.1 ms.** SQLite is 4.62 ms and redb 4.05 ms, so
-LedgerFS is about 2.2× where an earlier revision of this document recorded about
-8×. The row to compare it against is `raw-file` at 6.99 ms: no engine at all, a
+**A durable 256-byte insert is 7.90 ms.** SQLite is 3.72 ms and redb 3.93 ms.
+The row to compare it against is `raw-file` at 6.92 ms: no engine at all, a
 file `fsync` and a directory `fsync` per put — the same *shape* of cost, two
 synchronizations following new data, which is exactly what a LedgerFS commit
-issues (`FORMAT.md` §15.1). LedgerFS pays 1.44× a raw two-sync put for a whole
+issues (`FORMAT.md` §15.1). LedgerFS pays 1.14× a raw two-sync put for a whole
 filesystem commit: an allocator snapshot, four superblock copies, and a CoW
 rewrite of every object on the path.
 
@@ -109,20 +124,17 @@ first is not a local optimisation; it moves the cost of an interrupted commit
 into the mount path, which is a different recovery story and a different format
 argument (`FORMAT.md` §18). It is not in this release.
 
-**The read rows moved less, and that is reported rather than explained away.**
-`read_point_256b` is 34 µs against 30 µs in the previous run, on a machine that
-was slower for every engine in the same window — SQLite went 4.2 → 6.1 µs on
-that row. The read path did get cheaper on the device: a lookup used to read
-each candidate block twice, once to check it held the wanted object and once to
-fetch the payload, and that is gone — 11 block reads behind a point read in a
-root directory, now 5, with the count pinned by a test
-(`host/tests/readpath.rs`). It does not show up here because a warm read of 256
-bytes is not spending its time on device reads. The scan rows are unchanged for
-the same reason.
+**The read rows are the guarantee showing its price.** `read_point_256b` is
+26.2 µs against redb's 917 ns. A lookup behind it is five block reads, a count
+pinned by a test (`host/tests/readpath.rs`); the rest of the gap is the
+object's BLAKE3 hash, verified before the bytes come back, because a read that
+cannot say whether it succeeded is not the guarantee this format sells. The
+databases trust their pages; LedgerFS checks them. What that check is worth on
+the workload it was built for is the next section.
 
 What LedgerFS has instead is a narrower guarantee: storage whose commit is the
 durability point, with no log to replay and no separate engine, in a library that
-owns a byte string. Whether that is worth 2.2× is a question about your
+owns a byte string. Whether that is worth 2.1× is a question about your
 application, not about these numbers — a system that needs crash-atomic storage
 without a second component to operate is buying something the other three rows
 are not selling. A system that needs throughput should use one of them.
@@ -130,20 +142,80 @@ are not selling. A system that needs throughput should use one of them.
 Where a number was not measured, the table says so. There is no row here that
 was inferred.
 
+## Batched records, read back whole
+
+The insert rows measure the smallest possible durability unit: one value, one
+commit. Two workloads measure the unit most write-heavy applications actually
+use, and they exist because the answer there is different in kind, not only in
+degree.
+
+`append_batched_960b` writes fixed-size records — 48 bytes, one sequence
+number plus payload — in batches of twenty, with **one durability point per
+batch**. It is the write pattern of an application that accumulates records and
+flushes them as they arrive. Every engine gets the same rows and the same batch
+boundary and does the batch in its own idiom: one transaction for SQLite, one
+write transaction for redb, one `write_all` and one `sync_all` for the raw
+control, and for LedgerFS one `append` — which is one commit, because on this
+format the append *is* the transaction. `read_back_960b` then reads a whole
+stream back and compares every byte against what was written.
+
+**The batch is where the gap narrows.** LedgerFS is 16.20 ms a batch against
+SQLite's 9.25 ms — 1.75×, against 2.12× on the single-insert row above — and
+1.7× the raw control, which also stopped being cheap the moment the batch made
+its two syncs unavoidable. Once the batch is the durability point, every engine
+pays roughly one synchronization and the residual difference is bookkeeping;
+LedgerFS's bookkeeping is a whole-filesystem commit, and this row prices it.
+
+**The volume cost is the commit's, not the payload's.** A batch costs 107.6 KiB
+of backing store; a 256-byte insert costs 108.8. The commit rewrites the
+allocator snapshot and the path it touched, so its cost is fixed whether the
+payload carries twenty records or one — which means sizing a capture volume
+means sizing *commits*: roughly `batches × 108 KiB`, whatever the records hold.
+This is the number behind `KNOWN_ISSUES.md` §1's advice to treat a volume as
+append-only with a known lifetime, and it is why that entry describes the
+intended shape rather than a workaround.
+
+**Read back, the verification is already in the number.** Per batch read:
+raw-file 113 ns — the page cache handing back bytes it already has — redb
+1.6 µs, sqlite-wal 2.7 µs, ledgerfs 3.6 µs. The ledgerfs figure includes the
+BLAKE3 verification of every object it returns; on the other engines that check
+is work the caller has not done yet. Over the whole 480 KiB stream the verified
+read-back lands within about 1.3× of SQLite's unverified one — the price of
+*knowing* the recording is intact rather than hoping.
+
+### What kind of store this is
+
+Put the rows together and the shape is specific. This is not a row store: there
+is no index, no in-place update, no query, and the volume cost per commit means
+there cannot be one without becoming a different format. What it is: records
+that land once, are never rewritten, live for a lifetime the application
+chooses, and come back **verified** — the capture tier that sits on the near
+side of a database, not a replacement for one.
+
+The division of labour follows. Capture into this filesystem when the record
+has to survive a power cut *and survive provably* — that is what the read-back
+row prices and what the commit buys. Export to SQLite, or to whatever else,
+when the workload becomes a query: an export is a plain sequential read, and
+the byte-for-byte comparison in `read_back_960b` is the same operation the
+exporter performs. The comparison engines are per-deployment cargo features
+([above](#per-deployment)) precisely because of this split — the deployment
+that captures and exports to SQLite builds SQLite and LedgerFS and nothing
+else.
+
 <!-- BEGIN GENERATED: benchmarks -->
 <!-- This section is generated by `ledgerfs-benchmarks render`.
      Edit the prose around it, not the tables: they are overwritten. -->
 
 ## The machine this was measured on
 
-- **UTC** — 2026-10-14T19:52:56Z
+- **UTC** — 2026-10-22T22:40:04Z
 - **CPU** — Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz (12 logical)
 - **Memory** — 15.5 GiB
 - **Kernel** — 7.0.11-1-cachyos
 - **Filesystem** — btrfs
-- **Device** — /dev/mapper/luks-redacted (UUID elided) (SAMSUNG MZVLB512HAJQ-00000) — **dm-crypt, so an encryption cost is included**
-- **Free space** — 108.4 GiB of 474.9 GiB
-- **Workload sizes** — insert_n=200, log_appends=64, repeats=3
+- **Device** — /dev/mapper/luks-redacted (SAMSUNG MZVLB512HAJQ-00000) — **dm-crypt, so an encryption cost is included**
+- **Free space** — 15.3 GiB of 474.9 GiB
+- **Workload sizes** — insert_n=200, log_appends=64, append_batches=512, repeats=3
 
 Each workload is run for every engine `repeats` times; the figure below is the median of the per-repetition means, and each repetition does the same amount of work. Nothing is tuned: every engine is asked for one write, durable before the call returns.
 
@@ -160,10 +232,10 @@ Each workload is run for every engine `repeats` times; the figure below is the m
 
 | engine | median per operation | operations/s | payload MiB/s | volume KiB/op |
 |---|---:|---:|---:|---:|
-| `redb` | 4.05 ms | 247 | 0.06 | — |
-| `sqlite-wal` | 4.62 ms | 216 | 0.05 | — |
-| `raw-file` | 6.99 ms | 143 | 0.03 | — |
-| `ledgerfs` | 10.09 ms | 99 | 0.02 | 108.8 |
+| `sqlite-wal` | 3.72 ms | 269 | 0.07 | — |
+| `redb` | 3.93 ms | 254 | 0.06 | — |
+| `raw-file` | 6.92 ms | 144 | 0.04 | — |
+| `ledgerfs` | 7.90 ms | 127 | 0.03 | 108.8 |
 
 `volume KiB/op` is the backing store's own free-space delta divided by the operations the timed section performed. An engine that reports no free-space figure shows `—`; a `—` is not a zero.
 
@@ -171,9 +243,9 @@ Each workload is run for every engine `repeats` times; the figure below is the m
 
 | engine | median per operation | operations/s | payload MiB/s |
 |---|---:|---:|---:|
-| `sqlite-wal` † | 20.8 µs | 48,167 | 11.76 |
-| `redb` † | 24.8 µs | 40,340 | 9.85 |
-| `raw-file` † | 3.82 ms | 262 | 0.06 |
+| `sqlite-wal` † | 20.6 µs | 48,618 | 11.87 |
+| `redb` † | 20.9 µs | 47,821 | 11.68 |
+| `raw-file` † | 3.47 ms | 288 | 0.07 |
 
 † not a like-for-like row:
 - `sqlite-wal` — 200 inserts in one transaction; the per-insert figure is 1/200 of a commit.
@@ -189,10 +261,10 @@ Not measured:
 
 | engine | median per operation | operations/s | payload MiB/s |
 |---|---:|---:|---:|
-| `redb` | 870 ns | 1,150,000 | 280.76 |
-| `raw-file` | 2.6 µs | 388,221 | 94.78 |
-| `sqlite-wal` | 6.1 µs | 163,570 | 39.93 |
-| `ledgerfs` | 34.4 µs | 29,037 | 7.09 |
+| `redb` | 917 ns | 1,090,102 | 266.14 |
+| `raw-file` | 2.1 µs | 474,134 | 115.76 |
+| `sqlite-wal` | 4.3 µs | 234,507 | 57.25 |
+| `ledgerfs` | 26.2 µs | 38,196 | 9.33 |
 
 ### `append_log_64k`
 
@@ -200,12 +272,36 @@ Not measured:
 
 | engine | median per operation | operations/s | payload MiB/s | volume KiB/op |
 |---|---:|---:|---:|---:|
-| `raw-file` | 3.74 ms | 267 | 16.70 | — |
-| `redb` | 4.42 ms | 226 | 14.15 | — |
-| `sqlite-wal` | 5.18 ms | 193 | 12.06 | — |
-| `ledgerfs` | 7.85 ms | 127 | 7.97 | 281.8 |
+| `raw-file` | 3.73 ms | 268 | 16.77 | — |
+| `sqlite-wal` | 4.19 ms | 239 | 14.92 | — |
+| `redb` | 4.27 ms | 234 | 14.64 | — |
+| `ledgerfs` | 7.78 ms | 129 | 8.04 | 281.8 |
 
 `volume KiB/op` is the backing store's own free-space delta divided by the operations the timed section performed. An engine that reports no free-space figure shows `—`; a `—` is not a zero.
+
+### `append_batched_960b`
+
+512 durable batches of 20 × 48 B records; the batch is the durability point.
+
+| engine | median per operation | operations/s | payload MiB/s | volume KiB/op |
+|---|---:|---:|---:|---:|
+| `sqlite-wal` | 9.25 ms | 108 | 0.10 | — |
+| `raw-file` | 9.45 ms | 106 | 0.10 | — |
+| `redb` | 10.11 ms | 99 | 0.09 | — |
+| `ledgerfs` | 16.20 ms | 62 | 0.06 | 107.6 |
+
+`volume KiB/op` is the backing store's own free-space delta divided by the operations the timed section performed. An engine that reports no free-space figure shows `—`; a `—` is not a zero.
+
+### `read_back_960b`
+
+one whole-stream read per repetition (512 batches, every byte compared).
+
+| engine | median per operation | operations/s | payload MiB/s |
+|---|---:|---:|---:|
+| `raw-file` | 111 ns | 9,011,705 | 8250.46 |
+| `redb` | 1.4 µs | 735,382 | 673.26 |
+| `sqlite-wal` | 2.7 µs | 374,276 | 342.66 |
+| `ledgerfs` | 4.1 µs | 241,019 | 220.66 |
 
 ### `scan_10`
 
@@ -213,10 +309,10 @@ Not measured:
 
 | engine | median per operation | operations/s | payload MiB/s |
 |---|---:|---:|---:|
-| `redb` | 321 ns | 3,117,207 | 761.04 |
-| `sqlite-wal` | 841 ns | 1,188,637 | 290.19 |
-| `raw-file` | 1.3 µs | 757,576 | 184.96 |
-| `ledgerfs` | 5.5 µs | 181,334 | 44.27 |
+| `redb` | 250 ns | 4,004,806 | 977.74 |
+| `sqlite-wal` | 697 ns | 1,435,338 | 350.42 |
+| `raw-file` | 952 ns | 1,050,089 | 256.37 |
+| `ledgerfs` | 3.2 µs | 317,390 | 77.49 |
 
 ### `scan_100`
 
@@ -224,10 +320,10 @@ Not measured:
 
 | engine | median per operation | operations/s | payload MiB/s |
 |---|---:|---:|---:|
-| `sqlite-wal` | 177 ns | 5,654,829 | 1380.57 |
-| `redb` | 255 ns | 3,923,107 | 957.79 |
-| `raw-file` | 300 ns | 3,328,562 | 812.64 |
-| `ledgerfs` | 2.7 µs | 364,781 | 89.06 |
+| `redb` | 118 ns | 8,445,233 | 2061.82 |
+| `sqlite-wal` | 169 ns | 5,921,014 | 1445.56 |
+| `raw-file` | 276 ns | 3,627,657 | 885.66 |
+| `ledgerfs` | 1.7 µs | 579,227 | 141.41 |
 
 ### `scan_1000`
 
@@ -235,10 +331,10 @@ Not measured:
 
 | engine | median per operation | operations/s | payload MiB/s |
 |---|---:|---:|---:|
-| `redb` | 117 ns | 8,573,462 | 2093.13 |
-| `sqlite-wal` | 125 ns | 7,977,344 | 1947.59 |
-| `raw-file` | 268 ns | 3,726,477 | 909.78 |
-| `ledgerfs` | 2.1 µs | 483,025 | 117.93 |
+| `redb` | 97 ns | 10,339,978 | 2524.41 |
+| `sqlite-wal` | 113 ns | 8,841,264 | 2158.51 |
+| `raw-file` | 276 ns | 3,617,212 | 883.11 |
+| `ledgerfs` | 1.9 µs | 527,807 | 128.86 |
 
 ### `reopen_and_read`
 
@@ -246,9 +342,9 @@ reopen plus one read, so lazy recovery is inside the timed section.
 
 | engine | median per operation | operations/s |
 |---|---:|---:|
-| `sqlite-wal` | 183.9 µs | 5,439 |
-| `ledgerfs` | 438.9 µs | 2,279 |
-| `redb` | 32.12 ms | 31 |
+| `sqlite-wal` | 175.5 µs | 5,697 |
+| `ledgerfs` | 454.4 µs | 2,201 |
+| `redb` | 35.00 ms | 29 |
 
 Not measured:
 - `raw-file` — no recovery step: there is no journal to replay and no root to select

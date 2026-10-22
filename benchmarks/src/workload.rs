@@ -42,6 +42,17 @@ pub const VALUE_BYTES: usize = 256;
 /// shape of an append-only log.
 pub const LOG_CHUNK: usize = 64 * 1024;
 
+/// Bytes in one record for the batched-append workloads. Small enough that the
+/// commit, not the payload, is what the number measures.
+pub const RECORD_BYTES: usize = 48;
+
+/// Records per durable batch in the batched-append workloads — the unit an
+/// application that accumulates records and flushes them actually pays for.
+pub const ROWS_PER_BATCH: usize = 20;
+
+/// Payload bytes of one batch.
+pub const BATCH_BYTES: usize = RECORD_BYTES * ROWS_PER_BATCH;
+
 /// What one workload is, and the space it needs on a volume it will grow.
 pub struct Workload {
 	pub id: &'static str,
@@ -80,6 +91,16 @@ pub const WORKLOADS: &[Workload] = &[
 		id: "append_log_64k",
 		blocks: 65536,
 		run: append_log,
+	},
+	Workload {
+		id: "append_batched_960b",
+		blocks: 131072,
+		run: append_batched,
+	},
+	Workload {
+		id: "read_back_960b",
+		blocks: 65536,
+		run: read_back,
 	},
 	Workload {
 		id: "scan_10",
@@ -192,6 +213,24 @@ fn splitmix(mut x: u64) -> u64 {
 	x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
 	x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
 	x ^ (x >> 31)
+}
+
+/// One fixed-size record: an 8-byte little-endian sequence number, then payload
+/// bytes. Deterministic in `(stream, row)` for the same reason [`value`] is —
+/// an all-zero or repeating buffer invites compression, deduplication, or
+/// sparsity tricks that some engine does and others don't.
+fn record(stream: &str, row: usize) -> [u8; RECORD_BYTES] {
+	let mut x = 0x9E37_79B9_7F4A_7C15u64 ^ (row as u64).wrapping_mul(0x0000_0100_0000_01B3);
+	for byte in stream.bytes() {
+		x = splitmix(x ^ byte as u64);
+	}
+	let mut out = [0u8; RECORD_BYTES];
+	out[0..8].copy_from_slice(&(row as u64).to_le_bytes());
+	for chunk in out.as_chunks_mut::<8>().0 {
+		x = splitmix(x);
+		*chunk = x.to_le_bytes();
+	}
+	out
 }
 
 /// Record what the measured operations cost in backing-store space.
@@ -355,6 +394,97 @@ fn append_log(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	)?;
 	sample.note = Some(format!("{m} appends of {} KiB, one fsync each", LOG_CHUNK / 1024));
 	record_space(&mut sample, engine, before, m as u64);
+	Ok(sample)
+}
+
+/// Batched appends: one durable batch of fixed-size records per operation.
+///
+/// `ops` counts batches, not records — the batch is the durability point, so
+/// per-batch is the number an application that flushes this way actually pays.
+/// Record generation happens outside the timed section: this measures the
+/// storage call, not the producer. Each repetition appends to its own stream,
+/// the same fresh-keys rule the insert workloads follow.
+fn append_batched(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	let batches = cfg.append_batches;
+	let streams: Vec<String> = (0..cfg.repeats).map(|r| format!("s{r}")).collect();
+	let mut per_rep: Vec<Vec<Vec<u8>>> = Vec::with_capacity(cfg.repeats);
+	for stream in &streams {
+		let rep: Vec<Vec<u8>> = (0..batches)
+			.map(|b| {
+				(0..ROWS_PER_BATCH)
+					.flat_map(|j| record(stream, b * ROWS_PER_BATCH + j))
+					.collect()
+			})
+			.collect();
+		per_rep.push(rep);
+	}
+	let before = engine.space_used();
+	let mut sample = measure(
+		name,
+		"append_batched_960b",
+		batches as u64,
+		(batches * BATCH_BYTES) as u64,
+		cfg.repeats,
+		|r| {
+			for batch in &per_rep[r] {
+				let rows: Vec<&[u8]> = batch.chunks(RECORD_BYTES).collect();
+				engine.append_batch(&streams[r], &rows)?;
+			}
+			Ok(())
+		},
+	)?;
+	sample.note = Some(format!(
+		"{batches} durable batches of {ROWS_PER_BATCH} × {RECORD_BYTES} B records; the batch is the durability point"
+	));
+	record_space(&mut sample, engine, before, batches as u64);
+	Ok(sample)
+}
+
+/// Read a whole stream back and check it, byte for byte.
+///
+/// The population happens outside the timed section, so the figure is the read
+/// path alone; the comparison is deliberately inside it, because a read-back
+/// that does not check what it read is not the operation this measures. On
+/// LedgerFS the check is not added work — every object read verifies its own
+/// BLAKE3 hash on the way out, so verification is part of the number by
+/// construction. On the other engines it is a comparison the caller does.
+fn read_back(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	let batches = cfg.append_batches;
+	let stream = "main";
+	for b in 0..batches {
+		let rows: Vec<Vec<u8>> = (0..ROWS_PER_BATCH)
+			.map(|j| record(stream, b * ROWS_PER_BATCH + j).to_vec())
+			.collect();
+		let refs: Vec<&[u8]> = rows.iter().map(Vec::as_slice).collect();
+		engine.append_batch(stream, &refs)?;
+	}
+	let mut expected = Vec::with_capacity(batches * BATCH_BYTES);
+	for row in 0..batches * ROWS_PER_BATCH {
+		expected.extend_from_slice(&record(stream, row));
+	}
+	let expected_len = expected.len();
+	let mut sample = measure(
+		name,
+		"read_back_960b",
+		batches as u64,
+		expected_len as u64,
+		cfg.repeats,
+		|_| {
+			let got = engine.read_log(stream)?;
+			if got != expected {
+				return Err(Error::engine(
+					name,
+					format!("read-back differs: {} bytes, expected {expected_len}", got.len()),
+				));
+			}
+			Ok(())
+		},
+	)?;
+	sample.note = Some(format!(
+		"one whole-stream read per repetition ({batches} batches, every byte compared)"
+	));
 	Ok(sample)
 }
 

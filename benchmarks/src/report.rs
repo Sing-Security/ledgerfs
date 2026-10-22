@@ -299,6 +299,8 @@ fn workload_order(run: &Run) -> Vec<String> {
 		"insert_batched_256b",
 		"read_point_256b",
 		"append_log_64k",
+		"append_batched_960b",
+		"read_back_960b",
 		"scan_10",
 		"scan_100",
 		"scan_1000",

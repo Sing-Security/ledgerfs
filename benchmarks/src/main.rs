@@ -55,6 +55,8 @@ run options
   --workload ID        only this workload; repeatable (see src/workload.rs)
   --insert-n N         inserts per repetition (default 200)
   --log-appends N      appends per repetition (default 64)
+  --append-batches N   durable batches per repetition in the batched-append
+                       workloads (default 512)
   --repeats N          repetitions per workload (default 3)
   --list               print the engines and workloads and exit
 
@@ -124,6 +126,7 @@ fn parse_run_args(argv: &[String]) -> Result<RunArgs> {
 			"--workload" => args.workloads.push(value()?.clone()),
 			"--insert-n" => args.cfg.insert_n = parse_count(value()?, arg)?,
 			"--log-appends" => args.cfg.log_appends = parse_count(value()?, arg)?,
+			"--append-batches" => args.cfg.append_batches = parse_count(value()?, arg)?,
 			"--repeats" => args.cfg.repeats = parse_count(value()?, arg)?,
 			"--list" => {
 				print_listing();
@@ -186,6 +189,11 @@ fn cmd_run(argv: &[String]) -> Result<()> {
 	// as producing numbers on the wrong medium has already failed.
 	let images = workloads.iter().map(|w| w.blocks).max().unwrap_or(0) * BLOCK_SIZE as u64 * 2;
 	let medium = medium::require_durable(&args.dir, args.cfg.space_needed() + images)?;
+	let mut medium = medium;
+	// The record describes the tree, not the machine's home directory: the
+	// path goes in relative to where the harness ran, when it can be — the
+	// same anonymity rule the hostname and the device identifier follow.
+	medium.path = recorded_path(std::path::Path::new(&medium.path));
 	let machine = medium::machine();
 
 	println!("{}", medium::describe(&machine, &medium));
@@ -240,6 +248,17 @@ fn cmd_run(argv: &[String]) -> Result<()> {
 	println!("\nwrote {}", path.display());
 	print!("\n{}", report::render(&run));
 	Ok(())
+}
+
+/// The path as the result file should carry it: relative to the current
+/// directory when it sits under one, otherwise as given.
+fn recorded_path(path: &std::path::Path) -> String {
+	if let Ok(cwd) = std::env::current_dir()
+		&& let Ok(rel) = path.strip_prefix(&cwd)
+	{
+		return rel.display().to_string();
+	}
+	path.display().to_string()
 }
 
 /// One pair's outcome, carrying the durability string even when it failed —

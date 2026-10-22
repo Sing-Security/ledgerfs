@@ -31,12 +31,29 @@
 //! the batch rows are gaps rather than numbers. The same for the raw-file
 //! control on `Reopen`: there is no recovery step to time. A gap is the honest
 //! entry; a fabricated one would be the thing this harness exists to prevent.
+//!
+//! Batched *appends* are a different operation ([`Engine::append_batch`]) and
+//! every engine can express it: one append is one object, so writing a batch of
+//! rows costs one durability point per engine — a transaction for SQLite, one
+//! write transaction for redb, one `sync_all` for the raw control, one commit
+//! for LedgerFS.
+//!
+//! # Per deployment
+//!
+//! The workloads see only [`Engine`] — no workload names an engine — and each
+//! third-party engine sits behind a cargo feature of the same name. A
+//! deployment that compares against SQLite builds `--no-default-features
+//! --features sqlite` and its binary contains no redb code at all, and the
+//! other way round; nothing anywhere downcasts or probes for what was not
+//! built. LedgerFS and the raw-file control are always present: one is the
+//! subject, the other the baseline every number answers to.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use ledgerfs_host::{BLOCK_SIZE, FileBlockDevice, InodeKind, Store};
+#[cfg(feature = "redb")]
 use redb::{ReadableDatabase, ReadableTable};
 
 use crate::error::{Error, Result};
@@ -86,6 +103,22 @@ pub trait Engine {
 	/// Append `data` to the log named `name`, durable before this returns.
 	fn append(&mut self, name: &str, data: &[u8]) -> Result<()>;
 
+	/// Append each row of `rows` to the log named `name`, and make the whole
+	/// batch durable with one durability point before this returns.
+	///
+	/// This is the write shape of an application that accumulates fixed-size
+	/// records and flushes them as they arrive: the batch, not the row, is what
+	/// has to survive a power cut, so the number that matters is per batch.
+	/// Each engine does it in its own idiom, and the idioms are the finding —
+	/// SQLite wraps the rows in one transaction, redb puts them in one write
+	/// transaction, the raw control gets one fsync by writing once, and on
+	/// LedgerFS one append *is* one commit, so the batch costs what one append
+	/// costs.
+	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()>;
+
+	/// The whole log named `name`, first byte written first.
+	fn read_log(&self, name: &str) -> Result<Vec<u8>>;
+
 	/// Drop everything in memory and reopen from disk.
 	fn reopen(&mut self) -> Result<()>;
 
@@ -109,7 +142,9 @@ pub type Open = fn(&Path, u64) -> Result<Box<dyn Engine>>;
 
 pub const ROSTER: &[(&str, Open)] = &[
 	("ledgerfs", open_ledgerfs),
+	#[cfg(feature = "sqlite")]
 	("sqlite-wal", open_sqlite),
+	#[cfg(feature = "redb")]
 	("redb", open_redb),
 	("raw-file", open_raw_file),
 ];
@@ -275,6 +310,27 @@ impl Engine for LedgerFs {
 			.map_err(|e| Error::engine("ledgerfs", e.to_string()))
 	}
 
+	/// The rows land as consecutive bytes of one object, so a batch is one
+	/// `append` and one commit — there is nothing smaller on this volume to
+	/// make it cheaper than.
+	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		let mut data = Vec::with_capacity(rows.iter().map(|r| r.len()).sum());
+		for row in rows {
+			data.extend_from_slice(row);
+		}
+		self.append(name, &data)
+	}
+
+	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
+		let store = self
+			.store
+			.as_ref()
+			.ok_or_else(|| Error::engine("ledgerfs", "volume is closed"))?;
+		store
+			.read_file(&format!("/log/{name}"))
+			.map_err(|e| Error::engine("ledgerfs", e.to_string()))
+	}
+
 	/// Drop the mount and mount again from the same image.
 	///
 	/// This is the whole of LedgerFS recovery: a mount reads the superblock
@@ -306,16 +362,24 @@ impl Engine for LedgerFs {
 
 // region:    --- SQLite
 
+#[cfg(feature = "sqlite")]
 const SQLITE_SCHEMA: &str = "
 	CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB NOT NULL);
-	CREATE TABLE IF NOT EXISTS log (seq INTEGER PRIMARY KEY AUTOINCREMENT, data BLOB NOT NULL);
+	CREATE TABLE IF NOT EXISTS log (
+		stream TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		data BLOB NOT NULL,
+		PRIMARY KEY (stream, seq)
+	);
 ";
 
+#[cfg(feature = "sqlite")]
 struct Sqlite {
 	path: PathBuf,
 	conn: rusqlite::Connection,
 }
 
+#[cfg(feature = "sqlite")]
 fn open_sqlite(dir: &Path, _blocks: u64) -> Result<Box<dyn Engine>> {
 	let path = dir.join("sqlite.db");
 	let conn = rusqlite::Connection::open(&path).map_err(sq)?;
@@ -330,6 +394,7 @@ fn open_sqlite(dir: &Path, _blocks: u64) -> Result<Box<dyn Engine>> {
 /// does not fsync on commit, so a powered-off machine can lose committed
 /// transactions. `FULL` is the setting that makes a SQLite commit comparable to
 /// a LedgerFS commit.
+#[cfg(feature = "sqlite")]
 fn configure(conn: &rusqlite::Connection) -> Result<()> {
 	let mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0)).map_err(sq)?;
 	if !mode.eq_ignore_ascii_case("wal") {
@@ -342,10 +407,12 @@ fn configure(conn: &rusqlite::Connection) -> Result<()> {
 	Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 fn sq(e: rusqlite::Error) -> Error {
 	Error::engine("sqlite-wal", e.to_string())
 }
 
+#[cfg(feature = "sqlite")]
 impl Engine for Sqlite {
 	fn name(&self) -> &'static str {
 		"sqlite-wal"
@@ -394,13 +461,50 @@ impl Engine for Sqlite {
 		Ok(keys)
 	}
 
-	fn append(&mut self, _name: &str, data: &[u8]) -> Result<()> {
+	fn append(&mut self, name: &str, data: &[u8]) -> Result<()> {
 		// One row per append, which is the shape LedgerFS's chunked log has:
-		// nothing already stored is rewritten.
+		// nothing already stored is rewritten. The sequence is derived inside
+		// the statement — `MAX(seq) + 1` over this stream's rows, 0 for the
+		// first — so the counter survives a reopen without bookkeeping.
 		self.conn
-			.execute("INSERT INTO log (data) VALUES (?1)", rusqlite::params![data])
+			.execute(
+				"INSERT INTO log (stream, seq, data)
+				 SELECT ?1, COALESCE(MAX(seq) + 1, 0), ?2 FROM log WHERE stream = ?1",
+				rusqlite::params![name, data],
+			)
 			.map_err(sq)?;
 		Ok(())
+	}
+
+	/// The batch in SQLite's own idiom: BEGIN, one INSERT per row, COMMIT —
+	/// the diagram-shaped answer to "many rows, one fsync".
+	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		let tx = self.conn.transaction().map_err(sq)?;
+		{
+			let mut stmt = tx
+				.prepare(
+					"INSERT INTO log (stream, seq, data)
+					 SELECT ?1, COALESCE(MAX(seq) + 1, 0), ?2 FROM log WHERE stream = ?1",
+				)
+				.map_err(sq)?;
+			for row in rows {
+				stmt.execute(rusqlite::params![name, row]).map_err(sq)?;
+			}
+		}
+		tx.commit().map_err(sq)
+	}
+
+	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
+		let mut stmt = self
+			.conn
+			.prepare("SELECT data FROM log WHERE stream = ?1 ORDER BY seq")
+			.map_err(sq)?;
+		let rows = stmt.query_map([name], |r| r.get::<_, Vec<u8>>(0)).map_err(sq)?;
+		let mut out = Vec::new();
+		for row in rows {
+			out.extend_from_slice(&row.map_err(sq)?);
+		}
+		Ok(out)
 	}
 
 	fn reopen(&mut self) -> Result<()> {
@@ -413,15 +517,40 @@ impl Engine for Sqlite {
 
 // region:    --- redb
 
+#[cfg(feature = "redb")]
 const REDB_KV: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("kv");
-const REDB_LOG: redb::TableDefinition<u64, &[u8]> = redb::TableDefinition::new("log");
+#[cfg(feature = "redb")]
+const REDB_LOG: redb::TableDefinition<u128, &[u8]> = redb::TableDefinition::new("log");
 
+#[cfg(feature = "redb")]
 struct Redb {
 	path: PathBuf,
 	db: Option<redb::Database>,
-	next_seq: u64,
+	/// Per-stream next sequence, keyed by the same 64-bit hash the row keys
+	/// carry — so [`Redb::reopen`] can rebuild every counter in one pass over
+	/// the table, exactly the way the single counter used to.
+	log_seq: std::collections::HashMap<u64, u64>,
 }
 
+/// A log row's key: the stream name's 64-bit FNV-1a hash in the high half, the
+/// row's sequence in the low half — one stream's rows sort together and apart
+/// from every other stream's, and the table stays one `u128`-keyed table.
+#[cfg(feature = "redb")]
+fn stream_key(name: &str, seq: u64) -> u128 {
+	((stream_hash(name) as u128) << 64) | seq as u128
+}
+
+#[cfg(feature = "redb")]
+fn stream_hash(name: &str) -> u64 {
+	let mut h = 0xcbf2_9ce4_8422_2325u64;
+	for byte in name.bytes() {
+		h ^= byte as u64;
+		h = h.wrapping_mul(0x0000_0100_0000_01B3);
+	}
+	h
+}
+
+#[cfg(feature = "redb")]
 fn open_redb(dir: &Path, _blocks: u64) -> Result<Box<dyn Engine>> {
 	let path = dir.join("redb.db");
 	let db = redb::Database::create(&path).map_err(rd)?;
@@ -434,20 +563,23 @@ fn open_redb(dir: &Path, _blocks: u64) -> Result<Box<dyn Engine>> {
 	Ok(Box::new(Redb {
 		path,
 		db: Some(db),
-		next_seq: 0,
+		log_seq: std::collections::HashMap::new(),
 	}))
 }
 
+#[cfg(feature = "redb")]
 fn rd<E: std::fmt::Display>(e: E) -> Error {
 	Error::engine("redb", e.to_string())
 }
 
+#[cfg(feature = "redb")]
 impl Redb {
 	fn db(&self) -> Result<&redb::Database> {
 		self.db.as_ref().ok_or_else(|| Error::engine("redb", "database is closed"))
 	}
 }
 
+#[cfg(feature = "redb")]
 impl Engine for Redb {
 	fn name(&self) -> &'static str {
 		"redb"
@@ -506,30 +638,69 @@ impl Engine for Redb {
 		Ok(keys)
 	}
 
-	fn append(&mut self, _name: &str, data: &[u8]) -> Result<()> {
-		let seq = self.next_seq;
+	fn append(&mut self, name: &str, data: &[u8]) -> Result<()> {
+		let seq = *self.log_seq.entry(stream_hash(name)).or_insert(0);
 		let mut write = self.db()?.begin_write().map_err(rd)?;
 		write.set_durability(redb::Durability::Immediate).map_err(rd)?;
 		{
 			let mut table = write.open_table(REDB_LOG).map_err(rd)?;
-			table.insert(seq, data).map_err(rd)?;
+			table.insert(stream_key(name, seq), data).map_err(rd)?;
 		}
 		write.commit().map_err(rd)?;
-		self.next_seq += 1;
+		self.log_seq.insert(stream_hash(name), seq + 1);
 		Ok(())
+	}
+
+	/// One write transaction for the whole batch, `Durability::Immediate` at
+	/// its commit — the same single durability point the other engines get.
+	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		let hash = stream_hash(name);
+		let first = *self.log_seq.entry(hash).or_insert(0);
+		let mut write = self.db()?.begin_write().map_err(rd)?;
+		write.set_durability(redb::Durability::Immediate).map_err(rd)?;
+		{
+			let mut table = write.open_table(REDB_LOG).map_err(rd)?;
+			for (i, row) in rows.iter().enumerate() {
+				table.insert(stream_key(name, first + i as u64), *row).map_err(rd)?;
+			}
+		}
+		write.commit().map_err(rd)?;
+		self.log_seq.insert(hash, first + rows.len() as u64);
+		Ok(())
+	}
+
+	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
+		let read = self.db()?.begin_read().map_err(rd)?;
+		let table = read.open_table(REDB_LOG).map_err(rd)?;
+		let hash = stream_hash(name) as u128;
+		let range = table.range(hash << 64..(hash + 1) << 64).map_err(rd)?;
+		let mut out = Vec::new();
+		for entry in range {
+			let (_, v) = entry.map_err(rd)?;
+			out.extend_from_slice(v.value());
+		}
+		Ok(out)
 	}
 
 	fn reopen(&mut self) -> Result<()> {
 		self.db = None;
 		let db = redb::Database::open(&self.path).map_err(rd)?;
-		// Pick the sequence counter back up from what survived.
-		let next_seq = {
+		// Pick each stream's sequence counter back up from what survived: the
+		// stream hash is the high half of every key, so one pass rebuilds every
+		// counter without knowing the names.
+		let mut log_seq: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+		{
 			let read = db.begin_read().map_err(rd)?;
 			let table = read.open_table(REDB_LOG).map_err(rd)?;
-			table.last().map_err(rd)?.map(|(k, _)| k.value() + 1).unwrap_or(0)
-		};
+			for entry in table.iter().map_err(rd)? {
+				let (k, _) = entry.map_err(rd)?;
+				let key = k.value();
+				let counter = log_seq.entry((key >> 64) as u64).or_insert(0);
+				*counter = (*counter).max((key & (u64::MAX as u128)) as u64 + 1);
+			}
+		}
 		self.db = Some(db);
-		self.next_seq = next_seq;
+		self.log_seq = log_seq;
 		Ok(())
 	}
 }
@@ -649,6 +820,22 @@ impl Engine for RawFile {
 		// The sequence counter is bookkeeping, not storage: nothing reads it.
 		self.next_seq += 1;
 		Ok(())
+	}
+
+	/// The control's way to make a batch durable is to make it one append: one
+	/// `write_all` per row into the open handle, then a single `sync_all`.
+	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		let path = self.dir.join("log").join(name);
+		let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+		for row in rows {
+			file.write_all(row)?;
+		}
+		file.sync_all()?;
+		Ok(())
+	}
+
+	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
+		Ok(fs::read(self.dir.join("log").join(name))?)
 	}
 
 	fn reopen(&mut self) -> Result<()> {

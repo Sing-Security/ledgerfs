@@ -12,6 +12,16 @@ description = "The cross-engine comparison harness: LedgerFS against SQLite, red
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sing-Security/ledgerfs"
 
+[features]
+default = ["sqlite", "redb"]
+# One feature per comparison engine. A deployment that only compares against
+# SQLite builds with `--no-default-features --features sqlite`: no redb code
+# is compiled, linked, or in the binary — the same per-deployment rule the
+# engines' own users follow. `ledgerfs` and `raw-file` are always present;
+# one is the subject and the other is the control.
+sqlite = ["dep:rusqlite"]
+redb = ["dep:redb"]
+
 [dependencies]
 ledgerfs-host = { path = "../host" }
 
@@ -19,8 +29,8 @@ ledgerfs-host = { path = "../host" }
 #
 # `rusqlite` with `bundled`: SQLite compiled from its own amalgamation, so the
 # number does not depend on whichever libsqlite3 the host happens to have.
-rusqlite = { version = "0.40", features = ["bundled"] }
-redb = "4"
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+redb = { version = "4", optional = true }
 # -- The medium record. `statfs` for the filesystem magic (so a tmpfs can be
 # refused rather than silently benchmarked) and `/proc/self/mountinfo` for the
 # device behind the path. There is no std API for either.
