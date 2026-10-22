@@ -8,8 +8,9 @@
 //!
 //! # Why every method takes `&self`
 //!
-//! Positioned I/O does not need a mutable handle: `FileExt::read_at`/
-//! `write_at` take `&self`, and a `Mutex` gives the same for a buffer. Keeping
+//! Positioned I/O does not need a mutable handle: `pread`/`pwrite` on Unix and
+//! `seek_read`/`seek_write` on Windows both take `&self`, and a `Mutex` gives
+//! the same for a buffer. Keeping
 //! `&self` throughout means a device can be shared behind an `&`, which is
 //! what `ObjectStore`'s `&self` methods require — and it keeps the read and
 //! write halves on one handle instead of the two parallel ones the kernel
@@ -24,13 +25,49 @@
 //! is simply `base_offset = 0`.
 
 use std::fs::{File, OpenOptions};
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ledgerfs::BLOCK_SIZE;
 
 use crate::error::{Error, Result};
+
+// region:    --- Positioned I/O
+
+/// Positioned read: reads at an explicit offset without consulting or moving
+/// the file cursor, so concurrent positioned I/O on one handle is safe.
+#[cfg(unix)]
+fn positioned_read(file: &File, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+	use std::os::unix::fs::FileExt;
+	file.read_at(buf, at)
+}
+
+/// Windows' `seek_read` carries its offset as an argument (an `OVERLAPPED`
+/// under the hood). The docs warn that it also moves the handle's file
+/// pointer; that is irrelevant here, because nothing in this crate ever reads
+/// the cursor — every byte moves through `positioned_read` and
+/// `positioned_write`, both of which carry their offset explicitly.
+#[cfg(windows)]
+fn positioned_read(file: &File, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+	use std::os::windows::fs::FileExt;
+	file.seek_read(buf, at)
+}
+
+/// Positioned write: the write-side twin of [`positioned_read`].
+#[cfg(unix)]
+fn positioned_write(file: &File, at: u64, data: &[u8]) -> io::Result<usize> {
+	use std::os::unix::fs::FileExt;
+	file.write_at(data, at)
+}
+
+#[cfg(windows)]
+fn positioned_write(file: &File, at: u64, data: &[u8]) -> io::Result<usize> {
+	use std::os::windows::fs::FileExt;
+	file.seek_write(data, at)
+}
+
+// endregion: --- Positioned I/O
 
 // region:    --- BlockDevice
 
@@ -56,12 +93,29 @@ impl VolumeIdentity {
 	/// The identity of an open file, or of a plain size for a device with no
 	/// file behind it.
 	pub(crate) fn of_file(file: &File, size_bytes: u64) -> Self {
+		// The platform's best *stable* identity pair: `(device, inode)` on
+		// Unix, the file's creation time on Windows (`file_index`, the closer
+		// analogue of an inode, is still unstable `windows_by_handle`). Unix's
+		// inode is the stronger of the two — a rebuilt-and-renamed volume can
+		// keep its creation time on NTFS, so there the check can miss a
+		// `compact` that lands on the same size. It is an efficiency measure
+		// either way: every hint is re-verified against the block it names
+		// before use, so a stale cache costs one failed read, never a wrong
+		// answer.
 		match file.metadata() {
-			Ok(m) => Self {
-				size_bytes,
-				dev: m.dev(),
-				ino: m.ino(),
-			},
+			Ok(m) => {
+				#[cfg(unix)]
+				use std::os::unix::fs::MetadataExt;
+				#[cfg(unix)]
+				let (dev, ino) = (m.dev(), m.ino());
+				#[cfg(windows)]
+				use std::os::windows::fs::MetadataExt;
+				#[cfg(windows)]
+				let (dev, ino) = (0, m.creation_time());
+				#[cfg(not(any(unix, windows)))]
+				let (dev, ino) = (0, 0);
+				Self { size_bytes, dev, ino }
+			}
 			Err(_) => Self {
 				size_bytes,
 				dev: 0,
@@ -394,11 +448,11 @@ impl BlockDevice for FileBlockDevice {
 	fn read_bytes_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
 		self.check_bounds(offset, buf.len())?;
 
-		// `read_at` may return short; a single call is not a full read.
+		// A positioned read may return short; a single call is not a full read.
 		let mut done = 0usize;
 		while done < buf.len() {
 			let at = self.base_offset + offset + done as u64;
-			let n = self.file.read_at(&mut buf[done..], at).map_err(Error::Io)?;
+			let n = positioned_read(&self.file, at, &mut buf[done..]).map_err(Error::Io)?;
 			if n == 0 {
 				return Err(Error::ShortRead {
 					offset: offset + done as u64,
@@ -412,8 +466,10 @@ impl BlockDevice for FileBlockDevice {
 	}
 
 	fn write_bytes_at(&self, offset: u64, data: &[u8]) -> Result<()> {
-		// Refused here rather than left to the OS: `write_at` on a read-only
-		// handle gives `EBADF`, which is accurate and tells the caller nothing.
+		// Refused here rather than left to the OS: a write on a read-only
+		// handle fails deep in the OS — `EBADF` on Unix,
+		// `ERROR_ACCESS_DENIED` on Windows — which is accurate and tells the
+		// caller nothing.
 		if !self.writable {
 			return Err(Error::ReadOnly {
 				detail: "the device was opened read-only".to_string(),
@@ -425,7 +481,7 @@ impl BlockDevice for FileBlockDevice {
 		let mut done = 0usize;
 		while done < data.len() {
 			let at = self.base_offset + offset + done as u64;
-			let n = self.file.write_at(&data[done..], at).map_err(Error::Io)?;
+			let n = positioned_write(&self.file, at, &data[done..]).map_err(Error::Io)?;
 			if n == 0 {
 				return Err(Error::ShortRead {
 					offset: offset + done as u64,

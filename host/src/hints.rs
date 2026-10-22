@@ -31,8 +31,9 @@
 //!
 //! # Validity
 //!
-//! The header carries the volume's identity — its size, and on unix its
-//! `(device, inode)` — and a load whose identity does not match is discarded.
+//! The header carries the volume's identity — its size, plus the platform's
+//! identity pair (`(device, inode)` on Unix, the file's creation time on
+//! Windows) — and a load whose identity does not match is discarded.
 //! That covers the two ways a sidecar can go out from under its volume: a
 //! rebuild, which writes a whole new file and `rename`s it into place (a new
 //! inode), and a re-format in place (handled at the source — `Store::format`

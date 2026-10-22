@@ -52,6 +52,24 @@ jobs:
       - run: rustup show
       - run: cargo test -p ledgerfs-host
 
+  # The host crate advertises Linux, macOS and Windows: the file device's
+  # positioned I/O and lock are cfg-gated per family, not Unix-assumed. This
+  # job is what keeps that true — it runs the same suite on a native runner,
+  # exercising `seek_read`/`seek_write`, `try_lock`, and the creation-time
+  # volume identity against a real Windows kernel instead of a cross-check.
+  host-windows:
+    name: host (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo test -p ledgerfs-host
+      # The `rust-version` floor applies on Windows too; checked here rather
+      # than in the msrv job because a cross-check from Linux cannot run the
+      # third-party build scripts a windows-gnu target needs a mingw gcc for.
+      - run: rustup toolchain install 1.89 --profile minimal
+      - run: cargo +1.89 check -p ledgerfs-host
+
   # `pending/` is not published, but its tests are the only thing keeping the
   # subsystems it holds honest — nothing in the shipping path calls them, so
   # nothing else would notice if they rotted.
