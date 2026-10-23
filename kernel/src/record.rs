@@ -450,8 +450,9 @@ impl ObjectRecordWriter {
 
 		// Copy payload; use NT stores for large payloads (§15.3).
 		if stored_data.len() > 4096 {
-			// SAFETY: same invariants as ObjectRecordWriter::write — non-overlapping,
-			// both valid for stored_data.len() bytes, sfence follows.
+			// SAFETY: same invariants as ObjectRecordWriter::write; the ranges
+			// are non-overlapping, both valid for stored_data.len() bytes, and
+			// sfence follows.
 			unsafe {
 				nt_write_payload(
 					buf[ObjectRecordHeader::SIZE..].as_mut_ptr(),

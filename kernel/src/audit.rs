@@ -114,7 +114,7 @@ pub enum AuditEventType {
 	/// File operation (for provenance tracking)
 	FileOperation = 13,
 
-	/// Retention eviction — records sealed and removed per TTL/quota policy
+	/// Retention eviction: records sealed and removed per TTL/quota policy
 	RetentionEviction = 14,
 }
 
@@ -528,7 +528,7 @@ impl SealVerificationResult {
 /// This is the sealing half of the pair whose verification half is
 /// `verify_seal`, and it does not seal: it returns the record's canonical
 /// encoding unchanged. A caller that stores the returned bytes and later calls
-/// `verify_seal` gets `DeserializationFailed` — the bytes are not a seal — so
+/// `verify_seal` gets `DeserializationFailed` because the bytes are not a seal, so
 /// the failure is in the safe direction, but the record is not protected in the
 /// meantime and nothing on this path says so at the time of the call.
 ///
@@ -575,9 +575,9 @@ pub fn seal_commit_record(
 ///
 /// # Arguments
 ///
-/// * `record`     — Audit record with seal bytes attached
-/// * `mldsa_pk`   — Raw ML-DSA-65 public key bytes
-/// * `slhdsa_pk`  — Raw SLH-DSA public key bytes
+/// * `record`:     Audit record with seal bytes attached
+/// * `mldsa_pk`:   Raw ML-DSA-65 public key bytes
+/// * `slhdsa_pk`:  Raw SLH-DSA public key bytes
 ///
 /// # Returns
 ///
@@ -599,7 +599,7 @@ pub fn verify_seal(record: &CommitAuditRecord, mldsa_pk: &[u8], slhdsa_pk: &[u8]
 	// Get canonical encoding of the record as the "content" the seal covers
 	let canonical = record.encode_canonical()?;
 
-	// Delegate to Temper's verify_seal() — ML-DSA-65 + SLH-DSA verification
+	// Delegate to Temper's verify_seal(): ML-DSA-65 + SLH-DSA verification
 	match temper::verify_seal(&canonical, &temper_seal, mldsa_pk, slhdsa_pk) {
 		Ok(result) => {
 			if result.valid {
@@ -630,7 +630,7 @@ pub fn seal_root(
 ) -> Result<Vec<u8>> {
 	// Same state as `seal_commit_record`: the interface exists and the sealing
 	// does not. This one returns no bytes at all rather than an unsealed copy,
-	// so `verify_seal` reports `DeserializationFailed` — `SealMissing` is
+	// so `verify_seal` reports `DeserializationFailed`; `SealMissing` is
 	// reserved for a record whose seal field is absent, which is a different
 	// case from one whose seal field is empty.
 	Ok(Vec::new())
@@ -831,7 +831,7 @@ pub fn compute_merkle_root(record_hashes: &[[u8; HASH_SIZE]]) -> [u8; HASH_SIZE]
 /// Parse an ISO 8601 date prefix (YYYY-MM-DD) into a comparable day count.
 ///
 /// This is a lightweight parser suitable for `no_std` that avoids any date
-/// library.  It computes `year * 365 + month * 31 + day` — a monotonic but not
+/// library.  It computes `year * 365 + month * 31 + day`, a monotonic but not
 /// calendar-exact value that is sufficient for relative age comparisons.
 ///
 /// # Accuracy note
@@ -839,8 +839,8 @@ pub fn compute_merkle_root(record_hashes: &[[u8; HASH_SIZE]]) -> [u8; HASH_SIZE]
 /// The simplified formula overestimates months by up to 3 days (31 vs 28-30)
 /// and ignores leap years.  The cumulative error is at most ~±2% for TTL
 /// periods under 10 years, which is acceptable for operational retention
-/// decisions.  The formula is strictly monotonic — two timestamps with `A > B`
-/// will always produce `approx(A) > approx(B)` — so relative ordering is
+/// decisions.  The formula is strictly monotonic: two timestamps with `A > B`
+/// will always produce `approx(A) > approx(B)`, so relative ordering is
 /// preserved.
 fn iso_date_to_approx_days(ts: &str) -> Option<u64> {
 	// Expect at least "YYYY-MM-DD" (10 chars)
@@ -878,10 +878,10 @@ fn parse_digits(b: &[u8]) -> Option<u32> {
 ///
 /// # Arguments
 ///
-/// * `records`                   — Full audit chain in ascending event-ID order.
-/// * `policy`                    — Retention policy to enforce.
-/// * `now_timestamp`             — Current time as ISO 8601 (YYYY-MM-DD…) string.
-/// * `estimated_bytes_per_record` — Average bytes per record; used for quota.
+/// * `records`:                   Full audit chain in ascending event-ID order.
+/// * `policy`:                    Retention policy to enforce.
+/// * `now_timestamp`:             Current time as ISO 8601 (YYYY-MM-DD…) string.
+/// * `estimated_bytes_per_record`: Average bytes per record; used for quota.
 ///
 /// # Returns
 ///
@@ -967,7 +967,7 @@ pub fn apply_retention(
 		return RetentionDecision::none();
 	}
 
-	// Build Merkle root from record hashes — seal-before-evict guarantee
+	// Build Merkle root from record hashes: seal-before-evict guarantee
 	let record_hashes: Vec<[u8; HASH_SIZE]> = evict_records.iter().map(|r| r.record_hash).collect();
 	let merkle_root = compute_merkle_root(&record_hashes);
 

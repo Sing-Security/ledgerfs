@@ -6,9 +6,9 @@ rust-version = "1.89"
 description = "LedgerFS subsystems that are implemented and tested but not driven by the shipping path: dedupe index, snapshots, scrubber, GC safety rules, content-defined chunking."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sing-Security/ledgerfs"
-# Not published. FORMAT.md §44.1 calls these subsystems Tier B — "implemented in
+# Not published. FORMAT.md §44.1 calls these subsystems Tier B ("implemented in
 # the kernel crate with tests, but not driven by the host `Store` on a live
-# volume" — and says a reader deciding whether to depend on LedgerFS should read
+# volume") and says a reader deciding whether to depend on LedgerFS should read
 # Tier B as "not available". A crate nobody should depend on does not belong on
 # crates.io, but deleting the code would throw away work that is real and
 # tested, so it lives here instead: same workspace, no release.

@@ -15,7 +15,7 @@ use crate::mode::FsMode;
 /// Block size in bytes.
 ///
 /// Must equal [`crate::BLOCK_SIZE`] (4 KiB), the granularity every other
-/// piece of this crate's write path allocates/addresses in —
+/// piece of this crate's write path allocates/addresses in:
 /// `AllocNode`/`PhysicalExtent`'s block counts (see `MountedVolume::
 /// bootstrap_genesis`'s `RESERVED_HEADER_BLOCKS`-based extent setup),
 /// `PlacedObject::physical_lba`/`block_count`, and `AtaBlockDevice::
@@ -23,7 +23,7 @@ use crate::mode::FsMode;
 /// partition-relative LedgerFS block index (4 KiB units)") are all in this
 /// same unit. This used to be hardcoded to `512` (an ATA *sector* size, a
 /// stale leftover from an earlier sub-block-granular allocator design this
-/// crate no longer implements) — `Allocator::allocate`'s `size_bytes`→
+/// crate no longer implements); `Allocator::allocate`'s `size_bytes`→
 /// `block_count` conversion then produced a count of 512-byte units that
 /// `AllocNode::find_free_extent`/`split_and_allocate` and the actual
 /// `write_blocks` call downstream both silently treated as a count of
@@ -31,7 +31,7 @@ use crate::mode::FsMode;
 /// then zero-padded-and-written) as if it were up to 8x larger than it
 /// actually was, clobbering whatever real, still-referenced content
 /// happened to sit in the extra blocks immediately after it. Found via
-/// code audit while hardening the data volume's write path — no single
+/// code audit while hardening the data volume's write path; no single
 /// small test object triggered it, but any object over 512 bytes (an
 /// `Inode` with a couple of xattrs, a `DirNode` with more than a couple of
 /// entries) would.
@@ -163,10 +163,10 @@ impl Allocator {
 		}
 
 		// Find free extent in allocation tree. Every `start_lba` this returns
-		// is already a whole `BLOCK_SIZE_BYTES` block index — this crate
+		// is already a whole `BLOCK_SIZE_BYTES` block index: this crate
 		// never allocates at sub-block granularity, so there is no
 		// additional alignment to verify here (a leftover check from an
-		// earlier sub-block-granular design was removed — see
+		// earlier sub-block-granular design was removed; see
 		// `BLOCK_SIZE_BYTES`'s doc comment).
 		// The extent finder also returns how many contiguous blocks it found,
 		// but `block_count` (the caller's request, already rounded up above)

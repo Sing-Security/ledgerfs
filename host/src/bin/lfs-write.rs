@@ -1,4 +1,4 @@
-//! `lfs-write` — format and modify a LedgerFS volume from the host.
+//! `lfs-write`: format and modify a LedgerFS volume from the host.
 //!
 //! The mutating counterpart to `lfs-read`, and the harness for this crate's
 //! writable side. Two kinds of target, which is the whole point of the
@@ -87,7 +87,7 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 					.next()
 					.ok_or_else(|| Error::Usage(format!("--part needs a value\n\n{USAGE}")))?;
 				part = PartitionKind::parse(&value)
-					.ok_or_else(|| Error::Usage(format!("unknown partition '{value}' — expected system or data")))?;
+					.ok_or_else(|| Error::Usage(format!("unknown partition '{value}': expected system or data")))?;
 				continue;
 			}
 			"--blocks" => {
@@ -187,7 +187,7 @@ fn run() -> Result<()> {
 		let is_file = cli.target.is_file();
 		if !is_file {
 			usage_exit(&format!(
-				"{}: no such file — pass --bare if this is a whole volume rather than a partitioned image\n\n{USAGE}",
+				"{}: no such file; pass --bare if this is a whole volume rather than a partitioned image\n\n{USAGE}",
 				cli.target.display()
 			));
 		}
@@ -208,7 +208,7 @@ fn run() -> Result<()> {
 }
 
 /// A usage error is not a failure of the tool, so it goes to stdout and exits
-/// `2` — distinct from the `1` a volume that said no gives. A script can then
+/// `2`, distinct from the `1` a volume that said no gives. A script can then
 /// tell "you called me wrong" from "the filesystem refused".
 fn usage_exit(message: &str) -> ! {
 	println!("{message}");
@@ -245,7 +245,7 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 	// Read-write where the file allows it, and only read-only as a fallback.
 	// `info` writes nothing, but `Store::is_writable` answers for the *handle*
 	// as well as the volume, so a read-only handle would report every healthy
-	// volume as unwritable — the wrong answer to the question this command is
+	// volume as unwritable: the wrong answer to the question this command is
 	// being asked.
 	let (device, _) = match open_target(cli, Access::ReadWrite) {
 		Ok(opened) => opened,
@@ -276,7 +276,7 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 		if status.is_healthy() {
 			", all agree"
 		} else {
-			" — they DISAGREE"
+			"; they DISAGREE"
 		}
 	);
 
@@ -284,25 +284,25 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 	println!("origin      {:?}", store.origin());
 	match store.write_refusal() {
 		None => println!("writable    yes"),
-		Some(refusal) => println!("writable    no — {refusal}"),
+		Some(refusal) => println!("writable    no: {refusal}"),
 	}
 
 	// Free space only ever falls, so this is the number an always-on store has
-	// to watch — see `EMBEDDING.md`.
+	// to watch; see `EMBEDDING.md`.
 	match store.free_bytes() {
 		Some(free) => println!(
 			"free        {free} of {} bytes ({:.0}% left)",
 			store.capacity_bytes(),
 			100.0 * free as f64 / store.capacity_bytes().max(1) as f64
 		),
-		None => println!("free        unknown — no allocator snapshot"),
+		None => println!("free        unknown: no allocator snapshot"),
 	}
 	match store.app()? {
 		Some(app) => println!(
 			"app         {app} (contract {})",
 			store.contract_version()?.unwrap_or_else(|| "?".to_string())
 		),
-		None => println!("app         none — not an application store"),
+		None => println!("app         none: not an application store"),
 	}
 
 	Ok(())
@@ -337,7 +337,7 @@ fn cmd_put(cli: &Cli) -> Result<()> {
 	Ok(())
 }
 
-/// Append a host file's bytes to `PATH`, creating the file if it is absent —
+/// Append a host file's bytes to `PATH`, creating the file if it is absent:
 /// the append-only log case the store is built around.
 fn cmd_append(cli: &Cli) -> Result<()> {
 	let (local, path) = cli.local_and_path()?;
@@ -357,7 +357,7 @@ fn cmd_append(cli: &Cli) -> Result<()> {
 	Ok(())
 }
 
-/// Delete a file. A directory is refused rather than emptied — there is no
+/// Delete a file. A directory is refused rather than emptied; there is no
 /// recursive delete.
 fn cmd_remove(cli: &Cli) -> Result<()> {
 	let path = cli.required_path()?;
@@ -389,7 +389,7 @@ fn cmd_rename(cli: &Cli) -> Result<()> {
 }
 
 /// Read a file back out of the volume, after the fact and through a fresh
-/// mount — the only check that proves what landed is what a later reader sees.
+/// mount: the only check that proves what landed is what a later reader sees.
 ///
 /// With a host file as the second argument the comparison is **byte for byte**,
 /// which is the whole point: a size-only check passes for a file whose every
@@ -438,12 +438,12 @@ fn cmd_verify(cli: &Cli) -> Result<()> {
 	Ok(())
 }
 
-/// Rebuild a volume into a fresh one — the only way to reclaim what CoW leaves
+/// Rebuild a volume into a fresh one: the only way to reclaim what CoW leaves
 /// behind, since nothing in the format frees anything in place.
 ///
 /// `lfs-write <SRC> compact <DEST> --bare`. Both are whole volume files: an
 /// image partition cannot be *created* by this command, so a partitioned source
-/// has nowhere to go. The source is opened read-only and is not modified — the
+/// has nowhere to go. The source is opened read-only and is not modified; the
 /// new volume is a separate file, which the caller renames over the old one
 /// when it is satisfied.
 fn cmd_compact(cli: &Cli) -> Result<()> {
@@ -463,7 +463,7 @@ fn cmd_compact(cli: &Cli) -> Result<()> {
 	};
 	if dest.exists() {
 		return Err(Error::Usage(format!(
-			"{} already exists — compact writes a *new* volume; pass a path that does not exist, \
+			"{} already exists: compact writes a *new* volume; pass a path that does not exist, \
 			 then rename it over the old one",
 			dest.display()
 		)));
@@ -480,7 +480,7 @@ fn cmd_compact(cli: &Cli) -> Result<()> {
 	}
 
 	// Read-only source: no write lock, so this works on a volume another
-	// process holds — and on one with no free space left to write into.
+	// process holds, and on one with no free space left to write into.
 	let src = Store::open(Box::new(FileBlockDevice::open(&cli.target, 0, src_len)?))?;
 	let expected = src.walk()?;
 	let free_before = src.free_bytes();
@@ -556,7 +556,7 @@ fn cmd_compact(cli: &Cli) -> Result<()> {
 // region:    --- Target resolution
 
 /// What a command needs from the device, so the file is opened with enough
-/// permission — a read-only handle turns every commit into `EBADF` at the first
+/// permission: a read-only handle turns every commit into `EBADF` at the first
 /// `write_at`, several layers below anything that could explain it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Access {
@@ -570,8 +570,8 @@ enum Access {
 
 /// Open `cli.target` as a device, and report how many blocks the volume has.
 ///
-/// The two modes this crate exists to serve — a partitioned image and a bare
-/// volume file — differ only here.
+/// The two modes this crate exists to serve (a partitioned image and a bare
+/// volume file) differ only here.
 fn open_target(cli: &Cli, access: Access) -> Result<(BoxedDevice, u64)> {
 	if cli.bare {
 		let device = match access {
@@ -588,8 +588,8 @@ fn open_target(cli: &Cli, access: Access) -> Result<(BoxedDevice, u64)> {
 
 		let device: BoxedDevice = match access {
 			Access::ReadOnly => Box::new(FileBlockDevice::open(&cli.target, start, size)?),
-			// `mkfs` on a partition cannot choose its size — the partition table
-			// already fixed it — so creating and re-opening are the same thing.
+			// `mkfs` on a partition cannot choose its size (the partition table
+			// already fixed it), so creating and re-opening are the same thing.
 			Access::Create | Access::ReadWrite => Box::new(FileBlockDevice::open_rw(&cli.target, start, size)?),
 		};
 
@@ -609,7 +609,7 @@ fn bare_size(cli: &Cli) -> Result<u64> {
 	match existing_len(&cli.target) {
 		Ok(len) if len > 0 => Ok(len),
 		_ => Err(Error::Usage(format!(
-			"mkfs --bare {}: the file does not exist, so its size has to be chosen — pass --blocks N\n\n{USAGE}",
+			"mkfs --bare {}: the file does not exist, so its size has to be chosen; pass --blocks N\n\n{USAGE}",
 			cli.target.display()
 		))),
 	}

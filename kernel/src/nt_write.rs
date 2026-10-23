@@ -24,7 +24,7 @@ pub unsafe fn nt_write_payload(dst: *mut u8, src: *const u8, len: usize) {
 	#[cfg(all(target_arch = "x86_64", not(test)))]
 	{
 		// SAFETY: caller guarantees dst/src valid for len bytes and non-overlapping.
-		// _mm_stream_si64 emits MOVNTQ — a 64-bit non-temporal store.
+		// _mm_stream_si64 emits MOVNTQ, a 64-bit non-temporal store.
 		let chunks = len / 8;
 		let tail_start = chunks * 8;
 
@@ -39,7 +39,7 @@ pub unsafe fn nt_write_payload(dst: *mut u8, src: *const u8, len: usize) {
 			}
 		}
 
-		// Tail bytes — regular stores (NT stores require 8-byte granularity).
+		// Tail bytes: regular stores (NT stores require 8-byte granularity).
 		for i in tail_start..len {
 			// SAFETY: i is within [tail_start, len), both within valid ranges.
 			unsafe {
@@ -66,7 +66,8 @@ pub unsafe fn nt_write_payload(dst: *mut u8, src: *const u8, len: usize) {
 pub fn sfence() {
 	#[cfg(all(target_arch = "x86_64", not(test)))]
 	// SAFETY: SFENCE is a pure memory fence with no side-effects on registers
-	// or memory — it only orders preceding NT stores with subsequent regular stores.
+	// or memory; it only orders preceding NT stores with subsequent
+	// regular stores.
 	unsafe {
 		core::arch::asm!("sfence", options(nomem, nostack, preserves_flags));
 	}

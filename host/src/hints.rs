@@ -9,8 +9,8 @@
 //! storage hint, this in-memory map, or a linear scan of the volume.
 //!
 //! Hints are the intended fast path, but nothing in the writer populates them
-//! yet — `cow::operations` writes `chunk_hint: StorageHint::zero()` and builds
-//! its `DirEntry`/`Inode` references from ids alone — so **on any volume this
+//! yet: `cow::operations` writes `chunk_hint: StorageHint::zero()` and builds
+//! its `DirEntry`/`Inode` references from ids alone, so **on any volume this
 //! tree has written, every hint below the root is zero.** The superblock
 //! persists only the root's placement, so the first lookup of anything else
 //! falls through to the scan, which walks the whole volume reading every
@@ -22,7 +22,7 @@
 //!
 //! The map is a *pure cache*: every entry is re-verified against the block it
 //! names (`DiskObjectStore::read_object`) before use, so a stale or wrong
-//! entry costs one block read and a fallback scan — never a wrong answer. That
+//! entry costs one block read and a fallback scan, never a wrong answer. That
 //! is what makes it safe to keep out of the volume entirely. Writing it into
 //! the volume would mean a format change with a compatibility story, and would
 //! not help the volumes that already exist. A file next to the volume costs
@@ -31,12 +31,12 @@
 //!
 //! # Validity
 //!
-//! The header carries the volume's identity — its size, plus the platform's
+//! The header carries the volume's identity: its size, plus the platform's
 //! identity pair (`(device, inode)` on Unix, the file's creation time on
-//! Windows) — and a load whose identity does not match is discarded.
+//! Windows). A load whose identity does not match is discarded.
 //! That covers the two ways a sidecar can go out from under its volume: a
 //! rebuild, which writes a whole new file and `rename`s it into place (a new
-//! inode), and a re-format in place (handled at the source — `Store::format`
+//! inode), and a re-format in place (handled at the source: `Store::format`
 //! removes the sidecar). Entries are re-verified on use regardless, so the
 //! identity check is an efficiency measure, not a correctness one.
 
@@ -47,7 +47,7 @@ use ledgerfs::object::ObjectId;
 
 use crate::device::VolumeIdentity;
 
-/// `"LFSHINTS"` — eight bytes so the file is recognisable at a glance.
+/// `"LFSHINTS"`: eight bytes so the file is recognisable at a glance.
 const MAGIC: &[u8; 8] = b"LFSHINTS";
 /// Bumped whenever the layout below changes; an unrecognised version is
 /// discarded rather than misread.
@@ -61,8 +61,8 @@ const ENTRY_LEN: usize = 32 + 8;
 /// there.
 ///
 /// "Nothing usable" is deliberately indistinguishable from "nothing there":
-/// every failure — no file, short file, bad magic, wrong version, mismatched
-/// identity, a truncated final entry — means the same thing to the caller, one
+/// every failure (no file, short file, bad magic, wrong version, mismatched
+/// identity, a truncated final entry) means the same thing to the caller, one
 /// scan. There is no state in which the right answer is to refuse.
 pub(crate) fn load(path: &Path, identity: VolumeIdentity) -> Option<HashMap<ObjectId, u64>> {
 	let bytes = std::fs::read(path).ok()?;
@@ -131,7 +131,7 @@ pub(crate) fn save(path: &Path, identity: VolumeIdentity, entries: &HashMap<Obje
 	Ok(())
 }
 
-/// Remove a stale sidecar — used by `Store::format`, where the volume is being
+/// Remove a stale sidecar, used by `Store::format`, where the volume is being
 /// laid down anew in the same file and the old index would name blocks that no
 /// longer hold what it says.
 pub(crate) fn remove(path: &Path) {
@@ -197,7 +197,7 @@ mod tests {
 	#[test]
 	fn a_different_volume_identity_discards_the_index() {
 		// -- Setup & Fixtures: same path, a volume that is not the one the
-		// index was written against — the `compact` case (new inode).
+		// index was written against: the `compact` case (new inode).
 		let path = temp("identity");
 		let mut other = identity();
 		other.ino += 1;

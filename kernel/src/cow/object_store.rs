@@ -58,7 +58,7 @@ pub trait ObjectStore {
 	///
 	/// Defaults to a no-op: only stores whose lookups are actually
 	/// placement-sensitive (a real disk-backed one) have anything to do
-	/// here — [`InMemoryObjectStore`] finds every object by hash directly.
+	/// here; [`InMemoryObjectStore`] finds every object by hash directly.
 	/// Because it's purely an accelerator, a store that ignores this stays
 	/// correct; it just pays a scan per lookup. Callers should invoke it
 	/// for every entry in a `CommitResult`'s `storage_hints`.

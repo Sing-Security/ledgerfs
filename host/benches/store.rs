@@ -1,4 +1,4 @@
-//! Criterion benchmarks for every [`Store`] action — the "measure every
+//! Criterion benchmarks for every [`Store`] action: the "measure every
 //! action" harness.
 //!
 //! # What it answers
@@ -7,9 +7,9 @@
 //! application actually uses: `mkfs`, mount, create, replace, append, read,
 //! `read_dir`, `stat`, `remove`, `rename`, the space queries, `walk`, the
 //! [`rebuild_into`] pass, and a campaign-shaped workload that strings them
-//! together. Each is measured over both devices the crate offers — an in-heap
+//! together. Each is measured over both devices the crate offers: an in-heap
 //! [`MemBlockDevice`], where the number is pure protocol cost, and a
-//! [`FileBlockDevice`], where `fsync` dominates — because the two differ by
+//! [`FileBlockDevice`], where `fsync` dominates, because the two differ by
 //! more than an order of magnitude and only the second is what a real
 //! application pays.
 //!
@@ -25,7 +25,7 @@
 //! # Why every mutation benchmark re-formats its volume
 //!
 //! CoW frees nothing (`EMBEDDING.md` §3): a volume grows on every commit and
-//! never shrinks, so a benchmark cannot mutate one volume in a loop — it hits
+//! never shrinks, so a benchmark cannot mutate one volume in a loop: it hits
 //! out-of-space a few hundred commits in. Each mutating benchmark therefore
 //! builds a fresh volume in `iter_batched` setup, which Criterion excludes from
 //! the measured time. That is also why the volumes below are small: the setup
@@ -51,12 +51,12 @@ use ledgerfs_host::{BLOCK_SIZE, FileBlockDevice, MemBlockDevice, Store, rebuild_
 
 // region:    --- Harness
 
-/// Blocks in the in-memory volume a mutation benchmark runs against — 1 MiB.
+/// Blocks in the in-memory volume a mutation benchmark runs against: 1 MiB.
 /// Large enough for any single write below (a 64 KiB file is one object), small
 /// enough that re-formatting it per iteration stays cheap.
 const MEM_BLOCKS: u64 = 256;
 
-/// Blocks in the file-backed volume — 4 MiB. The cost there is `fsync` and the
+/// Blocks in the file-backed volume: 4 MiB. The cost there is `fsync` and the
 /// erase in `format`, neither of which scales with the volume at these sizes.
 const FILE_BLOCKS: u64 = 1024;
 
@@ -81,7 +81,7 @@ fn mem_store(blocks: u64) -> Store {
 	Store::format(Box::new(MemBlockDevice::new(blocks)), blocks).expect("format a fresh in-memory volume")
 }
 
-/// A formatted in-heap volume, returned as the bytes a volume file would hold —
+/// A formatted in-heap volume, returned as the bytes a volume file would hold,
 /// so the mount benchmark measures mounting, not formatting.
 fn store_bytes(blocks: u64) -> Vec<u8> {
 	let device = MemBlockDevice::new(blocks);
@@ -134,7 +134,7 @@ fn retire(store: Store, path: &Path) {
 
 // region:    --- Format / mount
 
-/// `mkfs` — and the one benchmark whose cost scales with the volume, because
+/// `mkfs`, and the one benchmark whose cost scales with the volume, because
 /// `Store::format` erases every block past the superblocks so the medium holds
 /// this filesystem and nothing else.
 fn bench_mkfs(c: &mut Criterion) {
@@ -166,7 +166,7 @@ fn bench_mount(c: &mut Criterion) {
 	g.finish();
 }
 
-/// Opening a file-backed volume read-only — what `lfs-read` and the CLI do
+/// Opening a file-backed volume read-only: what `lfs-read` and the CLI do
 /// against a volume an app is already holding.
 fn bench_mount_file(c: &mut Criterion) {
 	let mut g = group(c, "mount_file");
@@ -191,7 +191,7 @@ fn bench_mount_file(c: &mut Criterion) {
 
 // region:    --- Creating
 
-/// Creating things: a directory, an empty file, and a file with content — from
+/// Creating things: a directory, an empty file, and a file with content, from
 /// a 12-byte note to a 64 KiB evidence blob.
 fn bench_create(c: &mut Criterion) {
 	let mut g = group(c, "create");
@@ -250,7 +250,7 @@ fn bench_create(c: &mut Criterion) {
 	g.finish();
 }
 
-/// Replacing an existing file — the idempotent write, and the one a relay does
+/// Replacing an existing file: the idempotent write, and the one a relay does
 /// on every session boundary.
 fn bench_replace(c: &mut Criterion) {
 	let mut g = group(c, "replace");
@@ -272,7 +272,7 @@ fn bench_replace(c: &mut Criterion) {
 	g.finish();
 }
 
-/// `append` — the verb that is quadratic if you loop it on a growing file. The
+/// `append`: the verb that is quadratic if you loop it on a growing file. The
 /// two cases are deliberately split: appending to a *fresh* file measures the
 /// create path, appending to an *existing* file measures the extension path,
 /// and the gap between them is why chunking beats a log.
@@ -370,7 +370,7 @@ fn bench_space(c: &mut Criterion) {
 
 // region:    --- Mutating
 
-/// `remove` and `rename` — the two mutations that are not a write.
+/// `remove` and `rename`: the two mutations that are not a write.
 fn bench_mutate(c: &mut Criterion) {
 	let mut g = group(c, "mutate");
 
@@ -405,7 +405,7 @@ fn bench_mutate(c: &mut Criterion) {
 
 // region:    --- Walking / rebuilding
 
-/// `walk` — the whole tree, which is the first half of a compaction.
+/// `walk`: the whole tree, which is the first half of a compaction.
 fn bench_walk(c: &mut Criterion) {
 	let mut g = group(c, "walk");
 	for n in [10usize, 100] {
@@ -423,7 +423,7 @@ fn bench_walk(c: &mut Criterion) {
 	g.finish();
 }
 
-/// [`rebuild_into`] — the compaction pass. This answers "what does it cost to
+/// [`rebuild_into`]: the compaction pass. This answers "what does it cost to
 /// get the space back", and is the number to watch when a volume has grown
 /// mostly dead.
 fn bench_rebuild(c: &mut Criterion) {
@@ -452,11 +452,11 @@ fn bench_rebuild(c: &mut Criterion) {
 // region:    --- Scan cost
 
 /// How many times `State.json` is replaced before the churned mount is
-/// measured. Each replacement leaves its predecessors on the device — CoW frees
-/// nothing — so this is the dead-object population a long campaign builds.
+/// measured. Each replacement leaves its predecessors on the device (CoW frees
+/// nothing), so this is the dead-object population a long campaign builds.
 const CHURN: u32 = 1000;
 
-/// Mounting a volume that has been written for a long time — the shape a real
+/// Mounting a volume that has been written for a long time: the shape a real
 /// campaign image is in.
 ///
 /// Paired with a *fresh* volume of exactly the same size, so the difference
@@ -496,7 +496,7 @@ fn bench_mount_churned(c: &mut Criterion) {
 	});
 
 	// Mounting only reads the superblock, the alloc snapshot and the root
-	// inode — all of them hint-addressed — so it says nothing about the scan.
+	// inode (all of them hint-addressed), so it says nothing about the scan.
 	// The scan is paid on the *first lookup whose hint is missing*, which is
 	// what a fresh handle has for every object but the root. These three are
 	// the same tree a compaction walks, so they are where the read
@@ -535,7 +535,7 @@ fn bench_mount_churned(c: &mut Criterion) {
 
 /// `read_at` on a file much larger than the range asked for. The contract calls
 /// it a byte range; if the cost tracks the *file* rather than the *range*, a
-/// tail-follower pays for the whole transcript on every poll — and that is the
+/// tail-follower pays for the whole transcript on every poll, and that is the
 /// difference between a bounded read and a quadratic one.
 fn bench_read_at_scaling(c: &mut Criterion) {
 	let mut g = group(c, "read_at");
@@ -560,7 +560,7 @@ fn bench_read_at_scaling(c: &mut Criterion) {
 /// A campaign-shaped sequence, in one measured routine: make the directories a
 /// template makes, write a handover, write a finding, and write one 512 KiB
 /// transcript chunk. This is the "every action in the application, in order"
-/// number — the one to compare against a real relay's wall-clock.
+/// number: the one to compare against a real relay's wall-clock.
 fn bench_workload(c: &mut Criterion) {
 	let mut g = group(c, "workload");
 	let chunk = vec![b'q'; 512 * KB];

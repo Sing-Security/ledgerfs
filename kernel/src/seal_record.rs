@@ -1,4 +1,4 @@
-//! Shared `BootSealRecord` type — the single canonical definition.
+//! Shared `BootSealRecord` type: the single canonical definition.
 //!
 //! Consumers MUST import this type rather than restating it. It is
 //! `postcard`-encoded, so a copy with a field added or reordered still compiles
@@ -31,7 +31,7 @@ pub const ROOT_SEAL_SCHEMA_V1: u16 = 1;
 /// layout (`RESERVED_HEADER_BLOCKS` is 6, and block 5 is already the last).
 ///
 /// That split is deliberate: it buys dual-scheme verification for every TCB
-/// binary — the things that actually execute — without an on-disk migration.
+/// binary (the things that actually execute), without an on-disk migration.
 pub const ROOT_SEAL_SCHEMA_V2: u16 = 2;
 
 /// Compact root seal record stored at LedgerFS block 5 for boot verification.
@@ -58,7 +58,7 @@ pub const ROOT_SEAL_SCHEMA_V2: u16 = 2;
 /// Fits comfortably within the 4 092 usable bytes per block.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct BootSealRecord {
-	/// Schema version — currently [`ROOT_SEAL_SCHEMA_V1`] (`1`).
+	/// Schema version: currently [`ROOT_SEAL_SCHEMA_V1`] (`1`).
 	pub schema_version: u16,
 	/// BLAKE3 hash of superblock block 0 (raw 32 bytes).
 	pub content_hash_raw: [u8; 32],
@@ -67,13 +67,13 @@ pub struct BootSealRecord {
 	pub binding: Vec<u8>,
 	/// Raw ML-DSA-65 signature bytes (typically 3 309 bytes).
 	pub mldsa_sig: Vec<u8>,
-	/// BLAKE3(mldsa_public_key) — raw 32 bytes.
+	/// BLAKE3(mldsa_public_key): raw 32 bytes.
 	pub mldsa_key_id_raw: [u8; 32],
 	/// Optional hardware co-signature: RSA-2048 signature of
 	/// `content_hash_raw` from the ESP32 HSM's key store.
 	/// `None` for seals that weren't hardware co-signed.
 	/// `#[serde(default)]` ensures old sidecar files (pre-HSM) deserialise
-	/// without this field — they simply get `None`.
+	/// without this field; they simply get `None`.
 	#[serde(default)]
 	pub hsm_rsa_sig: Option<Vec<u8>>,
 	/// Which HSM key-store slot signed `hsm_rsa_sig`, if present.
@@ -92,7 +92,7 @@ pub struct BootSealRecord {
 	/// the entire point of carrying two.
 	#[serde(default)]
 	pub slhdsa_sig: Option<Vec<u8>>,
-	/// BLAKE3(slhdsa_public_key) — binds the backup signature to a key, exactly
+	/// BLAKE3(slhdsa_public_key): binds the backup signature to a key, exactly
 	/// as `mldsa_key_id_raw` does for the primary.
 	#[serde(default)]
 	pub slhdsa_key_id_raw: Option<[u8; 32]>,

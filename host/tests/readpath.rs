@@ -11,7 +11,7 @@
 //!   EOF is an empty vector, not a failure.
 //! - **A range read equals the slice of the whole read.** If it did not, a
 //!   caller tailing a log would see different bytes from one that read the
-//!   file — the whole point of having both.
+//!   file, which is the whole point of having both.
 //! - **`stat` reports what `read_dir` reports.** A listing's `size`/`mode` come
 //!   from the same inode `stat` decodes, so a disagreement would mean one of
 //!   the two is reading something else.
@@ -65,7 +65,7 @@ fn test_mount_device_accepts_a_store_opened_volume() -> Result<()> {
 #[test]
 fn test_hostfs_mount_refuses_a_device_it_cannot_even_recognise() -> Result<()> {
 	// -- Setup & Fixtures: the `HostFs` entry point is stricter than `Store`'s
-	// in one way — it insists on a usable root — but both must first agree that
+	// in one way (it insists on a usable root), but both must first agree that
 	// the device is a LedgerFS volume at all.
 	//
 	// The "valid volume, null root" case (what the image initialiser leaves
@@ -91,8 +91,8 @@ fn test_the_root_resolves_under_every_spelling_of_it() -> Result<()> {
 	let mut store = store(BLOCKS)?;
 	store.write_new_file("/top", b"x", 0o644)?;
 
-	// -- Exec & Check: all of these name the root, so all of them must resolve
-	// — an empty path, `/`, repeated slashes, and a `.` component.
+	// -- Exec & Check: all of these name the root, so all of them must resolve:
+	// an empty path, `/`, repeated slashes, and a `.` component.
 	for path in ["", "/", "//", "///", "/.", ".", "./"] {
 		let stat = store.stat(path).unwrap_or_else(|e| panic!("stat {path:?}: {e:?}"));
 		assert_eq!(stat.kind, InodeKind::Directory, "{path:?}");
@@ -121,7 +121,7 @@ fn test_redundant_separators_and_dots_inside_a_path_are_dropped() -> Result<()> 
 
 #[test]
 fn test_a_trailing_slash_does_not_change_what_a_path_names() -> Result<()> {
-	// -- Setup & Fixtures: there is no "must be a directory" rule here — a
+	// -- Setup & Fixtures: there is no "must be a directory" rule here, so a
 	// trailing separator is just another empty component, which is dropped.
 	let mut store = store(BLOCKS)?;
 	store.write_new_file("/f", b"content", 0o644)?;
@@ -151,7 +151,7 @@ fn test_a_relative_path_is_resolved_from_the_root() -> Result<()> {
 #[test]
 fn test_a_dotdot_component_is_refused_wherever_it_appears() -> Result<()> {
 	// -- Setup & Fixtures: the store keeps no parent pointers, so `..` could
-	// only be honoured by re-walking — and a component that is *silently
+	// only be honoured by re-walking, and a component that is *silently
 	// dropped* would make `../escape` name `escape` inside the volume, which is
 	// a surprising answer to a path that asked to leave it.
 	let mut store = store(BLOCKS)?;
@@ -175,7 +175,7 @@ fn test_a_dotdot_component_is_refused_wherever_it_appears() -> Result<()> {
 #[test]
 fn test_every_verb_refuses_a_dotdot_component() -> Result<()> {
 	// -- Setup & Fixtures: the refusal has to be in the path layer, so every
-	// verb inherits it — including the mutating ones, where a dropped `..`
+	// verb inherits it, including the mutating ones, where a dropped `..`
 	// would land a write somewhere the caller did not name.
 	let mut store = store(BLOCKS)?;
 
@@ -308,7 +308,7 @@ fn test_read_file_of_a_directory_is_a_directory_error() -> Result<()> {
 	// -- Exec
 	let e = expect_err("read_file a directory", store.read_file("/d"));
 
-	// -- Check: the mirror of `read_dir` on a file — and notably *not* the
+	// -- Check: the mirror of `read_dir` on a file, and notably *not* the
 	// directory's own serialised bytes, which would be an information leak.
 	match e {
 		Error::IsADirectory { path } => assert_eq!(path, "/d"),
@@ -344,7 +344,7 @@ fn test_stat_of_a_missing_path_names_it() -> Result<()> {
 #[test]
 fn test_a_directory_holds_exactly_four_hundred_entries() -> Result<()> {
 	// -- Setup & Fixtures: **a hard, per-directory limit.** `DirNode` has no
-	// B-tree splitting, so 400 entries is the ceiling for any one directory —
+	// B-tree splitting, so 400 entries is the ceiling for any one directory,
 	// and the 401st insert is refused rather than stored, which is the only
 	// safe answer given there is nowhere to put it.
 	//
@@ -374,7 +374,7 @@ fn test_a_directory_holds_exactly_four_hundred_entries() -> Result<()> {
 
 	// -- Check: a named refusal naming the reason, not a corrupt directory. The
 	// host surfaces it as `Format` (the kernel's own `InvalidOperation`), which
-	// is a thinner answer than the host's other refusals — there is no
+	// is a thinner answer than the host's other refusals: there is no
 	// `Error::DirectoryFull`.
 	match e {
 		Error::Format(e) => {
@@ -385,7 +385,7 @@ fn test_a_directory_holds_exactly_four_hundred_entries() -> Result<()> {
 		other => panic!("expected the kernel's directory-full error, got {other:?}"),
 	}
 
-	// -- Check: and the directory is exactly as it was — the refused insert did
+	// -- Check: and the directory is exactly as it was; the refused insert did
 	// not half-apply
 	assert_eq!(names(&store.read_dir("/")?), expected);
 	assert_eq!(store.read_file("/item-0000")?, b"item-0000");
@@ -396,7 +396,7 @@ fn test_a_directory_holds_exactly_four_hundred_entries() -> Result<()> {
 #[test]
 fn test_the_entry_ceiling_is_a_count_not_a_byte_budget() -> Result<()> {
 	// -- Setup & Fixtures: the ceiling is 400 *entries* regardless of how long
-	// they are — a `DirNode` holding 400 256-byte names is ~100 KiB, which fits
+	// they are: a `DirNode` holding 400 256-byte names is ~100 KiB, which fits
 	// the 256 KiB object ceiling comfortably. So a caller cannot buy more
 	// entries by using short names, and cannot lose entries by using long ones.
 	let mut store = store(BIG_BLOCKS)?;
@@ -443,7 +443,7 @@ fn test_filling_a_directory_with_content_costs_far_more_than_the_entries() -> Re
 	// transaction now, and the create-then-write pair used to rewrite the
 	// directory node twice per file. At 64 MiB all 400 entries fit where they
 	// previously did not. Half the volume restores the scenario this test is
-	// about — running out on churn rather than on content — at the new cost.
+	// about (running out on churn rather than on content) at the new cost.
 	const CHURN_BLOCKS: u64 = BIG_BLOCKS / 2;
 	let mut store = store(CHURN_BLOCKS)?;
 	let content = b"d"; // 1 byte each
@@ -478,7 +478,7 @@ fn test_filling_a_directory_with_content_costs_far_more_than_the_entries() -> Re
 	let content_written = made as u64; // one byte per file
 	assert!(
 		spent > content_written * 10_000,
-		"{spent} bytes spent for {content_written} bytes of content — the directory rewrite should \
+		"{spent} bytes spent for {content_written} bytes of content; the directory rewrite should \
 		 dwarf the content"
 	);
 	Ok(())
@@ -518,7 +518,7 @@ fn test_read_file_of_an_empty_file_is_an_empty_vector() -> Result<()> {
 #[test]
 fn test_read_at_returns_the_slice_of_read_file() -> Result<()> {
 	// -- Setup & Fixtures: the property that makes `read_at` usable as a tail
-	// follower — a range read must be byte-identical to the same slice of the
+	// follower: a range read must be byte-identical to the same slice of the
 	// whole read, across block boundaries and across chunk objects.
 	let mut store = store(BIG_BLOCKS)?;
 	let data: Vec<u8> = (0..300_000u32).map(|i| (i.wrapping_mul(7) % 256) as u8).collect();
@@ -557,7 +557,7 @@ fn test_read_at_clamps_instead_of_erroring() -> Result<()> {
 	store.write_new_file("/f", b"0123456789", 0o644)?;
 
 	// -- Check: every one of these is a normal answer to a tail follower, not a
-	// failure — the difference between "nothing new" and "something is wrong".
+	// failure: the difference between "nothing new" and "something is wrong".
 	assert_eq!(store.read_at("/f", 0, 4)?, b"0123");
 	assert_eq!(store.read_at("/f", 4, 4)?, b"4567");
 	assert_eq!(store.read_at("/f", 10, 1)?, Vec::<u8>::new(), "exactly at EOF");
@@ -588,7 +588,7 @@ fn test_read_at_of_a_missing_file_or_a_directory_is_refused() -> Result<()> {
 
 #[test]
 fn test_a_following_tail_sees_every_appended_byte_exactly_once() -> Result<()> {
-	// -- Setup & Fixtures: the actual use — a follower remembers a byte count
+	// -- Setup & Fixtures: the actual use: a follower remembers a byte count
 	// and asks for the rest, repeatedly, while an appender writes. Every byte
 	// must arrive once and in order.
 	let mut store = store(BLOCKS)?;
@@ -667,7 +667,7 @@ fn test_read_at_works_on_a_file_with_a_hole() -> Result<()> {
 /// duration on purpose: a timing assertion would measure the machine, while a
 /// count is a property of the design. `/d/f` is a two-level path, so the
 /// objects are the root `Inode`, the root `DirNode`, `/d`'s `Inode`, `/d`'s
-/// `DirNode`, `/d/f`'s `Inode`, its extent node and its chunk — seven, and one
+/// `DirNode`, `/d/f`'s `Inode`, its extent node and its chunk: seven, and one
 /// read each.
 ///
 /// The number that would be *eight* is the one this pins against. A lookup that
@@ -701,7 +701,7 @@ fn test_a_warm_point_read_costs_one_device_read_per_object_on_the_path() -> Resu
 	Ok(())
 }
 
-/// The same read on a reused handle is what the second one costs — nothing is
+/// The same read on a reused handle is what the second one costs: nothing is
 /// re-read and nothing is cached decoded, so the count holds operation after
 /// operation.
 #[test]
@@ -772,7 +772,7 @@ fn test_names_with_spaces_dots_and_unicode_round_trip() -> Result<()> {
 #[test]
 fn test_a_name_at_the_length_limit_is_accepted() -> Result<()> {
 	// -- Setup & Fixtures: `DirEntry.name` is a `heapless::String<256>`, so 256
-	// bytes is the longest name that can be stored — the *capacity* of the
+	// bytes is the longest name that can be stored: the *capacity* of the
 	// fixed-size string, not one less than it.
 	let mut store = store(BLOCKS)?;
 	let name = "x".repeat(256);
@@ -805,7 +805,7 @@ fn test_a_name_over_the_length_limit_is_refused_not_truncated() -> Result<()> {
 		other => panic!("expected Format naming the length, got {other:?}"),
 	}
 
-	// -- Check: the failed create left nothing behind — not even the truncated
+	// -- Check: the failed create left nothing behind, not even the truncated
 	// name, which is what a partial insert would have left.
 	assert!(store.read_dir("/")?.is_empty());
 	Ok(())
@@ -837,7 +837,7 @@ fn test_every_verb_refuses_an_over_long_name_the_same_way() -> Result<()> {
 
 #[test]
 fn test_a_multi_byte_name_is_measured_in_bytes_not_characters() -> Result<()> {
-	// -- Setup & Fixtures: 128 * "日" is 384 UTF-8 bytes — over the limit — even
+	// -- Setup & Fixtures: 128 * "日" is 384 UTF-8 bytes, over the limit, even
 	// though it is only 128 characters, so a byte-length check is what has to
 	// decide this.
 	let mut store = store(BLOCKS)?;
@@ -861,8 +861,8 @@ fn test_a_multi_byte_name_is_measured_in_bytes_not_characters() -> Result<()> {
 
 #[test]
 fn test_a_name_with_an_embedded_nul_is_stored_verbatim() -> Result<()> {
-	// -- Setup & Fixtures: there is no C string layer anywhere in this path —
-	// names are Rust `String`s in a serialised `DirNode` — so a NUL is just a
+	// -- Setup & Fixtures: there is no C string layer anywhere in this path;
+	// names are Rust `String`s in a serialised `DirNode`, so a NUL is just a
 	// byte. What matters is that it is neither dropped nor a truncation point.
 	let mut store = store(BLOCKS)?;
 	let name = "before\0after";
@@ -935,7 +935,7 @@ fn test_a_read_only_mount_reads_everything_a_writable_one_does() -> Result<()> {
 fn test_hostfs_open_refuses_a_read_only_image_for_a_writable_store() -> Result<()> {
 	// -- Setup & Fixtures: `Store::open_partition` opens read-write, so an
 	// image file the process may not write must fail at open rather than at the
-	// first commit — and it must say which file.
+	// first commit, and it must say which file.
 	let image = TempImage::new("ro-store-open");
 	let (_, watch) = watched(BLOCKS)?;
 	image.write(&bytes(&watch))?;
@@ -947,7 +947,7 @@ fn test_hostfs_open_refuses_a_read_only_image_for_a_writable_store() -> Result<(
 	let r = Store::open_partition(&image.path, ledgerfs_host::PartitionKind::Data);
 
 	// -- Check: this image has no partition table at all, so the *first*
-	// refusal is the geometry one — which is the right order: a caller is told
+	// refusal is the geometry one, which is the right order: a caller is told
 	// the image is not a partitioned image before being told anything about
 	// permissions.
 	let e = expect_err("open_partition a bare volume file", r);

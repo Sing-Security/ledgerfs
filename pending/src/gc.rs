@@ -4,7 +4,7 @@
 //!
 //! `GcEngine::incremental_cycle` frees what the deadlist names. The safety
 //! checks of §22.2 are all present, but two of them answer conservatively where
-//! the exact answer needs a tree walk that does not exist — each says so where
+//! the exact answer needs a tree walk that does not exist: each says so where
 //! it is. Reconciliation and the generational tier are not implemented. Nothing
 //! in the host `Store` calls any of it, so a volume written through `Store`
 //! accumulates dead objects and reclaims none: `KNOWN_ISSUES.md` §1 and §11.
@@ -350,8 +350,8 @@ impl GcEngine {
 	/// 3. Refcount is zero
 	/// 4. Allocation state allows freeing
 	///
-	/// `_alloc_node` is part of this method's public contract — callers
-	/// hand the allocation tree in so a freeing pass can update it — but
+	/// `_alloc_node` is part of this method's public contract: callers
+	/// hand the allocation tree in so a freeing pass can update it, but
 	/// this implementation only *selects* candidates (step 1-3) and does
 	/// not yet mutate the tree, so the parameter is currently unused.
 	pub fn incremental_cycle(
@@ -445,7 +445,7 @@ impl GcEngine {
 	) -> Result<ReconciliationResult> {
 		// Marks reconciliation complete and reports zero of everything, because
 		// the streaming mark it would need does not exist. The result is honest
-		// about that — all three counters are zero rather than plausible — but a
+		// about that (all three counters are zero rather than plausible), but a
 		// caller who reads zero drift as "no drift found" is reading it wrong.
 		// See `KNOWN_ISSUES.md` §11.
 		self.state.mark_reconciliation_completed(current_commit_seq);

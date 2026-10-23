@@ -1,4 +1,4 @@
-//! Security tests for path and name handling — the surface every caller of the
+//! Security tests for path and name handling: the surface every caller of the
 //! store passes through, usually with a string a user chose.
 //!
 //! # What "path security" means for a filesystem that is not one
@@ -6,7 +6,7 @@
 //! LedgerFS has no host filesystem behind it. There is no `chroot` to escape, no
 //! `/etc/passwd` on the other side, and no process to confuse. `..` does not
 //! mean "up a level", it means "an instruction this format has no way to carry
-//! out" — so it is refused. The classic traversal payloads are therefore not
+//! out", so it is refused. The classic traversal payloads are therefore not
 //! exploitable in the way they are on a POSIX filesystem, and a test suite that
 //! only checked "does `../../etc/passwd` fail" would be checking the one thing
 //! that cannot happen here.
@@ -16,8 +16,8 @@
 //! than loud:
 //!
 //! - **one spelling, one object.** The reader must interpret a path the same way
-//!   the writer did. Any input the reader normalises but the writer does not —
-//!   case, trailing dots, Unicode — becomes a name that can be created under one
+//!   the writer did. Any input the reader normalises but the writer does not (
+//!   case, trailing dots, Unicode) becomes a name that can be created under one
 //!   spelling and read under another. That is a collision attack: two callers
 //!   believe they hold different files, or one believes a file is absent while
 //!   it is present.
@@ -26,7 +26,7 @@
 //!   also means an attacker who controls a name can choose the collision.
 //! - **nothing that is written can become unreachable.** A name the writer
 //!   accepts but the reader skips (or vice versa) is a file that exists and
-//!   cannot be listed, read or deleted — a way to hide data in a volume, and a
+//!   cannot be listed, read or deleted: a way to hide data in a volume, and a
 //!   file that cannot be removed is a leak of space as well as of secrecy.
 //! - **a path cannot name something outside the volume.** Here this is not
 //!   about a host path but about the *volume*: a name containing `/` must split
@@ -41,7 +41,7 @@
 //!
 //! # What is checked where
 //!
-//! `readpath.rs` pins the *meaning* of paths — that `//a/b` and `/a/b` are the
+//! `readpath.rs` pins the *meaning* of paths: that `//a/b` and `/a/b` are the
 //! same file, that the root has many spellings, that a name may be 256 bytes and
 //! not 257. This file pins what happens when a path is *hostile*: refused where
 //! the format cannot express it, and stored verbatim where it can.
@@ -51,7 +51,7 @@ use ledgerfs_host::{Error, InodeKind, Result, components_of};
 mod common;
 use common::{expect_err, names, store};
 
-/// A name that is valid UTF-8 but contains no `/` — the only thing LedgerFS
+/// A name that is valid UTF-8 but contains no `/`: the only thing LedgerFS
 /// forbids inside a name, because it is the one thing that would change what the
 /// name means.
 fn name_of(bytes: &[u8]) -> String {
@@ -63,13 +63,13 @@ fn name_of(bytes: &[u8]) -> String {
 #[test]
 fn test_dot_dot_is_refused_by_every_verb_that_takes_a_path() -> Result<()> {
 	// -- Setup & Fixtures: one path per verb, all carrying `..`. This is the
-	// test that would catch the one verb somebody forgot — the failure mode of a
+	// test that would catch the one verb somebody forgot: the failure mode of a
 	// rule enforced in five places out of six is that the sixth is the one an
 	// attacker uses, and nothing about the five working makes the sixth safe.
 	//
 	// `..` is refused rather than resolved because the format has no parent
 	// pointers: honouring it would mean re-walking the prefix and *dropping* the
-	// component, and a silently dropped component is worse than a refusal —
+	// component, and a silently dropped component is worse than a refusal;
 	// `../etc/passwd` would quietly become `etc/passwd`, naming something the
 	// caller did not ask for.
 	let mut s = store(1024)?;
@@ -148,7 +148,7 @@ fn test_every_spelling_of_dot_dot_is_refused() -> Result<()> {
 #[test]
 fn test_a_name_that_merely_looks_like_dot_dot_is_an_ordinary_name() -> Result<()> {
 	// -- Setup & Fixtures: names built from dots that are not `..`. Each must be
-	// creatable, listable and removable — a filter that used `contains("..")` or
+	// creatable, listable and removable: a filter that used `contains("..")` or
 	// a prefix test instead of an exact comparison would refuse them, and would
 	// make a whole family of ordinary filenames unusable.
 	let mut s = store(1024)?;
@@ -241,7 +241,7 @@ fn test_a_dot_or_dot_dot_can_never_be_created_as_a_name() -> Result<()> {
 #[test]
 fn test_a_backslash_is_not_a_separator_here() -> Result<()> {
 	// -- Setup & Fixtures: `..\..\etc` is a traversal on Windows and nothing at
-	// all here — one filename. The dangerous version of this test is the one
+	// all here: one filename. The dangerous version of this test is the one
 	// where a parser accepts `\` as a separator "for convenience": it would give
 	// two ways to spell every path, and a caller that validated one spelling
 	// would not have validated the other.
@@ -256,7 +256,7 @@ fn test_a_backslash_is_not_a_separator_here() -> Result<()> {
 	assert_eq!(names(&s.read_dir("/")?), vec![windows_ish.clone()]);
 	assert_eq!(s.read_file(&path)?, b"just a name");
 
-	// -- Check: and it is not a traversal — no path containing a backslash can
+	// -- Check: and it is not a traversal: no path containing a backslash can
 	// reach anything else, and the name with the backslashes in it is the only
 	// thing that was made.
 	assert!(
@@ -270,7 +270,7 @@ fn test_a_backslash_is_not_a_separator_here() -> Result<()> {
 #[test]
 fn test_a_url_encoded_separator_is_a_name_not_a_separator() -> Result<()> {
 	// -- Setup & Fixtures: `%2f` and `%2e%2e` are the payloads of every web
-	// traversal, and this crate never percent-decodes anything — there is no URL
+	// traversal, and this crate never percent-decodes anything: there is no URL
 	// layer here to do it. The test exists to pin that: a decode anywhere in the
 	// path chain would turn a name into a path, and would do it *after* whatever
 	// validation the caller did, which is the definition of a bypass.
@@ -298,7 +298,7 @@ fn test_a_url_encoded_separator_is_a_name_not_a_separator() -> Result<()> {
 fn test_an_absolute_looking_name_resolves_inside_the_volume() -> Result<()> {
 	// -- Setup & Fixtures: `/etc/passwd` names a file *in this volume*. There is
 	// no host filesystem behind the store, so the only way this could go wrong
-	// is if a caller handed the string to something that does have one — which
+	// is if a caller handed the string to something that does have one, which
 	// is a caller's bug, not this crate's, but it is why the crate must be
 	// unambiguous about it: the path is volume-absolute and there is no other
 	// namespace.
@@ -319,7 +319,7 @@ fn test_an_absolute_looking_name_resolves_inside_the_volume() -> Result<()> {
 
 #[test]
 fn test_an_empty_path_is_the_root_and_a_root_path_is_not_creatable() -> Result<()> {
-	// -- Setup & Fixtures: the empty path and `/` both name the root — harmless
+	// -- Setup & Fixtures: the empty path and `/` both name the root, harmless
 	// to *read*, and refused for every operation that would create or replace
 	// something, because "write to the volume root" has no meaning in this
 	// format and a verb that guessed at one would be a verb that could clobber
@@ -359,8 +359,8 @@ fn test_a_trailing_slash_does_not_change_which_object_is_named() -> Result<()> {
 		s.stat("/a/")?.content_ref,
 		"two spellings, two objects"
 	);
-	// -- Check: and a trailing slash on a *file* is not an error either — it is
-	// the same plain path — because treating it as one would be the reader
+	// -- Check: and a trailing slash on a *file* is not an error either; it is
+	// the same plain path, because treating it as one would be the reader
 	// inventing a rule the writer never applied.
 	assert_eq!(s.read_file("/a/f/")?, b"f");
 	Ok(())
@@ -371,7 +371,7 @@ fn test_a_component_may_not_contain_a_separator_and_a_listing_never_hands_one_ba
 	// -- Setup & Fixtures: the invariant that keeps a replay safe. `rebuild_into`
 	// and a compaction pass take names out of `read_dir` and build paths from them.
 	// If a name could contain `/`, replaying it would address a *different*
-	// location than the one it came from — a name `a/b` copied into `x` would
+	// location than the one it came from: a name `a/b` copied into `x` would
 	// create `x/a/b`, and the tree would grow a level that no caller wrote.
 	let mut s = store(1024)?;
 	s.mkdir("/d", 0o755)?;
@@ -446,7 +446,7 @@ fn test_a_name_the_lookup_cannot_see_is_impossible_to_create() -> Result<()> {
 	let mut s = store(1024)?;
 	let awkward: Vec<String> = vec![
 		// Unicode normalisation: NFC and NFD spellings of `é`. They are
-		// different byte strings and must stay different files — a store that
+		// different byte strings and must stay different files: a store that
 		// normalised would merge them, and two callers who chose different
 		// spellings would find they share a file.
 		"caf\u{e9}".to_string(),
@@ -506,8 +506,8 @@ fn test_a_name_the_lookup_cannot_see_is_impossible_to_create() -> Result<()> {
 #[test]
 fn test_a_nul_in_a_name_does_not_truncate_it() -> Result<()> {
 	// -- Setup & Fixtures: the classic C-string truncation. If any layer
-	// truncated at a NUL — a lookup comparing C strings, a length taken from
-	// `strlen`, a `DirEntry` built from a lossy conversion — then `a\0evil` and
+	// truncated at a NUL: a lookup comparing C strings, a length taken from
+	// `strlen`, a `DirEntry` built from a lossy conversion, then `a\0evil` and
 	// `a` would be the same file, and an attacker who could choose a name could
 	// choose to *be* an existing one. The two names here are chosen so that a
 	// truncating store collapses them; the assertion is that it does not.
@@ -558,7 +558,7 @@ fn test_a_name_is_not_case_folded() -> Result<()> {
 #[test]
 fn test_two_names_that_differ_only_in_an_invisible_character_are_two_names() -> Result<()> {
 	// -- Setup & Fixtures: the spoofing case. A caller that shows a listing to a
-	// person — an operator console does exactly this — must be able to tell
+	// person (an operator console does exactly this) must be able to tell
 	// `report.txt` from `report.txt` with an invisible byte in it, and the store
 	// must not be the thing that decides they are the same. It cannot make the
 	// spoof impossible; it can refuse to participate in it.
@@ -582,7 +582,7 @@ fn test_two_names_that_differ_only_in_an_invisible_character_are_two_names() -> 
 fn test_a_verbatim_name_is_what_a_listing_hands_back() -> Result<()> {
 	// -- Setup & Fixtures: `read_dir` is what a caller renders. If it decoded,
 	// escaped or trimmed, the caller would show a name that is not the name on
-	// disk — and a person choosing from that list would be choosing by the wrong
+	// disk, and a person choosing from that list would be choosing by the wrong
 	// string.
 	let mut s = store(1024)?;
 	let names_in = [
@@ -631,7 +631,7 @@ fn test_a_path_with_a_hundred_thousand_components_is_refused_or_resolved_but_nev
 
 	// -- Exec & Check: and asking a store about it is an error about a missing
 	// entry, not a hang. The first component does not exist, so the walk stops
-	// there — which is also the property that makes a long hostile path cheap.
+	// there, which is also the property that makes a long hostile path cheap.
 	let s = store(256)?;
 	let e = expect_err("a very long path", s.stat(&path));
 	assert!(
@@ -645,7 +645,7 @@ fn test_a_path_with_a_hundred_thousand_components_is_refused_or_resolved_but_nev
 fn test_a_path_whose_components_are_all_at_the_length_limit_is_handled() -> Result<()> {
 	// -- Setup & Fixtures: the limit is per *name*, not per path, so a path can
 	// legitimately be far longer than 256 bytes. A store that checked the whole
-	// path against the component limit would refuse these — and would do it
+	// path against the component limit would refuse these, and would do it
 	// with an error about a name the caller never wrote.
 	let at_limit = "n".repeat(256);
 	let path = format!("/{at_limit}/{at_limit}");
@@ -656,7 +656,7 @@ fn test_a_path_whose_components_are_all_at_the_length_limit_is_handled() -> Resu
 	let e = expect_err("a nested at-limit path", s.create_file(&path, 0o644));
 	assert!(matches!(e, Error::NoSuchFile { .. }), "got {e:?}");
 
-	// -- Exec: create the parent, then the child — two names, each legal
+	// -- Exec: create the parent, then the child: two names, each legal
 	s.mkdir(&format!("/{at_limit}"), 0o755)?;
 	s.create_file(&path, 0o644)?;
 
@@ -680,7 +680,7 @@ fn test_many_components_that_do_not_exist_name_the_first_missing_one() -> Result
 	let e = expect_err("a missing chain", s.stat(path));
 
 	// -- Check: `resolve_chain` reports the accumulated prefix of the first
-	// component it could not look up — here the first one, so the prefix is the
+	// component it could not look up (here the first one), so the prefix is the
 	// name itself without a leading slash.
 	match e {
 		Error::NoSuchFile { path } => assert_eq!(path, "nope", "must name the first miss, not the tail"),
@@ -694,8 +694,8 @@ fn test_a_directory_cannot_be_made_to_hold_more_than_its_ceiling() -> Result<()>
 	// -- Setup & Fixtures: `DirNode` has a hard 400-entry ceiling and no B-tree
 	// splitting. From a security angle the question is not "why 400" but "what
 	// happens at 401": the answer must be a refusal that leaves the directory
-	// exactly as it was. A ceiling enforced by *overwriting* — or by dropping
-	// the new entry silently — would let a caller overwrite a file by filling
+	// exactly as it was. A ceiling enforced by *overwriting* (or by dropping
+	// the new entry silently) would let a caller overwrite a file by filling
 	// its directory first, which is an integrity attack with a filesystem for a
 	// weapon.
 	let mut s = store(16_384)?;
@@ -712,7 +712,7 @@ fn test_a_directory_cannot_be_made_to_hold_more_than_its_ceiling() -> Result<()>
 		other => panic!("expected a full-directory refusal, got {other:?}"),
 	}
 
-	// -- Check: the directory is intact — all 400, none renamed, none lost.
+	// -- Check: the directory is intact: all 400, none renamed, none lost.
 	// (Exactly the 400: a volume made by `Store::format` has no `.ledgerfs`
 	// identity files, which is what `format_app` adds.)
 	let listed = names(&s.read_dir("/")?);
@@ -736,7 +736,7 @@ fn test_a_directory_cannot_be_made_to_hold_more_than_its_ceiling() -> Result<()>
 
 #[test]
 fn test_a_mode_is_stored_verbatim_and_is_not_a_permission_gate() -> Result<()> {
-	// -- Setup & Fixtures: LedgerFS stores a mode but enforces nothing with it —
+	// -- Setup & Fixtures: LedgerFS stores a mode but enforces nothing with it;
 	// the host crate has no notion of a user, and a volume is opened by whoever
 	// holds the file. That is worth pinning rather than leaving implied, because
 	// a caller reading `stat()` and *deciding* from the mode would be building
@@ -744,7 +744,7 @@ fn test_a_mode_is_stored_verbatim_and_is_not_a_permission_gate() -> Result<()> {
 	// was given; controlling access is the caller's (or the OS file's).
 	let mut s = store(1024)?;
 
-	// -- Exec: modes including setuid, setgid and sticky — bits that mean
+	// -- Exec: modes including setuid, setgid and sticky, bits that mean
 	// something to a POSIX kernel and nothing here.
 	let modes = [0o644u32, 0o600, 0o755, 0o000, 0o777, 0o4755, 0o2755, 0o1755];
 
@@ -765,7 +765,7 @@ fn test_a_mode_is_stored_verbatim_and_is_not_a_permission_gate() -> Result<()> {
 
 	// -- Exec & Check: and there is no validation at all, not even a range.
 	// A mode above `0o7777` has no meaning on any POSIX system, and the store
-	// keeps it anyway — because the field is a `u32` on disk and inventing a
+	// keeps it anyway, because the field is a `u32` on disk and inventing a
 	// sanitiser here would make `stat()` disagree with the bytes that were
 	// written. The important half of this is what it tells a *caller*: the mode
 	// that comes back out of `stat()` is what went in, and nothing more. It is
@@ -787,7 +787,7 @@ fn test_a_mode_is_stored_verbatim_and_is_not_a_permission_gate() -> Result<()> {
 #[test]
 fn test_a_refused_read_does_not_change_the_volume() -> Result<()> {
 	// -- Setup & Fixtures: every path test above does a lot of *failing* lookups
-	// against a live store. Each of them must leave the volume's bytes alone —
+	// against a live store. Each of them must leave the volume's bytes alone;
 	// a resolve that "repaired" a `DirNode`, or that wrote a hint back to the
 	// device, would make an ordinary failed lookup a mutation, and would make a
 	// read-only-in-intent caller a writer.
@@ -817,7 +817,7 @@ fn test_a_refused_read_does_not_change_the_volume() -> Result<()> {
 #[test]
 fn test_a_rename_cannot_be_used_to_leave_an_entry_unreachable() -> Result<()> {
 	// -- Setup & Fixtures: `rename` is the verb that moves a name, so it is the
-	// one that could produce an entry the reader cannot find — by renaming onto
+	// one that could produce an entry the reader cannot find, by renaming onto
 	// a path the reader normalises away, or into a directory that does not
 	// exist, or onto itself.
 	let mut s = store(1024)?;
@@ -840,7 +840,7 @@ fn test_a_rename_cannot_be_used_to_leave_an_entry_unreachable() -> Result<()> {
 	}
 
 	// -- Check: and the file is exactly where it was, readable under its own
-	// name. This is the assertion that matters — a refusal that had already
+	// name. This is the assertion that matters: a refusal that had already
 	// removed the entry would be a delete wearing an error message.
 	assert_eq!(s.read_file("/a/f")?, b"payload");
 	assert_eq!(names(&s.read_dir("/a")?), vec!["f".to_string()]);

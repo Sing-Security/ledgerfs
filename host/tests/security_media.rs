@@ -11,7 +11,7 @@
 //! Two rules run through the whole file:
 //!
 //! 1. **Parsing reports, it does not trust.** [`read_partitions`] is a pure
-//!    function of 512 bytes. It says what the table says — including nonsense,
+//!    function of 512 bytes. It says what the table says, including nonsense,
 //!    including overlapping ranges, including a partition that starts before
 //!    the image does. The *refusals* belong at the next layer, when something
 //!    tries to open a region, because that is where the numbers meet the file.
@@ -23,7 +23,7 @@
 //!    because in this system the mounting process is a filesystem server with
 //!    other people's data open.
 //!
-//! The end-to-end tests at the bottom build a real image — MBR and all — format
+//! The end-to-end tests at the bottom build a real image (MBR and all), format
 //! a real LedgerFS volume inside one of its partitions, and reopen it, so the
 //! happy path through this layer is covered too. A security suite that only
 //! ever feeds the code garbage would pass on a parser that rejects everything.
@@ -58,7 +58,7 @@ type Entry = (u8, u32, u32);
 /// Built by hand rather than by calling the crate's writer, for the same reason
 /// the volume-damage tests write their own bytes: a test of "what does this
 /// parser do with *this* table" has to be able to express tables the writer
-/// would never produce — two partition types, zero sectors, a range past the
+/// would never produce: two partition types, zero sectors, a range past the
 /// end of the image.
 fn mbr(entries: &[Entry]) -> Vec<u8> {
 	let mut sector = vec![0u8; SECTOR as usize];
@@ -138,7 +138,7 @@ fn test_a_signature_one_byte_wrong_is_still_no_partition_table() -> Result<()> {
 fn test_an_image_shorter_than_one_sector_is_refused_and_the_message_says_why() -> Result<()> {
 	// -- Setup & Fixtures: a truncated download. `read_exact` fails, and the
 	// failure has to be reported as an image problem rather than surfacing as a
-	// zero-length table — "this image has no partitions" and "this image is not
+	// zero-length table: "this image has no partitions" and "this image is not
 	// an image" are different answers and only one of them is true.
 	let image = TempImage::new("short-image");
 	image.write(&[0u8; 100])?;
@@ -194,7 +194,7 @@ fn test_an_empty_table_is_an_empty_list_not_an_error() -> Result<()> {
 fn test_an_entry_with_no_sectors_is_table_space() -> Result<()> {
 	// -- Setup & Fixtures: `type != 0` but `sectors == 0`. Found in the wild on
 	// images written by tools that leave stale type bytes behind, and a
-	// zero-length partition is not addressable — it is a leftover, not a volume.
+	// zero-length partition is not addressable: it is a leftover, not a volume.
 	let image = TempImage::new("zero-sectors");
 	write_image(&image, &mbr(&[(TYPE_LFS, 100, 0), (TYPE_LFS, 200, 8)]), 4096 * BS)?;
 
@@ -210,7 +210,7 @@ fn test_an_entry_with_no_sectors_is_table_space() -> Result<()> {
 
 #[test]
 fn test_an_entry_with_sectors_but_no_type_is_table_space() -> Result<()> {
-	// -- Setup & Fixtures: the other half of the same rule — a type byte of 0
+	// -- Setup & Fixtures: the other half of the same rule: a type byte of 0
 	// means "unused", whatever the rest of the slot says.
 	let image = TempImage::new("zero-type");
 	write_image(&image, &mbr(&[(0x00, 100, 8), (TYPE_LFS, 200, 8)]), 4096 * BS)?;
@@ -226,7 +226,7 @@ fn test_an_entry_with_sectors_but_no_type_is_table_space() -> Result<()> {
 
 #[test]
 fn test_the_two_ledgerfs_entries_are_named_in_table_order() -> Result<()> {
-	// -- Setup & Fixtures: the naming rule is positional — the first `0xC0` is
+	// -- Setup & Fixtures: the naming rule is positional: the first `0xC0` is
 	// `/system`, the second is `/data`. Which one is which is the difference
 	// between reading the OS image and reading the user's data, so the rule is
 	// pinned even though it is only a convention of the writer.
@@ -316,7 +316,7 @@ fn test_partition_types_this_tool_does_not_know_are_dropped() -> Result<()> {
 #[test]
 fn test_a_partition_pointed_past_the_end_of_the_image_parses_but_does_not_open() -> Result<()> {
 	// -- Setup & Fixtures: this is the shape of a truncated image with an intact
-	// partition table — the most common way a bad download presents itself. The
+	// partition table, the most common way a bad download presents itself. The
 	// table is what it is, so parsing reports it; the refusal belongs where the
 	// range meets the file.
 	let image = TempImage::new("past-end");
@@ -349,7 +349,7 @@ fn test_a_partition_pointed_past_the_end_of_the_image_parses_but_does_not_open()
 fn test_a_partition_covering_the_partition_table_itself_is_not_a_bootable_volume() -> Result<()> {
 	// -- Setup & Fixtures: `start_lba = 0` is legal to *state* and means the
 	// partition begins with the MBR. Nothing stops a table from saying so, and
-	// nothing should — but a volume mounted from it must not read the MBR as a
+	// nothing should, but a volume mounted from it must not read the MBR as a
 	// superblock, and must not be able to overwrite the table that describes the
 	// disk.
 	let image = TempImage::new("self-covering");
@@ -378,7 +378,7 @@ fn test_a_partition_covering_the_partition_table_itself_is_not_a_bootable_volume
 #[test]
 fn test_an_enormous_sector_count_is_reported_without_overflowing() -> Result<()> {
 	// -- Setup & Fixtures: `sectors` is a `u32`, so the largest a table can
-	// claim is 2 TiB. That must be *representable* — a size computation that
+	// claim is 2 TiB. That must be *representable*: a size computation that
 	// overflowed would turn an absurd claim into a small, plausible one, and
 	// then a volume would be opened on a range the table never described.
 	let image = TempImage::new("max-sectors");
@@ -399,7 +399,7 @@ fn test_an_enormous_sector_count_is_reported_without_overflowing() -> Result<()>
 #[test]
 fn test_overlapping_partitions_are_reported_and_cannot_both_be_opened_for_writing() -> Result<()> {
 	// -- Setup & Fixtures: a table where `/system` and `/data` describe the same
-	// region. This is a real attack shape — it aims to get two LedgerFS volumes
+	// region. This is a real attack shape: it aims to get two LedgerFS volumes
 	// writing to one set of blocks, each believing the other's objects are free.
 	// The parser reports the overlap (hiding it would hide the attack); what
 	// must hold is that the two volumes cannot both be *written*.
@@ -460,7 +460,7 @@ fn test_randomly_generated_tables_never_panic_the_parser() -> Result<()> {
 		image.write(&sector)?;
 
 		// -- Check: no panic, and any partitions that come back are
-		// self-consistent — the entries carry the numbers they were given.
+		// self-consistent: the entries carry the numbers they were given.
 		// A table without the signature is *expected* to be refused here; the
 		// property under test is that the refusal is the only other outcome.
 		let parts = match read_partitions(&image.path) {
@@ -566,7 +566,7 @@ fn test_every_partition_kind_has_a_distinct_label_and_parses_back() -> Result<()
 	assert_eq!(PartitionKind::parse(" data "), None);
 
 	// -- Check: and it invents nothing. A name that is not one of the three is
-	// not quietly mapped onto a default — the failure a leniency bug would
+	// not quietly mapped onto a default: the failure a leniency bug would
 	// produce is a caller opening `/data` when it asked for something else.
 	assert_eq!(PartitionKind::parse("nonsense"), None);
 	assert_eq!(PartitionKind::parse(""), None);
@@ -625,7 +625,7 @@ fn test_a_volume_inside_a_partition_round_trips_through_the_image() -> Result<()
 fn test_the_volume_stays_inside_its_partition() -> Result<()> {
 	// -- Setup & Fixtures: the partition is the security boundary. `/boot` sits
 	// immediately before it and the file continues after it, so a volume that
-	// overran its own size — by a block, by a superblock copy, by a scan — would
+	// overran its own size (by a block, by a superblock copy, by a scan) would
 	// be visible as bytes changed outside the range.
 	let image = TempImage::new("partition-boundary");
 	let partition = formatted_system_image(&image)?;
@@ -639,12 +639,12 @@ fn test_the_volume_stays_inside_its_partition() -> Result<()> {
 	drop(store);
 
 	// -- Check: the byte before the partition and the byte after it are as the
-	// image was written — the `/boot` area untouched, the tail untouched.
+	// image was written: the `/boot` area untouched, the tail untouched.
 	let bytes = std::fs::read(&image.path)?;
 	let start = partition.start_bytes() as usize;
 	let end = (partition.start_bytes() + partition.size_bytes()) as usize;
-	// The MBR itself lives before the partition — that is the point of a
-	// partition table — so the region checked is from the end of the first
+	// The MBR itself lives before the partition. That is the point of a
+	// partition table, so the region checked is from the end of the first
 	// sector up to the partition's own start.
 	assert_eq!(&bytes[510..512], &SIGNATURE, "the partition table was overwritten");
 	assert!(
@@ -660,7 +660,7 @@ fn test_the_volume_stays_inside_its_partition() -> Result<()> {
 
 #[test]
 fn test_a_volume_file_with_no_image_around_it_still_mounts() -> Result<()> {
-	// -- Setup & Fixtures: the embeddable case — a bare volume file, no MBR. It
+	// -- Setup & Fixtures: the embeddable case, a bare volume file, no MBR. It
 	// has to keep working, because it is how `MemBlockDevice` volumes are
 	// written out and read back, and how a volume is moved between machines.
 	let image = TempImage::new("bare-volume");
@@ -693,7 +693,7 @@ fn test_a_volume_file_with_no_image_around_it_still_mounts() -> Result<()> {
 #[test]
 fn test_random_bytes_never_mount_as_a_volume() -> Result<()> {
 	// -- Setup & Fixtures: 400 volumes of random bytes, mounted the way a
-	// hostile file would be. Every one must fail — and the assertion that
+	// hostile file would be. Every one must fail, and the assertion that
 	// matters is that the loop finishes, because the failure mode being tested
 	// for is a panic inside superblock decoding.
 	let mut rng = Rng::new(0x4241_4456_4F4C_554D);
@@ -712,7 +712,7 @@ fn test_random_bytes_never_mount_as_a_volume() -> Result<()> {
 #[test]
 fn test_a_volume_of_the_right_size_but_the_wrong_contents_is_refused_by_name() -> Result<()> {
 	// -- Setup & Fixtures: the plausible-file case. Right length, no signature,
-	// no checksums — the shape of a file an operator truncated, or of an
+	// no checksums: the shape of a file an operator truncated, or of an
 	// encrypted volume, or of a disk image from another filesystem.
 	let bytes = vec![0xEEu8; (32 * BS) as usize];
 	let device = MemBlockDevice::from_bytes(bytes)?;
@@ -739,8 +739,8 @@ fn test_a_volume_of_the_right_size_but_the_wrong_contents_is_refused_by_name() -
 #[test]
 fn test_a_single_damaged_byte_anywhere_in_the_metadata_never_panics_the_mount() -> Result<()> {
 	// -- Setup & Fixtures: a real volume, damaged one byte at a time in the
-	// regions a hostile actor would aim at — the four superblock copies and the
-	// allocator snapshot — and remounted on each try. Bit-rot and tampering look
+	// regions a hostile actor would aim at (the four superblock copies and the
+	// allocator snapshot), and remounted on each try. Bit-rot and tampering look
 	// the same from here.
 	let (store, watch) = common::watched(64)?;
 	drop(store);
@@ -772,7 +772,7 @@ fn test_a_single_damaged_byte_anywhere_in_the_metadata_never_panics_the_mount() 
 #[test]
 fn test_mounting_the_same_bytes_twice_gives_the_same_answer() -> Result<()> {
 	// -- Setup & Fixtures: mount is a pure function of the volume. A mount that
-	// mutated the device — repairing a copy in place, say — would make a
+	// mutated the device (repairing a copy in place, say) would make a
 	// read-only inspection of a suspect volume an act that changes it, which is
 	// exactly what a forensic read must not do.
 	let (store, watch) = common::watched(64)?;
@@ -806,7 +806,7 @@ fn test_mounting_the_same_bytes_twice_gives_the_same_answer() -> Result<()> {
 fn test_a_volume_larger_than_a_test_volume_still_mounts_and_reads() -> Result<()> {
 	// -- Setup & Fixtures: mounting scans for the root when the hint is unusable,
 	// and the scan is bounded by `max_scan_blocks`. A volume bigger than that
-	// bound is the case where a bounded scan has to still find an answer — by
+	// bound is the case where a bounded scan has to still find an answer, by
 	// the hint, not by giving up.
 	//
 	// This is a *correctness* property with a security shape: an unbounded scan
@@ -852,7 +852,7 @@ fn test_an_image_path_that_is_a_directory_is_reported_not_followed() -> Result<(
 #[test]
 fn test_two_images_are_independent() -> Result<()> {
 	// -- Setup & Fixtures: two volumes, each with its own contents. Nothing in
-	// the crate keys state by path or by anything else global — a cache or a
+	// the crate keys state by path or by anything else global: a cache or a
 	// hint table shared between volumes would let one image's metadata answer
 	// for another's, which is a cross-volume information leak.
 	let a = TempImage::new("independent-a");
@@ -886,7 +886,7 @@ fn test_formatting_a_medium_leaves_none_of_what_it_held() -> Result<()> {
 	//
 	// This is the at-rest half of the crate's story. A `mkfs` that left its
 	// predecessor's blocks behind would disclose a deleted volume's contents to
-	// whoever could read the device afterwards — and, just as bad, would leave
+	// whoever could read the device afterwards, and, just as bad, would leave
 	// stale `ObjectRecord`s for a hint-less reader to find and treat as live
 	// objects belonging to the new filesystem.
 	const SECRET: &[u8] = b"TOPSECRET-forgery-plans-7274";
@@ -898,7 +898,7 @@ fn test_formatting_a_medium_leaves_none_of_what_it_held() -> Result<()> {
 	medium.truncate((blocks * BS) as usize);
 
 	// -- Exec: formatted through a live handle on the same buffer, since the
-	// bytes that matter are the ones *after* the format — a snapshot taken
+	// bytes that matter are the ones *after* the format: a snapshot taken
 	// before it would only show the secret to itself.
 	let device = MemBlockDevice::from_bytes(medium)?;
 	let watch = device.clone();
@@ -921,7 +921,7 @@ fn test_a_read_only_mount_does_not_write_to_the_medium() -> Result<()> {
 	// -- Setup & Fixtures: inspecting a suspect volume must not change it. A
 	// mount that "repaired" a damaged superblock copy in place would destroy the
 	// evidence of what was wrong with it, and would make a read-only open a
-	// write — the one thing its name promises it is not.
+	// write, the one thing its name promises it is not.
 	let (store, watch) = common::watched(128)?;
 	drop(store);
 	let before = common::bytes(&watch);

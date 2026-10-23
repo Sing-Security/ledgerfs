@@ -33,7 +33,7 @@ pub struct ExtentDescriptor {
 /// Maintains sorted order for efficient range queries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtentNode {
-	/// Content-addressed ID of this node — `#[serde(skip)]`, matching
+	/// Content-addressed ID of this node: `#[serde(skip)]`, matching
 	/// `AllocNode`'s convention: see `Inode::object_id`'s doc comment for
 	/// why a self-referential field can't be part of its own hash input.
 	#[serde(skip)]
@@ -92,13 +92,13 @@ impl ExtentNode {
 	/// new extent (splitting into two pieces if the new extent lands in the
 	/// middle of it), and a range with no overlap is untouched. Without
 	/// this, a second write to a range already covered by an earlier write
-	/// (the overwhelmingly common case — `O_TRUNC`+write, `echo >`, any
+	/// (the overwhelmingly common case: `O_TRUNC`+write, `echo >`, any
 	/// config-file update) used to just append a second, overlapping
 	/// extent alongside the first rather than replacing it; the read path
 	/// (`fill_from_extent_node`) has no arbitration logic for that case and
-	/// silently let whichever entry happened to land later in the vec win
-	/// — which, because insertion at an exact-offset match shifts the new
-	/// entry *before* the existing one, meant the **older** write silently
+	/// silently let whichever entry happened to land later in the vec win.
+	/// Because insertion at an exact-offset match shifts the new entry
+	/// *before* the existing one, that meant the **older** write silently
 	/// won reads, not the newer one. See this crate's
 	/// `test_insert_extent_overwrite_replaces_not_appends`.
 	pub fn insert_extent(&mut self, extent: ExtentDescriptor) -> Result<()> {
@@ -112,7 +112,7 @@ impl ExtentNode {
 	///
 	/// This node is the one object whose canonical encoding grows with a
 	/// file's history, and the builders that append to it are about to
-	/// encode it anyway — it is the object they are writing. Hashing here
+	/// encode it anyway: it is the object they are writing. Hashing here
 	/// and again at the call site encoded an O(history) node twice per
 	/// append, which is what made a long staged stream quadratic in
 	/// practice as well as in name. `object_id` is stale after this call;
@@ -158,7 +158,7 @@ impl ExtentNode {
 					chunk_offset: old.chunk_offset + (new_end - old_start),
 				});
 			}
-			// Otherwise `old` is fully covered by the new extent — dropped.
+			// Otherwise `old` is fully covered by the new extent: dropped.
 		}
 
 		let pos = kept.partition_point(|e| e.logical_offset < new_start);
@@ -207,7 +207,7 @@ impl ExtentNode {
 	}
 
 	/// Update object ID based on current content. See `Inode::update_object_id`'s
-	/// doc comment — safe in any order since `object_id` is `#[serde(skip)]`.
+	/// doc comment: safe in any order since `object_id` is `#[serde(skip)]`.
 	pub fn update_object_id(&mut self) {
 		let canonical = self.encode_canonical().unwrap();
 		self.object_id = ObjectId::from_content(&canonical);
@@ -232,7 +232,7 @@ impl ExtentNode {
 	}
 
 	/// Decode node from canonical bytes, recomputing `object_id` directly
-	/// from `bytes` — see `Inode::decode_canonical`'s doc comment.
+	/// from `bytes`; see `Inode::decode_canonical`'s doc comment.
 	pub fn decode_canonical(bytes: &[u8]) -> Result<Self> {
 		let mut node: Self = postcard::from_bytes(bytes).map_err(Error::from)?;
 		node.object_id = ObjectId::from_content(bytes);
@@ -263,8 +263,8 @@ mod tests {
 	#[test]
 	fn test_extentnode_object_id_matches_blake3_of_its_own_stored_bytes() -> TestResult<()> {
 		// -- Setup & Fixtures: regression test for the same real bug
-		// documented in `Inode::test_inode_object_id_matches_blake3_of_its_own_stored_bytes`
-		// — `object_id` used to be a normal serialized field, making
+		// documented in `Inode::test_inode_object_id_matches_blake3_of_its_own_stored_bytes`.
+		// `object_id` used to be a normal serialized field, which made
 		// `update_object_id()` self-referentially inconsistent with what
 		// actually gets stored on disk.
 		let node = ExtentNode::new_leaf();
@@ -389,7 +389,7 @@ mod tests {
 	#[test]
 	fn test_insert_extent_exact_overwrite_replaces_not_appends() -> TestResult<()> {
 		// -- Setup & Fixtures: regression test for the silent-stale-data bug
-		// this fix closes — a second write to the exact same range used to
+		// this fix closes: a second write to the exact same range used to
 		// add a second, overlapping extent instead of replacing the first,
 		// and the read path's linear scan let the *older* write win.
 		let mut node = ExtentNode::new_leaf();
@@ -426,7 +426,7 @@ mod tests {
 	#[test]
 	fn test_insert_extent_partial_overlap_trims_the_old_extent() -> TestResult<()> {
 		// -- Setup & Fixtures: old extent covers [0, 4096); new write covers
-		// [2048, 6144) — overlaps the back half of `old` and extends past it.
+		// [2048, 6144): overlaps the back half of `old` and extends past it.
 		let mut node = ExtentNode::new_leaf();
 		let old = ExtentDescriptor {
 			logical_offset: 0,
@@ -447,8 +447,8 @@ mod tests {
 		node.insert_extent(old)?;
 		node.insert_extent(new.clone())?;
 
-		// -- Check: `old` is trimmed to [0, 2048) — its untouched front
-		// half — and `new` covers [2048, 6144) unchanged.
+		// -- Check: `old` is trimmed to [0, 2048) (its untouched front
+		// half), and `new` covers [2048, 6144) unchanged.
 		assert_eq!(node.extents.len(), 2);
 		assert_eq!(node.extents[0].logical_offset, 0);
 		assert_eq!(node.extents[0].length, 2048);
@@ -464,7 +464,7 @@ mod tests {
 	#[test]
 	fn test_insert_extent_middle_overlap_splits_the_old_extent_in_two() -> TestResult<()> {
 		// -- Setup & Fixtures: old extent covers [0, 8192); new write lands
-		// entirely inside it, [2048, 4096) — must split `old` into a kept
+		// entirely inside it, [2048, 4096), which splits `old` into a kept
 		// head [0, 2048) and a kept tail [4096, 8192), both still pointing
 		// at the same underlying chunk with correctly adjusted chunk_offset.
 		let mut node = ExtentNode::new_leaf();

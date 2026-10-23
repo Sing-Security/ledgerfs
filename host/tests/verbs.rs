@@ -8,7 +8,7 @@
 //!    from the return value; and
 //! 2. every refusal, because the refusals are this crate's contract with an
 //!    app. `write_at` declining to overwrite stored bytes, `remove` declining a
-//!    directory, `rename` declining a cross-directory move — an app is allowed
+//!    directory, `rename` declining a cross-directory move. An app is allowed
 //!    to depend on those answers, so a regression that silently started
 //!    permitting one would be worse than a crash.
 
@@ -85,7 +85,7 @@ fn test_mkdir_refuses_a_name_that_is_taken() -> Result<()> {
 
 	// -- Exec & Check: `cow::operations`' insert does not check for a duplicate,
 	// so without this refusal a second entry with the same name would be
-	// written into a sorted `DirEntry` list — a corrupt directory, not a failed
+	// written into a sorted `DirEntry` list: a corrupt directory, not a failed
 	// create.
 	for path in ["/d", "/f"] {
 		let e = expect_err(path, store.mkdir(path, 0o755));
@@ -108,11 +108,11 @@ fn test_mkdir_names_the_missing_parent() -> Result<()> {
 	// -- Exec
 	let e = expect_err("mkdir under an absent parent", store.mkdir("/nope/deep", 0o755));
 
-	// -- Check: the missing *directory*, not the whole path — naming the tail
+	// -- Check: the missing *directory*, not the whole path; naming the tail
 	// (`deep`) would send the caller looking for the wrong thing. Note the
 	// shape: `resolve_chain` reports the prefix it accumulated walking down
 	// from the root, so it is slashless, while `lookup_in` reports the path as
-	// the caller wrote it. The two differ for a top-level miss — see
+	// the caller wrote it. The two differ for a top-level miss; see
 	// `test_no_such_file_names_the_parent_but_not_always_with_a_leading_slash`.
 	match e {
 		Error::NoSuchFile { path } => assert_eq!(path, "nope"),
@@ -173,7 +173,7 @@ fn test_no_such_file_names_the_parent_but_not_always_with_a_leading_slash() -> R
 fn test_no_such_file_and_not_a_directory_disagree_about_which_path_they_name() -> Result<()> {
 	// -- Setup & Fixtures: the third shape of the same disagreement. A create
 	// under a *file* reports the whole path it was given, while a create under
-	// a missing directory reports a slashless prefix — and neither is "the
+	// a missing directory reports a slashless prefix, and neither is "the
 	// component at fault", which for both is `/f` and `gone` respectively.
 	let mut store = store(BLOCKS)?;
 	store.create_file("/f", 0o644)?;
@@ -218,7 +218,7 @@ fn test_mkdir_refuses_the_root() -> Result<()> {
 	// -- Exec: re-creating the root must not be a way to replace it
 	let r = store.mkdir("/", 0o755);
 
-	// -- Check: refused — with `AlreadyExists`, since the root is a directory
+	// -- Check: refused with `AlreadyExists`, since the root is a directory
 	// that is already there, which is also what a caller would get for any
 	// other taken path.
 	assert!(r.is_err(), "mkdir / must not silently succeed");
@@ -269,7 +269,7 @@ fn test_create_file_names_the_missing_parent() -> Result<()> {
 	// -- Exec
 	let e = expect_err("create under an absent parent", store.create_file("/gone/f", 0o644));
 
-	// -- Check: the parent, by its accumulated prefix — see the note on the
+	// -- Check: the parent, by its accumulated prefix; see the note on the
 	// `mkdir` twin for why there is no leading slash.
 	match e {
 		Error::NoSuchFile { path } => assert_eq!(path, "gone"),
@@ -401,7 +401,7 @@ fn test_write_file_refuses_a_directory() -> Result<()> {
 fn test_a_failed_write_new_file_of_one_object_leaves_nothing_behind() -> Result<()> {
 	// -- Setup & Fixtures: content that fits in a single object either lands
 	// whole or leaves no file at all, because the create and the write are one
-	// transaction. It used to be two — create, then write — which left the
+	// transaction. It used to be two (create, then write), which left the
 	// *created* file behind, empty, when the write ran out of space. An absent
 	// name is the more useful of the two failure states: a caller that sees the
 	// failure and retries retries a create, rather than writing over a file it
@@ -409,7 +409,7 @@ fn test_a_failed_write_new_file_of_one_object_leaves_nothing_behind() -> Result<
 	let mut store = store(20)?;
 
 	// -- Exec: far more than a 20-block volume can hold, but under the 256 KiB
-	// object ceiling — so it is one transaction, not three.
+	// object ceiling, so it is one transaction, not three.
 	let e = expect_err(
 		"a write that cannot fit",
 		store.write_new_file("/over", &vec![0u8; 200_000], 0o644),
@@ -433,7 +433,7 @@ fn test_a_failed_write_new_file_of_one_object_leaves_nothing_behind() -> Result<
 fn test_a_failed_write_new_file_spanning_several_objects_leaves_no_file() -> Result<()> {
 	// -- Setup & Fixtures: the guarantee above holds however many objects the
 	// write spans. Content past one object is still written a chunk per object
-	// — that ceiling is the format's — but the pieces are folded into one
+	// (that ceiling is the format's), but the pieces are folded into one
 	// transaction, so a later piece running out of room is the *whole* write
 	// failing rather than a file whose bytes are a prefix of what was asked
 	// for.
@@ -441,12 +441,12 @@ fn test_a_failed_write_new_file_spanning_several_objects_leaves_no_file() -> Res
 	// This is the pin that used to say the opposite. It asserted that the
 	// first chunk committed and the second did not, which was true when the
 	// pieces were one commit each; folding them made it false, and an absent
-	// name is the more useful failure state — the same argument as the
+	// name is the more useful failure state: the same argument as the
 	// single-object case, now without the qualifier.
 	//
 	// The volume is sized deliberately inside the window: big enough for a
-	// single chunk's commit — 256 KiB of content is 64 blocks, plus its
-	// metadata, the snapshot and the four superblock copies — and too small
+	// single chunk's commit: 256 KiB of content is 64 blocks, plus its
+	// metadata, the snapshot and the four superblock copies, and too small
 	// for both chunks of a 400 KB write. Under 80 blocks the first chunk would
 	// not fit either, and the test would pass for the wrong reason.
 	let mut store = store(100)?;
@@ -471,7 +471,7 @@ fn test_a_failed_write_new_file_spanning_several_objects_leaves_no_file() -> Res
 	);
 
 	// -- Check: the volume is still usable for a write that does fit, so the
-	// refusal cost the handle nothing — the allocator was restored, not
+	// refusal cost the handle nothing: the allocator was restored, not
 	// consumed.
 	store.write_new_file("/fits", &vec![0u8; 64 * 1024], 0o644)?;
 	assert_eq!(store.stat("/fits")?.size, 64 * 1024);
@@ -495,7 +495,7 @@ fn test_writing_an_empty_file_leaves_no_content() -> Result<()> {
 #[test]
 fn test_a_write_larger_than_the_object_ceiling_is_split_across_transactions() -> Result<()> {
 	// -- Setup & Fixtures: the default ceiling is 256 KiB, so this needs three
-	// transactions — which is the case the "re-resolve the file reference on
+	// transactions, which is the case the "re-resolve the file reference on
 	// every iteration" comment in `write_chunks` exists for. A stale reference
 	// would silently keep only the last piece.
 	let mut store = store(BIG_BLOCKS)?;
@@ -512,7 +512,7 @@ fn test_a_write_larger_than_the_object_ceiling_is_split_across_transactions() ->
 
 #[test]
 fn test_a_write_exactly_at_the_object_ceiling_is_not_split() -> Result<()> {
-	// -- Setup & Fixtures: the boundary case of the chunking loop — `chunks(n)`
+	// -- Setup & Fixtures: the boundary case of the chunking loop: `chunks(n)`
 	// yields one piece for exactly `n` bytes, and an off-by-one that made the
 	// last piece empty would commit a stray transaction.
 	let mut store = store(BIG_BLOCKS)?;
@@ -576,7 +576,7 @@ fn test_append_of_nothing_leaves_the_file_alone() -> Result<()> {
 	// -- Exec
 	store.append("/log", b"", 0o644)?;
 
-	// -- Check: an empty append commits nothing — no transaction, no sequence
+	// -- Check: an empty append commits nothing: no transaction, no sequence
 	// bump, no space consumed. A caller's loop that appended nothing must not
 	// cost it a commit.
 	assert_eq!(store.commit_seq(), seq, "an empty append must not commit");
@@ -618,7 +618,7 @@ fn test_many_appends_are_all_readable_in_order() -> Result<()> {
 	// -- Check
 	assert_eq!(store.read_file("/log")?, expected);
 	assert_eq!(store.stat("/log")?.size, expected.len() as u64);
-	// 200 commits consumed real space, and the store is still taking writes —
+	// 200 commits consumed real space, and the store is still taking writes;
 	// an append path that leaked a commit per line would be visible here first.
 	assert!(store.is_writable());
 	assert!(store.free_bytes().expect("free bytes") > 0);
@@ -653,7 +653,7 @@ fn test_a_folded_append_costs_one_commit_and_less_volume_than_one_per_piece() ->
 	// one append each versus one folded append. The fold is what a write
 	// spanning several objects has to get right beyond "the bytes come back":
 	// the commit is the volume's durability point, so five of them is five
-	// durability points for one logical append — and CoW re-places the whole
+	// durability points for one logical append, and CoW re-places the whole
 	// extent node each time, so it is also five copies of metadata that is
 	// thrown away four times.
 	let mut folded = store(BIG_BLOCKS)?;
@@ -679,7 +679,7 @@ fn test_a_folded_append_costs_one_commit_and_less_volume_than_one_per_piece() ->
 	assert_eq!(folded.commit_seq(), 3, "format, create, one folded append");
 	assert_eq!(per_piece.commit_seq(), 7, "format, create, five appends");
 
-	// -- Check: and the fold costs the volume less — the intermediate
+	// -- Check: and the fold costs the volume less: the intermediate
 	// generations of the extent tree and the inode are pruned at seal, so the
 	// bytes written are the chunks plus one copy of the metadata.
 	let folded_cost = folded_before - folded_after;
@@ -745,12 +745,12 @@ fn test_write_at_past_the_end_lands_at_the_offset() -> Result<()> {
 	let mut store = store(BLOCKS)?;
 	store.write_new_file("/f", b"abc", 0o644)?;
 
-	// -- Exec: an offset beyond the end is *not* refused — it is past the
+	// -- Exec: an offset beyond the end is *not* refused. It is past the
 	// stored bytes, so no extent is overlapped.
 	store.write_at("/f", 10, b"far")?;
 
 	// -- Check: the file is now as long as the write reached, and the bytes
-	// that were never written read back as zeroes — a hole, not corruption and
+	// that were never written read back as zeroes: a hole, not corruption and
 	// not an error.
 	let got = store.read_file("/f")?;
 	assert_eq!(got.len(), 13);
@@ -794,7 +794,7 @@ fn test_remove_unlinks_a_file() -> Result<()> {
 	store.remove("/gone")?;
 
 	// -- Check: gone from the listing, absent to `stat`, and its neighbour is
-	// untouched — a CoW unlink must re-root the parent directory, not the tree.
+	// untouched: a CoW unlink must re-root the parent directory, not the tree.
 	assert_eq!(names(&store.read_dir("/")?), vec!["kept".to_string()]);
 	assert!(is_no_such_file(
 		&expect_err("stat a removed file", store.stat("/gone")),
@@ -807,7 +807,7 @@ fn test_remove_unlinks_a_file() -> Result<()> {
 #[test]
 fn test_remove_refuses_a_directory() -> Result<()> {
 	// -- Setup & Fixtures: there is no recursive unlink, and this crate does not
-	// invent one — a directory that is non-empty would leave its children
+	// invent one: a directory that is non-empty would leave its children
 	// unreachable and its inode unlinkable.
 	let mut store = store(BLOCKS)?;
 	store.mkdir("/d", 0o755)?;
@@ -858,7 +858,7 @@ fn test_remove_frees_the_name_for_reuse() -> Result<()> {
 fn test_remove_and_recreate_do_not_leave_a_ghost_entry() -> Result<()> {
 	// -- Setup & Fixtures: 50 cycles through one name. A directory whose entry
 	// list accumulated a duplicate per cycle would still "work" for a while and
-	// then fail an insert with a corrupt-list error — this is the test that
+	// then fail an insert with a corrupt-list error; this is the test that
 	// catches the accumulation early.
 	let mut store = store(BIG_BLOCKS)?;
 
@@ -899,7 +899,7 @@ fn test_rename_moves_a_file_within_its_directory() -> Result<()> {
 
 #[test]
 fn test_rename_overwrites_an_existing_file_destination() -> Result<()> {
-	// -- Setup & Fixtures: this is the atomic-replace an app is told to use —
+	// -- Setup & Fixtures: this is the atomic-replace an app is told to use:
 	// write a scratch name, rename it over the target.
 	let mut store = store(BLOCKS)?;
 	store.write_new_file("/state.json", b"old state", 0o644)?;
@@ -981,7 +981,7 @@ fn test_rename_into_an_absent_directory_is_refused() -> Result<()> {
 	let e = expect_err("rename into an absent directory", store.rename("/f", "/gone/f"));
 
 	// -- Check: cannot be a cross-directory refusal (there is no destination
-	// directory), so it has to be the missing parent — reported by the
+	// directory), so it has to be the missing parent, reported by the
 	// destination's chain walk, hence the slashless prefix.
 	assert!(is_no_such_file(&e, "gone"), "got {e:?}");
 	assert_eq!(names(&store.read_dir("/")?), vec!["f".to_string()]);
@@ -1002,7 +1002,7 @@ fn test_rename_onto_a_directory_is_refused_rather_than_corrupting() -> Result<()
 
 	// -- Check: the refusal comes from the kernel's own rename, wrapped as
 	// `Error::Format`, so the *variant* is not one of the host's named path
-	// errors — a caller cannot distinguish it from a genuine format problem
+	// errors: a caller cannot distinguish it from a genuine format problem
 	// without reading the detail text. Pinned as it is, with the wart recorded:
 	// this is a place the host error surface is thinner than the others.
 	match r {
@@ -1015,7 +1015,7 @@ fn test_rename_onto_a_directory_is_refused_rather_than_corrupting() -> Result<()
 		Ok(()) => panic!("renaming a file onto a directory must not be reported as success"),
 	}
 
-	// -- Check: and the tree is untouched — the important half of this test
+	// -- Check: and the tree is untouched: the important half of this test
 	assert_eq!(store.stat("/d")?.kind, InodeKind::Directory);
 	assert_eq!(names(&store.read_dir("/d")?), Vec::<String>::new());
 	assert_eq!(store.read_file("/f")?, b"x", "the source file is still where it was");
@@ -1029,7 +1029,7 @@ fn test_rename_onto_a_directory_is_refused_rather_than_corrupting() -> Result<()
 #[test]
 fn test_a_whole_session_of_verbs_leaves_the_tree_it_should() -> Result<()> {
 	// -- Setup & Fixtures: one volume, every verb, and a full tree assertion at
-	// the end — the integration shape a caller actually has.
+	// the end: the integration shape a caller actually has.
 	let mut store = store(BIG_BLOCKS)?;
 
 	// -- Exec

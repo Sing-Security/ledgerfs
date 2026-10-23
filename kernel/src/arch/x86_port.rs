@@ -7,7 +7,7 @@
 //! (`rep insw`, `rep outsw`) that make a 512-byte sector one instruction
 //! instead of 256. Those four are the crate's entire hardware surface, and a
 //! filesystem that owns an on-disk format should not take a dependency on its
-//! host OS's assembly crate to reach them — the dependency would be the only
+//! host OS's assembly crate to reach them: the dependency would be the only
 //! thing tying this crate to its host OS.
 //!
 //! The ATA task-file registers are 8-bit; the only 16-bit access the path needs
@@ -17,13 +17,13 @@
 //!
 //! # The constraint annotations, and why they are not decoration
 //!
-//! * `nomem` — the instruction neither reads nor writes memory the compiler
+//! * `nomem`: the instruction neither reads nor writes memory the compiler
 //!   models. True for port I/O: the I/O address space is disjoint from memory,
 //!   so the compiler may keep values in registers across the instruction. This
 //!   is a statement about the compiler's *model*, not about hardware side
 //!   effects, which is why the safety docs below still say "know the device".
-//! * `nostack` — does not push, pop, or otherwise use the stack.
-//! * `preserves_flags` — leaves RFLAGS untouched. True of `in`/`out`.
+//! * `nostack`: does not push, pop, or otherwise use the stack.
+//! * `preserves_flags`: leaves RFLAGS untouched. True of `in`/`out`.
 //!
 //! The two bulk transfers **must not** claim `nomem`: unlike the scalar
 //! accessors they move through a pointer the compiler does know about, so
@@ -50,7 +50,7 @@ pub(crate) unsafe fn outb(port: u16, val: u8) {
 ///
 /// # Safety
 ///
-/// A port read is not always side-effect free — draining a UART receive
+/// A port read is not always side-effect free: draining a UART receive
 /// register consumes the byte, for instance. The caller must know the device.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]

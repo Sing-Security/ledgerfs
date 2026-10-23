@@ -1,4 +1,4 @@
-//! Reader smoke tests — object decoding, extent range intersection, and
+//! Reader smoke tests: object decoding, extent range intersection, and
 //! round-trip read logic with mock fixtures.
 //!
 //! These tests exercise the **host-testable** parts of the reader path:
@@ -146,7 +146,7 @@ fn object_record_compression_flags_zero() -> Result<()> {
 	let payload = b"uncompressed";
 	let (block, _oid) = make_object_record(payload);
 
-	// -- Check — reader rejects non-zero compression
+	// -- Check: reader rejects non-zero compression
 	assert_eq!(block[COMPRESSION_OFFSET], 0);
 	assert_eq!(block[COMPRESSION_OFFSET + 1], 0);
 
@@ -179,13 +179,13 @@ fn object_record_checksum_mismatch_detected() -> Result<()> {
 	// Corrupt one payload byte.
 	block[HEADER_SIZE] ^= 0xFF;
 
-	// -- Exec — recompute hash of corrupted payload
+	// -- Exec: recompute hash of corrupted payload
 	let stored_len_bytes: [u8; 4] = block[STORED_LEN_OFFSET..STORED_LEN_OFFSET + 4].try_into()?;
 	let stored_len = u32::from_le_bytes(stored_len_bytes) as usize;
 	let corrupted_payload = &block[HEADER_SIZE..HEADER_SIZE + stored_len];
 	let recomputed = blake3::hash(corrupted_payload);
 
-	// -- Check — hash no longer matches
+	// -- Check: hash no longer matches
 	assert_ne!(recomputed.as_bytes(), oid.as_bytes());
 
 	Ok(())
@@ -213,49 +213,49 @@ fn range_no_overlap_after() -> Result<()> {
 
 #[test]
 fn range_overlap_partial_left() -> Result<()> {
-	// extent [100, 200), request [50, 100) — overlaps [100, 150)
+	// extent [100, 200), request [50, 100): overlaps [100, 150)
 	assert!(range_intersects(100, 100, 50, 100));
 	Ok(())
 }
 
 #[test]
 fn range_overlap_partial_right() -> Result<()> {
-	// extent [100, 200), request [150, 100) — overlaps [150, 200)
+	// extent [100, 200), request [150, 100): overlaps [150, 200)
 	assert!(range_intersects(100, 100, 150, 100));
 	Ok(())
 }
 
 #[test]
 fn range_overlap_contained() -> Result<()> {
-	// extent [100, 200), request [120, 30) — fully inside
+	// extent [100, 200), request [120, 30): fully inside
 	assert!(range_intersects(100, 100, 120, 30));
 	Ok(())
 }
 
 #[test]
 fn range_overlap_containing() -> Result<()> {
-	// extent [100, 200), request [0, 500) — request contains extent
+	// extent [100, 200), request [0, 500): request contains extent
 	assert!(range_intersects(100, 100, 0, 500));
 	Ok(())
 }
 
 #[test]
 fn range_exact_match() -> Result<()> {
-	// extent [100, 200), request [100, 100) — exact match
+	// extent [100, 200), request [100, 100): exact match
 	assert!(range_intersects(100, 100, 100, 100));
 	Ok(())
 }
 
 #[test]
 fn range_adjacent_no_overlap() -> Result<()> {
-	// extent [0, 100), request [100, 100) — touching but not overlapping
+	// extent [0, 100), request [100, 100): touching but not overlapping
 	assert!(!range_intersects(0, 100, 100, 100));
 	Ok(())
 }
 
 #[test]
 fn range_zero_length_extent() -> Result<()> {
-	// extent [100, 100) (zero length) — degenerate case.
+	// extent [100, 100) (zero length): degenerate case.
 	// The reader's `range_intersects` treats a zero-length extent at
 	// offset 100 as the point [100, 100).  With saturating_add the
 	// base_end == base, so `req_start >= base_end` governs.
@@ -270,7 +270,7 @@ fn range_zero_length_extent() -> Result<()> {
 
 #[test]
 fn range_zero_length_request() -> Result<()> {
-	// request [150, 150) (zero length) — degenerate case.
+	// request [150, 150) (zero length): degenerate case.
 	// req_end == req_start, so `req_end <= base` is false (150 > 100)
 	// and `req_start >= base_end` is false (150 < 200), yielding true.
 	// Again a degenerate edge: `read_range` early-returns on empty buffers
@@ -291,7 +291,7 @@ fn range_saturating_add_no_panic() -> Result<()> {
 
 #[test]
 fn range_single_byte_overlap() -> Result<()> {
-	// extent [100, 200), request [199, 1) — single byte at boundary
+	// extent [100, 200), request [199, 1): single byte at boundary
 	assert!(range_intersects(100, 100, 199, 1));
 	Ok(())
 }
@@ -401,7 +401,7 @@ fn dir_node_encode_decode_preserves_entries() -> Result<()> {
 	let encoded = dir.encode_canonical()?;
 	let decoded = DirNode::decode_canonical(&encoded)?;
 
-	// -- Check — entries sorted by name (BTreeMap-style)
+	// -- Check: entries sorted by name (BTreeMap-style)
 	assert_eq!(decoded.entries.len(), 2);
 	assert_eq!(decoded.entries[0].name.as_str(), "alpha");
 	assert_eq!(decoded.entries[1].name.as_str(), "zebra");
@@ -475,7 +475,7 @@ fn extent_node_multi_extent_sorted() -> Result<()> {
 	let encoded = node.encode_canonical()?;
 	let decoded = ExtentNode::decode_canonical(&encoded)?;
 
-	// -- Check — sorted by logical_offset
+	// -- Check: sorted by logical_offset
 	assert_eq!(decoded.extents.len(), 3);
 	assert_eq!(decoded.extents[0].logical_offset, 0);
 	assert_eq!(decoded.extents[1].logical_offset, 4096);
@@ -516,7 +516,7 @@ fn extent_node_find_extent_miss() -> Result<()> {
 		chunk_offset: 0,
 	})?;
 
-	// -- Exec & Check — offset 200 is outside [0, 100)
+	// -- Exec & Check: offset 200 is outside [0, 100)
 	assert!(node.find_extent(200).is_none());
 
 	Ok(())
@@ -630,7 +630,7 @@ fn simulated_range_partial_middle() -> Result<()> {
 
 	let chunks: Vec<(&ObjectId, &[u8])> = vec![(&chunk_id, data.as_slice())];
 
-	// -- Exec — read bytes [4..12)
+	// -- Exec: read bytes [4..12)
 	let mut buf = vec![0u8; 8];
 	let n = simulated_read_range(&extents, &chunks, 16, 4, &mut buf);
 
@@ -668,7 +668,7 @@ fn simulated_range_across_two_extents() -> Result<()> {
 
 	let chunks: Vec<(&ObjectId, &[u8])> = vec![(&id_a, data_a.as_slice()), (&id_b, data_b.as_slice())];
 
-	// -- Exec — read bytes [2..6), spanning both extents
+	// -- Exec: read bytes [2..6), spanning both extents
 	let mut buf = vec![0u8; 4];
 	let n = simulated_read_range(&extents, &chunks, 8, 2, &mut buf);
 
@@ -695,7 +695,7 @@ fn simulated_range_offset_past_eof() -> Result<()> {
 
 	let chunks: Vec<(&ObjectId, &[u8])> = vec![(&chunk_id, data.as_slice())];
 
-	// -- Exec — offset beyond file size
+	// -- Exec: offset beyond file size
 	let mut buf = vec![0u8; 10];
 	let n = simulated_read_range(&extents, &chunks, 5, 100, &mut buf);
 
@@ -733,7 +733,7 @@ fn simulated_range_empty_buffer() -> Result<()> {
 
 #[test]
 fn simulated_range_read_clamped_to_file_size() -> Result<()> {
-	// -- Setup & Fixtures — request extends past file_size
+	// -- Setup & Fixtures: request extends past file_size
 	let data = b"ABCDEFGH"; // 8 bytes
 	let chunk_id = ObjectId::from_content(data);
 
@@ -760,7 +760,7 @@ fn simulated_range_read_clamped_to_file_size() -> Result<()> {
 
 #[test]
 fn simulated_range_with_chunk_offset() -> Result<()> {
-	// -- Setup & Fixtures — extent starts 2 bytes into the chunk
+	// -- Setup & Fixtures: extent starts 2 bytes into the chunk
 	let data = b"XXhello"; // chunk_offset=2 means "hello" starts at byte 2
 	let chunk_id = ObjectId::from_content(data);
 
@@ -787,7 +787,7 @@ fn simulated_range_with_chunk_offset() -> Result<()> {
 
 #[test]
 fn simulated_range_gap_between_extents() -> Result<()> {
-	// -- Setup & Fixtures — extent at [0,4) and [8,12), gap at [4,8)
+	// -- Setup & Fixtures: extent at [0,4) and [8,12), gap at [4,8)
 	let data_a = b"AAAA";
 	let data_b = b"BBBB";
 	let id_a = ObjectId::from_content(data_a);
@@ -812,11 +812,11 @@ fn simulated_range_gap_between_extents() -> Result<()> {
 
 	let chunks: Vec<(&ObjectId, &[u8])> = vec![(&id_a, data_a.as_slice()), (&id_b, data_b.as_slice())];
 
-	// -- Exec — read [2..10), spans gap
+	// -- Exec: read [2..10), spans gap
 	let mut buf = vec![0u8; 8];
 	let n = simulated_read_range(&extents, &chunks, 12, 2, &mut buf);
 
-	// -- Check — only 4 bytes (2 from extent A + 2 from extent B)
+	// -- Check: only 4 bytes (2 from extent A + 2 from extent B)
 	assert_eq!(n, 4);
 	assert_eq!(&buf[..2], b"AA");
 	assert_eq!(&buf[2..4], b"BB");
@@ -854,7 +854,7 @@ fn object_record_payload_matches_fixture() -> Result<()> {
 	let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
 	let (block, oid) = make_object_record(&payload);
 
-	// -- Exec — extract payload from block
+	// -- Exec: extract payload from block
 	let stored_len_bytes: [u8; 4] = block[STORED_LEN_OFFSET..STORED_LEN_OFFSET + 4].try_into()?;
 	let stored_len = u32::from_le_bytes(stored_len_bytes) as usize;
 	let extracted = &block[HEADER_SIZE..HEADER_SIZE + stored_len];

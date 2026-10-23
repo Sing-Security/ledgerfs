@@ -4,14 +4,14 @@
 //! cargo run --example custom_device
 //! ```
 //!
-//! An embedder with storage of its own — flash pages, a network volume, an
-//! NVMe queue, battery-backed RAM — does not wait for this crate to support
+//! An embedder with storage of its own (flash pages, a network volume, an
+//! NVMe queue, battery-backed RAM) does not wait for this crate to support
 //! it. Four methods implemented, the object handed to [`Store`], and
 //! everything above the seam (the commit protocol, CoW, content addressing,
 //! the on-disk format) works unchanged, because nothing above the seam ever
 //! learns what the medium is.
 //!
-//! The device here is a fixed byte buffer with a barrier counter — the
+//! The device here is a fixed byte buffer with a barrier counter: the
 //! smallest honest stand-in for a medium whose durability point is explicit.
 //! `MemBlockDevice` is the same shape without the counter; the counter is
 //! what makes this example say something.
@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use ledgerfs_host::{BLOCK_SIZE, BlockDevice, Error, Result, Store};
 
 /// A volume over storage the embedder owns. The real thing would be a flash
-/// driver, an RPC client to a remote volume, a mapped partition — anything
+/// driver, an RPC client to a remote volume, a mapped partition: anything
 /// that can move blocks and name a durability point.
 #[derive(Clone)]
 pub struct OwnStorage {
@@ -68,7 +68,7 @@ impl OwnStorage {
 		self.barriers.load(Ordering::Relaxed)
 	}
 
-	/// A copy of the medium's bytes — a valid volume file, reopenable with
+	/// A copy of the medium's bytes: a valid volume file, reopenable with
 	/// [`from_bytes`](Self::from_bytes). A real medium would not need this
 	/// (its bytes are already somewhere durable); a buffer does, so the demo
 	/// can prove the volume survives the handle.
@@ -102,7 +102,7 @@ impl BlockDevice for OwnStorage {
 		// between its writes and its success; a flash driver flushes here, a
 		// network volume waits for the flush RPC's reply. A medium that lies
 		// in this method is the one way to turn the commit protocol into
-		// theatre — see EMBEDDING.md §2.
+		// theatre; see EMBEDDING.md §3.
 		self.barriers.fetch_add(1, Ordering::Relaxed);
 		Ok(())
 	}
@@ -116,7 +116,7 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-	// -- 1. The medium, the seam, the store. Two lines do the embedding —
+	// -- 1. The medium, the seam, the store. Two lines do the embedding:
 	// the same two lines `MemBlockDevice` would cost, which is the point.
 	// The mirror keeps the embedder's own handle on its storage.
 	let medium = OwnStorage::new(1024);
@@ -137,7 +137,7 @@ fn run() -> Result<()> {
 	println!("read back {} bytes from /records/first.jsonl", log.len());
 
 	// -- 3. The numbers an embedder plans around: how much medium a workload
-	// costs (commits are not free — see KNOWN_ISSUES.md entry 3), and how
+	// costs (commits are not free; see KNOWN_ISSUES.md entry 3), and how
 	// many durability points it crossed.
 	if let Some(free) = store.free_bytes() {
 		println!("free space: {} bytes", free);

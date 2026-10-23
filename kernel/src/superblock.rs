@@ -21,10 +21,10 @@ pub const RLR_FLAG_NON_MONOTONIC: u32 = 0x01;
 ///
 /// Deliberately an **incompat** flag rather than `compat`/`ro_compat`: a
 /// reader that doesn't understand this bit cannot safely do *anything* with
-/// the volume — not even read-only. Every block it fetched would decode as
+/// the volume, not even read-only. Every block it fetched would decode as
 /// garbage, and the object layer's `blake3(payload) == object_id` check
 /// would reject it as corruption rather than as "encrypted, and I lack the
-/// key" — a confusing and actively misleading failure. Refusing the mount
+/// key", a confusing and actively misleading failure. Refusing the mount
 /// outright on an unrecognized incompat bit (standard ext4/btrfs-style
 /// feature-flag semantics) is the honest behavior.
 ///
@@ -169,7 +169,7 @@ const EXT_RLR_BLOCK_COUNT_OFFSET: usize = 3472;
 /// Fixed byte offset of the [`LedgerFsLimits`] block within the 4 KiB
 /// superblock block.
 ///
-/// **Not** immediately after `ext_rlr_block_count` (3476) — that byte range
+/// **Not** immediately after `ext_rlr_block_count` (3476): that byte range
 /// is claimed by a human-readable label string (`LABEL_OFFSET = 3476`, a
 /// 4-byte length prefix + up to 256 bytes of text, ending at 3736) that is
 /// written out-of-band and does not go through `Superblock::encode` at all.
@@ -179,7 +179,7 @@ const EXT_RLR_BLOCK_COUNT_OFFSET: usize = 3472;
 /// the superblock at build time are read back verbatim.
 ///
 /// Note that the label is **not** preserved by [`Superblock::encode`], which
-/// zeroes the block and re-emits only the fields on this struct — so a commit
+/// zeroes the block and re-emits only the fields on this struct, so a commit
 /// erases it. Recorded in `KNOWN_ISSUES.md` §9.
 ///
 /// `pub` so callers that read superblock bytes directly instead of going
@@ -188,11 +188,11 @@ const EXT_RLR_BLOCK_COUNT_OFFSET: usize = 3472;
 pub const LIMITS_OFFSET: usize = 3736;
 
 /// Fixed byte offset of `active_root_hint` within the 4 KiB superblock
-/// block — immediately after [`LIMITS_OFFSET`]'s 28-byte block.
+/// block, immediately after [`LIMITS_OFFSET`]'s 28-byte block.
 ///
 /// `0` means "absent": the root object's physical block is unknown and a
 /// reader must fall back to a full linear scan to find it. Every existing
-/// volume decodes as `0` here, so no migration is needed — the only cost
+/// volume decodes as `0` here, so no migration is needed; the only cost
 /// is that the *first* root lookup after mounting such a volume is a scan
 /// rather than a single hinted block read.
 pub const ACTIVE_ROOT_HINT_OFFSET: usize = 3764;
@@ -203,19 +203,19 @@ pub const ACTIVE_ROOT_HINT_OFFSET: usize = 3764;
 /// runtime-configurable from an on-disk value: each one only gates a simple
 /// `if actual > limit` comparison or a scan-loop upper bound, never the
 /// compile-time capacity of a fixed-size stack buffer. (A handful of
-/// closely-related limits — a boot reader's max extent count, max
-/// directory-entry count, max name length, and max path depth — are
+/// closely-related limits (a boot reader's max extent count, max
+/// directory-entry count, max name length, and max path depth) are
 /// deliberately **not** here: they size `heapless::Vec`/`heapless::String`
 /// buffers via const generics, which is exactly what lets boot code guarantee
 /// zero allocation and fail closed on a
 /// too-large object instead of risking an unbounded read. Trusting an
-/// on-disk value for those would mean either allocating at boot — the thing
-/// this design deliberately avoids — or silently truncating without the
+/// on-disk value for those would mean either allocating at boot (the thing
+/// this design deliberately avoids) or silently truncating without the
 /// caller knowing the buffer was undersized for whatever the disk claims its
 /// own limit to be. Those four instead have their own build-time mechanism,
 /// wired into the boot reader's build configuration.)
 ///
-/// A value of `0` means "absent" — the reader falls back to its compiled-in
+/// A value of `0` means "absent": the reader falls back to its compiled-in
 /// default, exactly like `ext_rlr_lba`/`ext_rlr_block_count` above. This
 /// keeps existing volumes (which have this whole region zeroed) decoding
 /// with identical behavior to before this field existed.
@@ -231,7 +231,7 @@ pub struct LedgerFsLimits {
 	/// `reader.rs`'s hardcoded `MAX_BLOCKS`, default 16384).
 	pub max_scan_blocks: u64,
 	/// Boot reader: max size of one file read at boot (was a boot reader's
-	/// hardcoded `MAX_BOOT_FILE_SIZE`, default 1 MiB) — this is the cap that
+	/// hardcoded `MAX_BOOT_FILE_SIZE`, default 1 MiB); this is the cap that
 	/// actually governs "how big can a TCB binary be".
 	pub max_boot_file_bytes: u32,
 	/// Boot reader: max blocks scanned looking for an object at boot (was a
@@ -278,26 +278,26 @@ impl LedgerFsLimits {
 /// Superblock structure (§10.1)
 ///
 /// On-disk layout (4096 bytes = one block):
-/// - Bytes    0–79:   Fixed header (magic, version, block_size, total_blocks,
+/// - Bytes    0 to 79:   Fixed header (magic, version, block_size, total_blocks,
 ///   active_root_id, active_commit_seq, active_checksum,
 ///   rlr_head, rlr_tail)
-/// - Bytes   80–3439: RLR entries (56 × 60 bytes = 3 360 bytes)
-/// - Bytes 3440–3463: Feature flags (features_compat, features_ro_compat,
-///   features_incompat — 3 × 8 bytes = 24 bytes)
-/// - Bytes 3464–3471: ext_rlr_lba       (u64, fixed offset)
-/// - Bytes 3472–3475: ext_rlr_block_count (u32, fixed offset)
-/// - Bytes 3476–3735: Human-readable label (4-byte length prefix + up to 256
+/// - Bytes   80 to 3439: RLR entries (56 × 60 bytes = 3 360 bytes)
+/// - Bytes 3440 to 3463: Feature flags (features_compat, features_ro_compat,
+///   features_incompat; 3 × 8 bytes = 24 bytes)
+/// - Bytes 3464 to 3471: ext_rlr_lba       (u64, fixed offset)
+/// - Bytes 3472 to 3475: ext_rlr_block_count (u32, fixed offset)
+/// - Bytes 3476 to 3735: Human-readable label (4-byte length prefix + up to 256
 ///   bytes of text), written out-of-band by whichever tool formats the volume
 ///   and **not** encoded by `Superblock::encode` itself. This struct has no
 ///   field for it, so a re-encode clears it: treat 3476..3736 as claimed on
 ///   read. See `KNOWN_ISSUES.md` §9 for the consequence on write.
-/// - Bytes 3736–3763: limits (`LedgerFsLimits`, `LIMITS_OFFSET`, 28 bytes)
-/// - Bytes 3764–3771: active_root_hint (u64, `ACTIVE_ROOT_HINT_OFFSET`)
-/// - Bytes 3772–4027: keyslots (2 × 128 bytes, `keyslot::KEYSLOTS_OFFSET`)
-/// - Bytes 4028–4087: Reserved slack (zero on write, ignored on read)
-/// - Bytes 4088–4095: superblock_checksum (u64, last 8 bytes of block)
+/// - Bytes 3736 to 3763: limits (`LedgerFsLimits`, `LIMITS_OFFSET`, 28 bytes)
+/// - Bytes 3764 to 3771: active_root_hint (u64, `ACTIVE_ROOT_HINT_OFFSET`)
+/// - Bytes 3772 to 4027: keyslots (2 × 128 bytes, `keyslot::KEYSLOTS_OFFSET`)
+/// - Bytes 4028 to 4087: Reserved slack (zero on write, ignored on read)
+/// - Bytes 4088 to 4095: superblock_checksum (u64, last 8 bytes of block)
 ///
-/// Zero-value ext_rlr_lba / ext_rlr_block_count means "absent" —
+/// Zero-value ext_rlr_lba / ext_rlr_block_count means "absent";
 /// the embedded 56-entry RLR is authoritative.  Existing volumes that
 /// have those bytes as zero will decode correctly with no migration needed.
 #[derive(Debug, Clone)]
@@ -341,15 +341,15 @@ pub struct Superblock {
 	/// `FEATURE_INCOMPAT_DATA_ENCRYPTED` (§43.2).
 	pub features_incompat: u64,
 
-	// Extended RLR fields — fixed at bytes 3464 and 3472 of the block.
-	// Value 0 means "absent" — embedded 56-entry RLR is authoritative.
+	// Extended RLR fields, fixed at bytes 3464 and 3472 of the block.
+	// Value 0 means "absent"; embedded 56-entry RLR is authoritative.
 	/// LBA of the Extended RLR region (0 = absent).
 	pub ext_rlr_lba: u64,
 
 	/// Size of the Extended RLR in 4 KiB blocks (0 = absent).
 	pub ext_rlr_block_count: u32,
 
-	/// Configurable boot/kernel reader operating limits — fixed at byte
+	/// Configurable boot/kernel reader operating limits, fixed at byte
 	/// offset [`LIMITS_OFFSET`] of the block. All-zero (the default for a
 	/// freshly created superblock) means "absent, use compiled-in defaults".
 	pub limits: LedgerFsLimits,
@@ -360,18 +360,18 @@ pub struct Superblock {
 	/// the hinted block's stored `ObjectId` before trusting it and falls
 	/// back to a linear scan on any mismatch. Without it, *every* mount of
 	/// a populated volume pays a full `max_scan_blocks` scan just to fetch
-	/// its own root inode — with a 32 768-block scan limit over ATA PIO
+	/// its own root inode; with a 32 768-block scan limit over ATA PIO
 	/// that is tens of seconds, which is what made opens on the data volume
 	/// appear to hang outright. `0` = absent (see [`ACTIVE_ROOT_HINT_OFFSET`]).
 	pub active_root_hint: u64,
 
-	/// Volume keyslots — see [`crate::keyslot`].
+	/// Volume keyslots. See [`crate::keyslot`].
 	///
 	/// Carried on the struct rather than left as raw slack because
 	/// [`Superblock::encode`] begins with `buf.fill(0)`: anything not
 	/// re-emitted by `encode` is erased on every superblock write. Since a
 	/// commit rewrites the superblock, keyslots left out of this struct would
-	/// be wiped by the first write after provisioning — turning an encrypted
+	/// be wiped by the first write after provisioning, turning an encrypted
 	/// volume permanently unopenable while reporting success.
 	pub keyslots: [crate::keyslot::KeySlot; crate::keyslot::SLOT_COUNT],
 
@@ -425,7 +425,7 @@ impl Superblock {
 	///
 	/// A volume whose `features_incompat` contains any bit *outside* this
 	/// mask was written by a newer/different build and must not be mounted
-	/// — see [`check_incompat_supported`](Self::check_incompat_supported).
+	/// See [`check_incompat_supported`](Self::check_incompat_supported).
 	/// `FEATURE_INCOMPAT_DATA_ENCRYPTED` is only listed here when the
 	/// `data-encryption` feature is compiled in: a build without the cipher
 	/// genuinely cannot read such a volume, and must say so rather than
@@ -448,7 +448,7 @@ impl Superblock {
 	}
 
 	/// Mark this volume as storing encrypted blocks. Intended for
-	/// genesis-format/`mkfs` time only — see
+	/// genesis-format/`mkfs` time only; see
 	/// [`FEATURE_INCOMPAT_DATA_ENCRYPTED`]'s doc comment on why there is no
 	/// in-place conversion path for an already-populated volume. The caller
 	/// is responsible for recomputing checksums (`compute_checksums`)
@@ -558,12 +558,12 @@ impl Superblock {
 
 		// Read extended RLR fields at their fixed offsets within the slack region.
 		// EXT_RLR_LBA_OFFSET = 80 (header) + 3360 (RLR) + 24 (feature flags) = 3464.
-		// Zero values mean "absent" — backward-compatible with existing volumes.
+		// Zero values mean "absent"; this is backward-compatible with existing volumes.
 		let ext_rlr_lba = read_u64(&buf[EXT_RLR_LBA_OFFSET..])?;
 		let ext_rlr_block_count = read_u32(&buf[EXT_RLR_BLOCK_COUNT_OFFSET..])?;
 
 		// Read configurable operating limits at their fixed offset.
-		// All-zero means "absent" — same backward-compatible convention as
+		// All-zero means "absent", following the same backward-compatible convention as
 		// ext_rlr_lba/ext_rlr_block_count above.
 		let limits = LedgerFsLimits::decode(&buf[LIMITS_OFFSET..LIMITS_OFFSET + LedgerFsLimits::SIZE])?;
 
@@ -616,7 +616,7 @@ impl Superblock {
 		// Enforced here rather than at each mount site because it was enforced
 		// at *none* of them: `check_incompat_supported` existed, was documented
 		// as the thing that stops a build without `data-encryption` reading an
-		// encrypted volume as plaintext, and had tests — which were its only
+		// encrypted volume as plaintext, and had tests, which were its only
 		// callers. Both mount paths (the kernel reader's boot scan and the host
 		// `Volume`) went straight from decode to use.
 		// A check every caller must remember is a check that gets forgotten;
@@ -733,7 +733,7 @@ impl Superblock {
 		}
 	}
 
-	/// Boot reader: max size of one file read at boot. Default 1 MiB — the
+	/// Boot reader: max size of one file read at boot. Default 1 MiB: the
 	/// cap that actually governs "how big can a TCB binary be".
 	pub fn max_boot_file_bytes(&self) -> usize {
 		if self.limits.max_boot_file_bytes == 0 {
@@ -997,7 +997,7 @@ mod tests {
 		let mut buf = vec![0u8; BLOCK_SIZE as usize];
 		let sb = Superblock::new(1000);
 
-		// -- Check: a freshly created volume is NOT encrypted — encryption
+		// -- Check: a freshly created volume is NOT encrypted; encryption
 		// is strictly opt-in at format time, never a silent default.
 		assert!(!sb.is_data_encrypted(), "a new superblock must default to unencrypted");
 
@@ -1012,7 +1012,7 @@ mod tests {
 		#[cfg(feature = "data-encryption")]
 		{
 			let decoded = Superblock::decode(&buf)?;
-			// The flag survives encode/decode — it rides in the
+			// The flag survives encode/decode; it rides in the
 			// already-persisted `features_incompat` field, no format change.
 			assert!(
 				decoded.is_data_encrypted(),
@@ -1058,7 +1058,7 @@ mod tests {
 	/// The safety-critical direction of the feature gate: a build compiled
 	/// WITHOUT `data-encryption` must refuse an encrypted volume outright.
 	/// If it instead mounted it, every block would decrypt to garbage and
-	/// surface as "corruption" — actively misleading, and (worse) a write
+	/// surface as "corruption"; that is actively misleading, and (worse) a write
 	/// to such a volume would destroy real ciphertext.
 	#[cfg(not(feature = "data-encryption"))]
 	#[test]
@@ -1091,7 +1091,7 @@ mod tests {
 			sb.check_incompat_supported().is_ok(),
 			"a build with `data-encryption` must accept an encrypted volume"
 		);
-		// A plain (unencrypted) volume must still be accepted either way —
+		// A plain (unencrypted) volume must still be accepted either way;
 		// enabling the feature must not break reading existing volumes.
 		let plain = Superblock::new(1000);
 		assert!(
@@ -1126,7 +1126,7 @@ mod tests {
 	#[test]
 	fn test_superblock_ext_rlr_fields_zero_default() -> TestResult<()> {
 		// -- Setup & Fixtures: decode a superblock encoded without ext_rlr fields
-		// (simulates an existing volume — those bytes are zero from buf.fill(0)).
+		// (simulates an existing volume, whose bytes are zero from buf.fill(0)).
 		let mut buf = vec![0u8; BLOCK_SIZE as usize];
 		let mut sb = Superblock::new(1000000);
 		sb.active_root_id = [1u8; BLAKE3_HASH_SIZE];
@@ -1137,7 +1137,7 @@ mod tests {
 		sb.encode(&mut buf)?;
 		let decoded = Superblock::decode(&buf)?;
 
-		// -- Check: zero means "absent" — backward compatible.
+		// -- Check: zero means "absent"; backward compatible.
 		assert_eq!(decoded.ext_rlr_lba, 0);
 		assert_eq!(decoded.ext_rlr_block_count, 0);
 
@@ -1178,7 +1178,7 @@ mod tests {
 	#[test]
 	fn test_superblock_limits_zero_default() -> TestResult<()> {
 		// -- Setup & Fixtures: a freshly created superblock (or an existing
-		// volume built before `limits` existed — those bytes are zero from
+		// volume built before `limits` existed, with those bytes zero from
 		// buf.fill(0)) must resolve to the exact values the hardcoded
 		// consts used before this field existed.
 		let mut buf = vec![0u8; BLOCK_SIZE as usize];
@@ -1191,7 +1191,7 @@ mod tests {
 		sb.encode(&mut buf)?;
 		let decoded = Superblock::decode(&buf)?;
 
-		// -- Check: zero means "absent" — resolves to the pre-existing hardcoded defaults.
+		// -- Check: zero means "absent", resolving to the pre-existing hardcoded defaults.
 		assert_eq!(decoded.limits, LedgerFsLimits::default());
 		assert_eq!(decoded.max_object_bytes(), 256 * 1024);
 		assert_eq!(decoded.max_range_read_bytes(), 8 * 1024 * 1024);

@@ -1,9 +1,9 @@
 # Two published crates and two that are not:
 #
-#   kernel/      ledgerfs            — the on-disk format and CoW ops, no_std
-#   host/        ledgerfs-host       — the std volume layer over a BlockDevice
-#   pending/     ledgerfs-pending    — Tier B subsystems, publish = false
-#   benchmarks/  ledgerfs-benchmarks — the comparison harness, publish = false
+#   kernel/      ledgerfs:            the on-disk format and CoW ops, no_std
+#   host/        ledgerfs-host:       the std volume layer over a BlockDevice
+#   pending/     ledgerfs-pending:    Tier B subsystems, publish = false
+#   benchmarks/  ledgerfs-benchmarks: the comparison harness, publish = false
 #
 # Publish order matters for the two published crates: `ledgerfs` (kernel) goes
 # first. `ledgerfs-host` gates it with a version requirement, so its

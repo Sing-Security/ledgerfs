@@ -25,7 +25,7 @@ fn test_format_produces_a_mountable_volume_with_a_root() -> Result<()> {
 	assert_eq!(store.total_blocks(), BLOCKS);
 	assert!(
 		store.fs().active_root().is_some(),
-		"a formatted volume must have an active root — format's whole job is the genesis commit"
+		"a formatted volume must have an active root; format's whole job is the genesis commit"
 	);
 	assert_eq!(store.stat("/")?.kind, InodeKind::Directory);
 	assert!(store.read_dir("/")?.is_empty(), "the genesis root is empty");
@@ -81,8 +81,8 @@ fn test_format_refuses_a_volume_too_small_to_hold_object_data() -> Result<()> {
 fn test_format_refuses_volumes_the_genesis_commit_cannot_fit() -> Result<()> {
 	// `format`'s own guard admits anything over 8 blocks, but the genesis
 	// commit needs more than that: the empty root's objects plus the allocator
-	// snapshot do not fit in 9–13 blocks. The refusal is a clean `Error::Format`
-	// naming its reason — never a panic and never a half-formatted volume —
+	// snapshot do not fit in 9 to 13 blocks. The refusal is a clean `Error::Format`
+	// naming its reason, never a panic and never a half-formatted volume,
 	// which is the property that matters. The guard being laxer than the commit
 	// is the discrepancy; this test pins the real boundary.
 	for blocks in 9u64..MIN_BLOCKS {
@@ -101,7 +101,7 @@ fn test_format_refuses_volumes_the_genesis_commit_cannot_fit() -> Result<()> {
 	let mut store = Store::format(Box::new(MemBlockDevice::new(MIN_BLOCKS)), MIN_BLOCKS)?;
 
 	// -- Check: a working volume, not merely a non-error. It is a real
-	// filesystem with a real root — and essentially nothing to spare, since
+	// filesystem with a real root, and essentially nothing to spare, since
 	// the genesis commit's own objects consumed almost the whole thing.
 	assert_eq!(store.total_blocks(), MIN_BLOCKS);
 	assert_eq!(store.stat("/")?.kind, InodeKind::Directory);
@@ -113,7 +113,7 @@ fn test_format_refuses_volumes_the_genesis_commit_cannot_fit() -> Result<()> {
 	);
 
 	// -- Exec & Check: so the next write is refused for want of space, as a
-	// named error — and refusing did not leave the volume inconsistent.
+	// named error, and refusing did not leave the volume inconsistent.
 	let e = expect_err("mkdir on a full volume", store.mkdir("/d", 0o755));
 	assert!(matches!(e, Error::Format(_)), "got {e:?}");
 	assert!(
@@ -194,7 +194,7 @@ fn test_reopen_sees_the_tree_that_was_written() -> Result<()> {
 	store.write_new_file("/notes/a.md", b"hello", 0o644)?;
 	store.write_new_file("/top.txt", b"top", 0o600)?;
 
-	// -- Exec: the bytes, mounted as a different store — the restart case
+	// -- Exec: the bytes, mounted as a different store: the restart case
 	let back = open_bytes(bytes(&watch))?;
 
 	// -- Check
@@ -235,7 +235,7 @@ fn test_reopen_does_not_see_a_commit_that_never_happened() -> Result<()> {
 	store.mkdir("/added", 0o755)?;
 	let abandoned = open_bytes(before)?;
 
-	// -- Check: the older bytes are a whole, self-consistent volume — which is
+	// -- Check: the older bytes are a whole, self-consistent volume, which is
 	// the entire point of copy-on-write. Not a torn state, not a repair, just
 	// the tree as it was.
 	assert_eq!(names(&abandoned.read_dir("/")?), vec!["kept".to_string()]);
@@ -254,7 +254,7 @@ fn test_read_only_when_the_allocator_snapshot_is_gone() -> Result<()> {
 	store.mkdir("/more", 0o755)?;
 
 	// -- Exec: destroy the allocator snapshot at block 5. A volume that cannot
-	// say which blocks are free must not be writable — a wrong answer there
+	// say which blocks are free must not be writable; a wrong answer there
 	// places objects on top of live data.
 	let mut raw = bytes(&watch);
 	raw[block_offset(5)..block_offset(6)].fill(0);
@@ -268,7 +268,7 @@ fn test_read_only_when_the_allocator_snapshot_is_gone() -> Result<()> {
 	assert_eq!(back.reserved_bytes(), None);
 	assert_eq!(back.total_free_bytes(), None);
 
-	// The content is still perfectly readable — that is why this is a
+	// The content is still perfectly readable, which is why this is a
 	// degradation rather than a failure.
 	assert_eq!(back.read_file("/data.bin")?, b"readable");
 	assert_eq!(back.stat("/more")?.kind, InodeKind::Directory);
@@ -307,7 +307,7 @@ fn test_a_read_only_volume_can_still_be_opened_read_only_again() -> Result<()> {
 	let b = open_bytes(raw)?;
 
 	// -- Check: read-only mounts coexist, because a reader holds no lock and
-	// mutates nothing — this is what lets a CLI read a volume a server holds.
+	// mutates nothing; this is what lets a CLI read a volume a server holds.
 	assert_eq!(a.read_file("/f")?, b.read_file("/f")?);
 	Ok(())
 }
@@ -333,7 +333,7 @@ fn test_free_space_falls_on_every_commit_and_never_rises() -> Result<()> {
 	let mut store = store(BIG_BLOCKS)?;
 	let mut seen = vec![store.free_bytes().expect("a formatted volume is writable")];
 
-	// -- Exec: the shape a long-running store has — repeated rewrites of one file
+	// -- Exec: the shape a long-running store has: repeated rewrites of one file
 	for i in 0..24 {
 		store.write_file("/state.json", format!("{{\"n\":{i}}}").as_bytes(), 0o644)?;
 		seen.push(store.free_bytes().expect("free bytes"));
@@ -381,7 +381,7 @@ fn test_a_freshly_formatted_volume_reports_its_whole_object_region_free() -> Res
 
 	// -- Check: the reserved header (6 blocks), the trailer (2) and the
 	// allocator's own reserve are not the app's to spend, so the app-visible
-	// number is strictly less than the volume — and strictly more than nothing.
+	// number is strictly less than the volume, and strictly more than nothing.
 	let free = store.free_bytes().expect("free bytes");
 	assert!(free > 0, "a formatted volume has space");
 	assert!(
@@ -415,7 +415,7 @@ fn test_a_plain_volume_has_no_app_marker() -> Result<()> {
 	let store = store(BLOCKS)?;
 
 	// -- Check: `mkfs` alone is not an app store, and saying so is `Ok(None)`
-	// rather than an error — the difference between "not mine" and "unreadable".
+	// rather than an error: the difference between "not mine" and "unreadable".
 	assert_eq!(store.app()?, None);
 	assert_eq!(store.contract_version()?, None);
 	assert!(is_no_such_file(
@@ -497,7 +497,7 @@ fn test_contract_version_is_one_hyphenless_token() -> Result<()> {
 
 #[test]
 fn test_open_refuses_a_device_with_no_superblock_at_all() -> Result<()> {
-	// -- Setup & Fixtures: a blank device — not a LedgerFS volume, and not
+	// -- Setup & Fixtures: a blank device: not a LedgerFS volume, and not
 	// damage either; it has never seen this filesystem.
 	let blank = vec![0u8; 4096 * 64];
 
@@ -538,7 +538,7 @@ fn test_open_refuses_a_device_of_garbage() -> Result<()> {
 #[test]
 fn test_open_accepts_a_volume_smaller_than_the_device_holding_it() -> Result<()> {
 	// -- Setup & Fixtures: a formatted 64-block volume sitting in a 256-block
-	// device — the "a partition inside something bigger" case, in memory.
+	// device: the "a partition inside something bigger" case, in memory.
 	let (_, watch) = watched(64)?;
 	let mut raw = bytes(&watch);
 	raw.resize(256 * 4096, 0);

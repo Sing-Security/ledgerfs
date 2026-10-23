@@ -7,17 +7,17 @@
 //! and it is the thing LedgerFS actually is: a place to put bytes such that
 //! after a power cut they are still there.
 //!
-//! - **`ledgerfs`** — one file per key under `/kv`, written through
+//! - **`ledgerfs`**: one file per key under `/kv`, written through
 //!   [`Store`]. One [`put`](Engine::put) is `write_new_file`: a single
 //!   transaction that creates the file and places its content together, so one
 //!   commit, and a commit is two device barriers. Recorded rather than hidden,
 //!   because it is part of the number.
-//! - **`sqlite-wal`** — SQLite from its own bundled amalgamation, in WAL mode
+//! - **`sqlite-wal`**: SQLite from its own bundled amalgamation, in WAL mode
 //!   with `synchronous=FULL`. One `put` is one implicit transaction, so one WAL
 //!   commit, so one fsync.
-//! - **`redb`** — a pure-Rust embedded KV store, with each write transaction
+//! - **`redb`**: a pure-Rust embedded KV store, with each write transaction
 //!   set to `Durability::Immediate`. One `put` is one fsynced commit.
-//! - **`raw-file`** — the control: `File::create` + `write_all` + `sync_all`,
+//! - **`raw-file`**, the control: `File::create` + `write_all` + `sync_all`,
 //!   plus a directory `sync_all` so the *name* is durable too. This is what
 //!   "just use the filesystem" costs when you mean it.
 //!
@@ -30,12 +30,12 @@
 //! files has no journal to replay and no root to select, so there is no
 //! recovery step to time. A gap is the honest entry; a fabricated one would be
 //! the thing this harness exists to prevent. (A gap is kept rather than filled
-//! by timing `open(2)` — that would measure the kernel, and the row would read
+//! by timing `open(2)`: that would measure the kernel, and the row would read
 //! as a win for the control.)
 //!
 //! Batched *appends* are a different operation ([`Engine::append_batch`]) and
 //! every engine can express it: one append is one object, so writing a batch of
-//! rows costs one durability point per engine — a transaction for SQLite, one
+//! rows costs one durability point per engine: a transaction for SQLite, one
 //! write transaction for redb, one `sync_all` for the raw control, one commit
 //! for LedgerFS.
 //!
@@ -46,13 +46,13 @@
 //! `seal_staged` makes everything since the last seal durable in one step.
 //! Every engine has an honest idiom for it, which is why the row exists:
 //!
-//! - LedgerFS — a staging session (`begin_staging` … `seal_staged`): objects
+//! - LedgerFS: a staging session (`begin_staging` … `seal_staged`): objects
 //!   built in memory, one commit at the seal.
-//! - SQLite — one deferred transaction left open: rows accumulate in the WAL's
+//! - SQLite: one deferred transaction left open: rows accumulate in the WAL's
 //!   dirty pages, `COMMIT` at the seal.
-//! - redb — one `WriteTransaction` held open with `Durability::Immediate`,
+//! - redb: one `WriteTransaction` held open with `Durability::Immediate`,
 //!   committed at the seal.
-//! - raw-file — a held append-mode file: `write_all` per row, one `sync_all`
+//! - raw-file: a held append-mode file: `write_all` per row, one `sync_all`
 //!   at the seal.
 //!
 //! What the row measures is therefore the cost of *one batch* when the
@@ -68,14 +68,14 @@
 //! `wal_checkpoint(FULL)`; redb a `Durability::None` commit with an empty
 //! `Durability::Immediate` transaction as the sync; the raw control writes
 //! without `sync_all` and syncs the held file at the group end. The promises
-//! differ in how much work the seal itself does — LedgerFS flushes its
+//! differ in how much work the seal itself does (LedgerFS flushes its
 //! objects, SQLite leaves them in the WAL, redb leaves them mapped, raw leaves
-//! them in the page cache — so the row is reported with that difference named
+//! them in the page cache), so the row is reported with that difference named
 //! rather than summarised away.
 //!
 //! # Per deployment
 //!
-//! The workloads see only [`Engine`] — no workload names an engine — and each
+//! The workloads see only [`Engine`] (no workload names an engine), and each
 //! third-party engine sits behind a cargo feature of the same name. A
 //! deployment that compares against SQLite builds `--no-default-features
 //! --features sqlite` and its binary contains no redb code at all, and the
@@ -149,7 +149,7 @@ pub trait Engine {
 	/// This is the write shape of an application that accumulates fixed-size
 	/// records and flushes them as they arrive: the batch, not the row, is what
 	/// has to survive a power cut, so the number that matters is per batch.
-	/// Each engine does it in its own idiom, and the idioms are the finding —
+	/// Each engine does it in its own idiom, and the idioms are the finding:
 	/// SQLite wraps the rows in one transaction, redb puts them in one write
 	/// transaction, the raw control gets one fsync by writing once, and on
 	/// LedgerFS one append *is* one commit, so the batch costs what one append
@@ -160,8 +160,8 @@ pub trait Engine {
 	/// durability point, to be made durable by the next
 	/// [`seal_staged`](Engine::seal_staged).
 	///
-	/// The bytes are in the engine's own machinery — dirty pages, an open
-	/// transaction, a held file — but a power cut at this instant is allowed to
+	/// The bytes are in the engine's own machinery (dirty pages, an open
+	/// transaction, a held file), but a power cut at this instant is allowed to
 	/// lose them. That is the tier's whole point: the caller decides how often
 	/// it pays for durability.
 	fn staged_append(&mut self, name: &str, rows: &[&[u8]]) -> Result<()>;
@@ -172,7 +172,7 @@ pub trait Engine {
 	/// Prepare for a run on the deferred tier, before the first staged append.
 	///
 	/// An engine whose durability mode is chosen per connection rather than per
-	/// commit — SQLite — sets it here, because the mode cannot be changed inside
+	/// commit (SQLite) sets it here, because the mode cannot be changed inside
 	/// the transaction a staged append opens. A no-op elsewhere, and never
 	/// timed: it is what the run is configured with, not what it pays.
 	fn begin_deferred(&mut self) -> Result<()> {
@@ -239,7 +239,7 @@ pub fn by_name(name: &str) -> Option<Open> {
 /// first use, which only the scan workload's keys do.
 ///
 /// The file name carries an `f` prefix so a key can never collide with a
-/// directory that a longer key needs — `s7` is a directory, `s7/foo` is a file
+/// directory that a longer key needs: `s7` is a directory, `s7/foo` is a file
 /// inside it, and nothing is both.
 const KV_DIR: &str = "/kv";
 
@@ -248,7 +248,7 @@ const KV_DIR: &str = "/kv";
 /// LedgerFS's `DirNode` stops accepting entries at 400 and its split is not
 /// implemented, so a directory holding a thousand files is not a slow case, it
 /// is a refused one. Every workload therefore shards its keys at 100 on every
-/// engine — what an embedding application has to do too — so a workload is
+/// engine (what an embedding application has to do too), so a workload is
 /// never a test of whether some engine happens to allow a flat directory. See
 /// `KNOWN_ISSUES.md`.
 pub const KEYS_PER_DIR: usize = 100;
@@ -296,7 +296,7 @@ impl LedgerFs {
 	}
 
 	/// Where a key lives on the volume, with only the last component given the
-	/// `f` prefix — the intermediate components are directories, and those
+	/// `f` prefix: the intermediate components are directories, and those
 	/// carry the key's own names.
 	fn key_path(key: &str) -> String {
 		match key.rsplit_once('/') {
@@ -342,7 +342,7 @@ impl Engine for LedgerFs {
 		self.store()?.write_new_file(&path, value, 0o644).map_err(Self::err)
 	}
 
-	/// One staging session, one seal — the caller-visible batch transaction the
+	/// One staging session, one seal: the caller-visible batch transaction the
 	/// volume did not have before it had a staging tier. Each key is still its
 	/// own file; what is shared is the commit.
 	fn put_batch(&mut self, items: &[(String, Vec<u8>)]) -> Result<()> {
@@ -408,7 +408,7 @@ impl Engine for LedgerFs {
 	}
 
 	/// The rows land as consecutive bytes of one object, so a batch is one
-	/// `append` and one commit — there is nothing smaller on this volume to
+	/// `append` and one commit: there is nothing smaller on this volume to
 	/// make it cheaper than.
 	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
 		let mut data = Vec::with_capacity(rows.iter().map(|r| r.len()).sum());
@@ -472,7 +472,7 @@ impl Engine for LedgerFs {
 	///
 	/// This is the whole of LedgerFS recovery: a mount reads the superblock
 	/// copies, picks the intact copy with the highest commit sequence, and
-	/// adopts the root it names — without fetching that root, so a mount is as
+	/// adopts the root it names, without fetching that root, so a mount is as
 	/// cheap as reading four blocks. There is no intent log to replay: the live
 	/// commit path writes none (`FORMAT.md` §15.1). Dropping the `Store`
 	/// releases the image's advisory lock, which is what the writer needed it
@@ -489,7 +489,7 @@ impl Engine for LedgerFs {
 
 	fn space_used(&self) -> Option<u64> {
 		// `free_bytes` is `None` on a mount whose superblock carries no
-		// allocation accounting, which is a real answer — not measured — and is
+		// allocation accounting, which is a real answer (not measured), and is
 		// reported as such rather than as zero.
 		self.store.as_ref().and_then(|s| s.free_bytes())
 	}
@@ -537,7 +537,7 @@ fn configure(conn: &rusqlite::Connection) -> Result<()> {
 	if !mode.eq_ignore_ascii_case("wal") {
 		return Err(Error::engine(
 			"sqlite-wal",
-			format!("asked for WAL, got '{mode}' — the medium cannot do it"),
+			format!("asked for WAL, got '{mode}'; the medium cannot do it"),
 		));
 	}
 	conn.execute_batch("PRAGMA synchronous=FULL;").map_err(sq)?;
@@ -601,8 +601,8 @@ impl Engine for Sqlite {
 	fn append(&mut self, name: &str, data: &[u8]) -> Result<()> {
 		// One row per append, which is the shape LedgerFS's chunked log has:
 		// nothing already stored is rewritten. The sequence is derived inside
-		// the statement — `MAX(seq) + 1` over this stream's rows, 0 for the
-		// first — so the counter survives a reopen without bookkeeping.
+		// the statement (`MAX(seq) + 1` over this stream's rows, 0 for the
+		// first), so the counter survives a reopen without bookkeeping.
 		self.conn
 			.execute(
 				"INSERT INTO log (stream, seq, data)
@@ -613,7 +613,7 @@ impl Engine for Sqlite {
 		Ok(())
 	}
 
-	/// The batch in SQLite's own idiom: BEGIN, one INSERT per row, COMMIT —
+	/// The batch in SQLite's own idiom (BEGIN, one INSERT per row, COMMIT),
 	/// the diagram-shaped answer to "many rows, one fsync".
 	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
 		let tx = self.conn.transaction().map_err(sq)?;
@@ -660,7 +660,7 @@ impl Engine for Sqlite {
 	/// WAL mode's own group-durability setting: commits append to the WAL and do
 	/// not fsync it, and the WAL is synced when the group is checkpointed. It
 	/// has to be set between transactions, which is why it is here and not in
-	/// [`seal_staged_deferred`](Self::seal_staged_deferred) — a staged append
+	/// [`seal_staged_deferred`](Self::seal_staged_deferred): a staged append
 	/// has already opened one.
 	fn begin_deferred(&mut self) -> Result<()> {
 		self.conn.execute_batch("PRAGMA synchronous=NORMAL;").map_err(sq)
@@ -725,18 +725,18 @@ struct Redb {
 	path: PathBuf,
 	db: Option<redb::Database>,
 	/// Per-stream next sequence, keyed by the same 64-bit hash the row keys
-	/// carry — so [`Redb::reopen`] can rebuild every counter in one pass over
+	/// carry, so [`Redb::reopen`] can rebuild every counter in one pass over
 	/// the table, exactly the way the single counter used to.
 	log_seq: std::collections::HashMap<u64, u64>,
 	/// The write transaction a staging session holds open, if any.
 	///
 	/// redb's `WriteTransaction` owns `Arc`s rather than borrowing the database,
-	/// so holding one across calls is just a field — no leak, no ouroboros.
+	/// so holding one across calls is just a field: no leak, no ouroboros.
 	staged: Option<redb::WriteTransaction>,
 }
 
 /// A log row's key: the stream name's 64-bit FNV-1a hash in the high half, the
-/// row's sequence in the low half — one stream's rows sort together and apart
+/// row's sequence in the low half: one stream's rows sort together and apart
 /// from every other stream's, and the table stays one `u128`-keyed table.
 #[cfg(feature = "redb")]
 fn stream_key(name: &str, seq: u64) -> u128 {
@@ -856,7 +856,7 @@ impl Engine for Redb {
 	}
 
 	/// One write transaction for the whole batch, `Durability::Immediate` at
-	/// its commit — the same single durability point the other engines get.
+	/// its commit: the same single durability point the other engines get.
 	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
 		let hash = stream_hash(name);
 		let first = *self.log_seq.entry(hash).or_insert(0);
@@ -972,7 +972,7 @@ impl Engine for Redb {
 /// The control: no engine, just the filesystem's own primitives.
 ///
 /// Worth having because it is the number every other number has to beat to
-/// justify existing. It is also not quite as cheap as it looks — a created file
+/// justify existing. It is also not quite as cheap as it looks: a created file
 /// is not durable until its parent directory is synced, so a `put` here is a
 /// file fsync *and* a directory fsync, which is a cost LedgerFS folds into one
 /// superblock commit.

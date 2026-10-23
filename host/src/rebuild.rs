@@ -1,10 +1,10 @@
-//! Rebuilding a volume into a fresh one — the answer to "space only falls".
+//! Rebuilding a volume into a fresh one: the answer to "space only falls".
 //!
 //! CoW frees nothing (see `EMBEDDING.md` §3), so a volume that has been written
 //! for a while is mostly unreachable garbage: every commit left the previous
 //! version of every object it touched behind. The *live* tree may be a
-//! thousandth of the device. Nothing in the format reclaims that in place —
-//! the kernel crate's GC is not wired into this path — so the only way to get
+//! thousandth of the device. Nothing in the format reclaims that in place (the
+//! kernel crate's GC is not wired into this path), so the only way to get
 //! the space back is to write the live tree into an empty volume and swap.
 //!
 //! That is what this module is for, and it is deliberately **not** an
@@ -39,7 +39,7 @@ pub struct RebuildStats {
 	pub dirs: u64,
 	/// Files written to the destination.
 	pub files: u64,
-	/// Content bytes written — the sum of the copied files' lengths.
+	/// Content bytes written: the sum of the copied files' lengths.
 	pub bytes: u64,
 }
 
@@ -49,7 +49,7 @@ impl Store {
 	///
 	/// Pre-order matters: a caller replaying this list into an empty volume can
 	/// create each entry as it arrives, because its parent is always already
-	/// there. The root (`/`) is not listed — it exists by definition.
+	/// there. The root (`/`) is not listed; it exists by definition.
 	///
 	/// A directory larger than `DirNode`'s ~400-entry bound is not a problem
 	/// here (this is a read), but a *destination* of such a tree is; see
@@ -61,8 +61,8 @@ impl Store {
 	}
 
 	fn walk_into(&self, dir: &str, out: &mut Vec<WalkEntry>, depth: usize) -> Result<()> {
-		// A directory tree can be nested arbitrarily deeply on a crafted volume —
-		// each level is one inode and one `DirNode` — and this descends one frame
+		// A directory tree can be nested arbitrarily deeply on a crafted volume:
+		// each level is one inode and one `DirNode`, and this descends one frame
 		// per level, so an unbounded tree is the same stack overflow as a deep
 		// `DirNode` chain. See `path::MAX_DIR_DEPTH`.
 		if depth >= crate::path::MAX_DIR_DEPTH {
@@ -98,7 +98,7 @@ impl Store {
 
 /// Copy every entry of `src`'s live tree into `dst`.
 ///
-/// `dst` must be a volume this call may fill — an empty one it has just
+/// `dst` must be a volume this call may fill: an empty one it has just
 /// formatted, in practice. Every write is `write_file` (create-or-replace) and
 /// every directory is created only if absent, so replaying a tree into a volume
 /// that already carries the store's identity files (`/.ledgerfs/*`) is
@@ -113,7 +113,7 @@ impl Store {
 pub fn rebuild_into(src: &Store, dst: &mut Store) -> Result<RebuildStats> {
 	// A compaction reads one volume's committed tree and writes another's.
 	// With a staging session open on either side, `read_file`/`stat` answer the
-	// staged tier and `write_file` would be refused mid-replay — a wrong copy
+	// staged tier and `write_file` would be refused mid-replay: a wrong copy
 	// or a half-built one. Refuse up front and name the session.
 	if src.staging_is_open() || dst.staging_is_open() {
 		return Err(Error::Usage(
@@ -195,7 +195,7 @@ mod tests {
 		let mut src = volume()?;
 		src.mkdir("notes", 0o755)?;
 		src.write_new_file("notes/a.md", b"alpha", 0o644)?;
-		// Replacing a file leaves the old object behind — the CoW garbage a
+		// Replacing a file leaves the old object behind, the CoW garbage a
 		// rebuild is meant to drop.
 		for _ in 0..64 {
 			src.write_file("notes/a.md", b"alpha", 0o644)?;

@@ -1,7 +1,7 @@
 //! Mounting a LedgerFS partition: superblock copies, root selection.
 //!
 //! The whole of §18's mount algorithm already lives in
-//! `superblock::mount_select` — this module only does the part it cannot:
+//! `superblock::mount_select`: this module only does the part it cannot:
 //! fetch the four 4 KiB copies off the device and hand them over as decoded
 //! `Superblock`s. Deliberately no reimplementation of the selection rules
 //! (highest `commit_seq`, split-brain detection, replay decision); a second
@@ -10,7 +10,7 @@
 //! # Why the copy LBAs are what they are
 //!
 //! The format places them at blocks `0`, `1`, `N-2`, `N-1`. The trailing pair
-//! means the last two blocks of a partition are never object space — which is
+//! means the last two blocks of a partition are never object space, which is
 //! why `RESERVED_TRAILER_BLOCKS` exists and why the object scanner stops short
 //! of the end.
 
@@ -22,7 +22,7 @@ use crate::device::BlockDevice;
 use crate::error::{Error, Result};
 
 // `superblock_copy_lbas` is not exported by the kernel crate, so the formula
-// is restated here — and pinned by
+// is restated here, and pinned by
 // `test_volume_copy_lbas_are_the_leading_and_trailing_pair` against the
 // literal array.
 pub const fn superblock_copy_lbas(total_blocks: u64) -> [u64; NUM_SUPERBLOCK_COPIES] {
@@ -53,7 +53,7 @@ pub struct Volume {
 /// See [`Volume::copy_status`], and `lfs-read info`, which prints this.
 #[derive(Debug, Clone)]
 pub struct CopyStatus {
-	/// The copy `mount_select` chose — the one the mount is reading from.
+	/// The copy `mount_select` chose: the one the mount is reading from.
 	pub selected: usize,
 
 	/// Physical block of each copy, in `superblock_copy_lbas` order.
@@ -70,7 +70,7 @@ pub struct CopyStatus {
 }
 
 impl CopyStatus {
-	/// Every copy decoded and names the same root — the state a volume is in
+	/// Every copy decoded and names the same root, the state a volume is in
 	/// after a writer that maintains all four.
 	pub fn is_healthy(&self) -> bool {
 		self.decoded.iter().all(|d| *d) && self.agree.iter().all(|a| *a)
@@ -169,7 +169,7 @@ impl Volume {
 	/// store would keep reporting whichever state it mounted at.
 	///
 	/// This touches no device. The caller must still write
-	/// [`superblock`](Self::superblock) back, to **all four** copies — see the
+	/// [`superblock`](Self::superblock) back, to **all four** copies; see the
 	/// note in this crate's `lib.rs` on what a single-copy writer leaves behind.
 	///
 	/// `selection` is deliberately left alone: it records how the *mount*
@@ -177,7 +177,7 @@ impl Volume {
 	pub fn publish_root(&mut self, root: &Root) {
 		publish_root_into(&mut self.superblock, root);
 
-		// Every copy, not just the selected one — a successful write puts this
+		// Every copy, not just the selected one: a successful write puts this
 		// superblock in all four, so that is what the in-memory view should say.
 		let published = self.superblock.clone();
 		self.copies = core::array::from_fn(|_| Some(published.clone()));
@@ -226,7 +226,7 @@ impl Volume {
 // region:    --- Support
 
 /// Fetch all four superblock copies. A copy that will not read or decode is
-/// `None` rather than a hard error — a dead trailing copy is precisely what
+/// `None` rather than a hard error: a dead trailing copy is precisely what
 /// the other three exist to survive.
 fn read_superblock_copies(device: &dyn BlockDevice) -> Result<[Option<Superblock>; NUM_SUPERBLOCK_COPIES]> {
 	// The trailing pair's LBAs need `total_blocks`, which is only known from a
@@ -281,7 +281,7 @@ pub(crate) fn publish_root_into(superblock: &mut Superblock, root: &Root) {
 }
 
 /// `Some(total_blocks)` when every copy that decoded is a valid, checksum-clean
-/// superblock with `active_commit_seq == 0` — i.e. the volume is intact and
+/// superblock with `active_commit_seq == 0`, i.e. the volume is intact and
 /// nothing has ever been committed to it.
 ///
 /// This is the image initialiser's post-condition, and it is a format state
@@ -338,7 +338,7 @@ mod tests {
 	#[test]
 	fn test_volume_copy_status_reports_a_lagging_copy() -> Result<()> {
 		// A volume whose primary copy names a committed root while the other
-		// three still hold the null root the image initialiser wrote — the state
+		// three still hold the null root the image initialiser wrote, the state
 		// the data volume is left in after its first boot (see the crate docs).
 		let copies = [
 			Some(superblock([0xAB; 32], 1, 4096)),

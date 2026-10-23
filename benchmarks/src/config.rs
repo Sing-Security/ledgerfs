@@ -49,7 +49,7 @@ impl Config {
 		)
 	}
 
-	/// What one run needs free, not counting the LedgerFS images themselves —
+	/// What one run needs free, not counting the LedgerFS images themselves:
 	/// those are sized per workload and added by the caller.
 	///
 	/// Generous on purpose. Refusing a run that would have fit costs a retry;
@@ -57,10 +57,10 @@ impl Config {
 	/// through reads exactly like a table that finished.
 	pub fn space_needed(&self) -> u64 {
 		/// Rough bytes one stored 256-byte value costs an engine that keeps its
-		/// own file — a row, a key, and the tree or page around them.
+		/// own file: a row, a key, and the tree or page around them.
 		const PER_KEY: u64 = 4096;
 
-		/// Rough bytes one durable batch costs LedgerFS's free space — the commit
+		/// Rough bytes one durable batch costs LedgerFS's free space: the commit
 		/// overhead, not the 960-byte payload. Measured, not modelled: it is the
 		/// same order as the `volume KiB/op` the harness reports, with headroom
 		/// for a volume whose allocator snapshot is larger than the last run's.

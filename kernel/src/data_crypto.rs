@@ -6,7 +6,7 @@
 //! volume's contents when the disk is at rest and the host isn't running (a
 //! stolen or removed drive). It is **not** trying to isolate processes from
 //! each other
-//! on a live, running system — that's the capability system's job. Given
+//! on a live, running system: that's the capability system's job. Given
 //! that narrow model, the right place to apply the cipher is *below* the CoW
 //! object model, not woven through it: every byte [`crate::commit::
 //! AtaBlockDevice`] ever writes to or reads from the data volume
@@ -25,15 +25,15 @@
 //! gets rewritten in place, and has no spare room for a per-write nonce or
 //! authentication tag. The tweak is derived deterministically from the LBA
 //! (`get_tweak_default`, `xts_mode`'s standard little-endian sector-index
-//! tweak) — no nonce bookkeeping, no new persisted metadata, no superblock
-//! format change.
+//! tweak), so there is no nonce bookkeeping, no new persisted metadata, and
+//! no superblock format change.
 //!
 //! XTS provides confidentiality only, not per-block authentication (see the
 //! `xts-mode` crate's own security notes). That's an accepted, deliberate
 //! trade-off here, not an oversight: the data volume's object layer already verifies
 //! `blake3(decoded payload) == object_id` on every read
 //! (`ObjectRecordReader::read`, `reader::read_object`'s scan-and-verify), so
-//! a tampered or corrupted ciphertext block — XTS or not — already fails
+//! a tampered or corrupted ciphertext block (XTS or not) already fails
 //! loudly at that layer instead of being silently trusted. Adding a second,
 //! independent authentication mechanism at the block layer (AES-GCM/
 //! ChaCha20-Poly1305 per block) would mean persisting a nonce+tag table
@@ -43,10 +43,10 @@
 //! # Key material never derived from the disk image itself
 //!
 //! For "protects data when the host isn't around" to mean anything, the key
-//! must not be recoverable from the disk alone — it is provisioned from a
+//! must not be recoverable from the disk alone: it is provisioned from a
 //! source outside the disk image, never derived from the volume's own bytes.
 //! This module only performs the actual block cipher operation. Where the
-//! 64-byte key comes from is entirely the caller's concern — the two unlock
+//! 64-byte key comes from is entirely the caller's concern: the two unlock
 //! paths [`crate::keyslot`] describes are a passphrase stretched into a KEK and
 //! an HSM-held KEK, and both end in a master key the caller has already
 //! unwrapped. This module derives nothing, stores nothing, and has no opinion
@@ -54,8 +54,8 @@
 
 //! # What is and isn't encrypted (the plaintext-header boundary)
 //!
-//! Only the **object region** — blocks at or after
-//! [`crate::RESERVED_HEADER_BLOCKS`] — is encrypted. The reserved header
+//! Only the **object region** (blocks at or after
+//! [`crate::RESERVED_HEADER_BLOCKS`]) is encrypted. The reserved header
 //! (superblock copies, intent log, genesis audit record) and the two
 //! trailing backup superblock copies stay plaintext, for the same reason a
 //! LUKS header does: the superblock is where the
@@ -64,14 +64,14 @@
 //! whether to decrypt, and before any key has been derived.
 //!
 //! **What this leaks, stated plainly:** an attacker with the raw disk can
-//! read the superblock (volume size, `active_root_id` — a BLAKE3 hash of
-//! the root inode, not its contents — and `active_commit_seq`) and the
+//! read the superblock (volume size, `active_root_id`, a BLAKE3 hash of
+//! the root inode, not its contents, and `active_commit_seq`) and the
 //! intent log's transaction records (object IDs and the physical LBAs/block
 //! counts they were written to). That is real metadata leakage: it reveals
 //! roughly how many objects exist, how large they are, and how often the
 //! volume is written, though not any object's actual contents. Closing it
 //! would mean relocating the encryption flag out of the superblock into
-//! some other plaintext anchor and encrypting the header too — a larger
+//! some other plaintext anchor and encrypting the header too: a larger
 //! format change than this feature warrants, and one that buys little while
 //! file *contents* are what actually matter here.
 
@@ -87,7 +87,7 @@ use xts_mode::{Xts128, get_tweak_default};
 /// `total_blocks` is the volume's size in LedgerFS blocks, needed to
 /// identify the trailing backup superblock copies
 /// ([`crate::RESERVED_TRAILER_BLOCKS`]). Pass `None` when the caller
-/// genuinely doesn't know the volume size — the trailing copies are then
+/// genuinely doesn't know the volume size: the trailing copies are then
 /// treated as encrypted, which is wrong; every real caller (which has just
 /// read the superblock to learn the volume is encrypted at all) knows it.
 pub fn block_is_encrypted(block_lba: u64, total_blocks: Option<u64>) -> bool {
@@ -104,13 +104,13 @@ pub fn block_is_encrypted(block_lba: u64, total_blocks: Option<u64>) -> bool {
 
 /// Raw key material length: two independent AES-256 keys (XTS's "key1",
 /// used for the actual block cipher, and "key2", used to derive the tweak),
-/// 32 bytes each — see `xts_mode`'s own AES-256 example.
+/// 32 bytes each; see `xts_mode`'s own AES-256 example.
 pub const DATA_VOLUME_KEY_LEN: usize = 64;
 
 /// A ready-to-use XTS-AES-256 cipher for one data volume's blocks.
 ///
 /// Constructed once, at mount time, from the volume's derived key. Never
-/// exposes the key material back out — only `encrypt_block`/`decrypt_block`.
+/// exposes the key material back out: only `encrypt_block`/`decrypt_block`.
 pub struct DataVolumeCipher {
 	xts: Xts128<Aes256>,
 }
@@ -118,7 +118,7 @@ pub struct DataVolumeCipher {
 impl DataVolumeCipher {
 	/// Build a cipher from 64 bytes of raw key material (two concatenated
 	/// 32-byte AES-256 keys). The caller's copy of `key` is not zeroized by
-	/// this call — callers handling raw key bytes are responsible for their
+	/// this call; callers handling raw key bytes are responsible for their
 	/// own zeroization once this returns (see `zeroize`'s `Zeroize` trait);
 	/// this function only consumes the bytes needed to expand both AES-256
 	/// key schedules.
@@ -135,10 +135,10 @@ impl DataVolumeCipher {
 	/// Encrypt exactly one physical block in place.
 	///
 	/// `buf.len()` must equal [`crate::BLOCK_SIZE`] (the XTS "sector size"
-	/// for this volume — one LedgerFS block, not one 512-byte ATA sector).
+	/// for this volume, one LedgerFS block, not one 512-byte ATA sector).
 	/// `lba` is the same partition-relative, 4 KiB-unit block index used
 	/// everywhere else in this crate (`AtaBlockDevice::write_blocks`'s `lba`
-	/// parameter, `PlacedObject::physical_lba`, ...) — it becomes the XTS
+	/// parameter, `PlacedObject::physical_lba`, ...); it becomes the XTS
 	/// tweak, so encrypting the same plaintext at two different LBAs always
 	/// produces different ciphertext.
 	///
@@ -156,7 +156,7 @@ impl DataVolumeCipher {
 	}
 
 	/// Decrypt exactly one physical block in place. See `encrypt_block` for
-	/// the `buf`/`lba` contract — decrypting with the wrong `lba` silently
+	/// the `buf`/`lba` contract: decrypting with the wrong `lba` silently
 	/// produces garbage plaintext (XTS has no way to detect this itself;
 	/// see this module's doc comment on why that's an accepted trade-off).
 	///
@@ -181,7 +181,7 @@ impl DataVolumeCipher {
 ///
 /// A registry (rather than a field on `AtaBlockDevice`) because
 /// `AtaBlockDevice::new(partition_start_lba)` is constructed fresh at every
-/// call site in the kernel bridge — there is no long-lived device object
+/// call site in the kernel bridge; there is no long-lived device object
 /// to hang a key off. Keying on `partition_start_lba` is what makes this
 /// safe: a block device for any *other* partition (notably a read-only,
 /// signature-verified system partition, which must never be encrypted)
@@ -203,7 +203,7 @@ struct ActiveVolume {
 /// encryption for that partition's object region from this point on.
 ///
 /// Called once, by whatever unlocks the volume, at the point the master key
-/// has been unwrapped — see [`crate::keyslot`]. The key bytes are consumed into
+/// has been unwrapped; see [`crate::keyslot`]. The key bytes are consumed into
 /// two AES-256 key schedules here, and the caller's buffer should be zeroized
 /// by the caller afterward: this function copies the key, it does not own it.
 ///
@@ -228,7 +228,7 @@ pub fn is_active_for(partition_start_lba: u32) -> bool {
 
 /// Encrypt one block in place if `partition_start_lba` has an active
 /// volume key *and* `block_lba` falls in the encrypted object region.
-/// A no-op otherwise — which is exactly what makes every non-data-volume
+/// A no-op otherwise, which is exactly what makes every non-data-volume
 /// caller, and every plaintext-header block, pass through untouched.
 pub fn maybe_encrypt_block(partition_start_lba: u32, block_lba: u64, buf: &mut [u8]) {
 	let slot = ACTIVE.lock();
@@ -240,7 +240,7 @@ pub fn maybe_encrypt_block(partition_start_lba: u32, block_lba: u64, buf: &mut [
 }
 
 /// Decrypt one block in place under the same conditions as
-/// [`maybe_encrypt_block`] — the exact inverse, so a block that was passed
+/// [`maybe_encrypt_block`]: the exact inverse, so a block that was passed
 /// through untouched on write is also passed through untouched on read.
 pub fn maybe_decrypt_block(partition_start_lba: u32, block_lba: u64, buf: &mut [u8]) {
 	let slot = ACTIVE.lock();
@@ -300,7 +300,7 @@ mod tests {
 		cipher.encrypt_block(&mut buf_b, 200);
 
 		// -- Check: identical plaintext at two different LBAs must not
-		// produce identical ciphertext — this is the whole point of the
+		// produce identical ciphertext: this is the whole point of the
 		// per-LBA tweak (without it, an observer with raw disk access could
 		// trivially spot repeated block content across the volume).
 		assert_ne!(
@@ -364,7 +364,7 @@ mod tests {
 		let total = Some(1000u64);
 
 		// -- Check: the plaintext header (superblock copies, intent log,
-		// genesis audit) must never be encrypted — the superblock is where
+		// genesis audit) must never be encrypted: the superblock is where
 		// the "this volume is encrypted" flag itself lives, so encrypting
 		// it would be unreadable-by-construction.
 		for lba in 0..crate::RESERVED_HEADER_BLOCKS {
@@ -436,14 +436,14 @@ mod tests {
 	#[test]
 	fn test_multi_block_volume_round_trips_and_blocks_stay_independently_addressable() -> TestResult<()> {
 		// -- Setup & Fixtures: simulate several consecutive LBAs the way
-		// commit()/AtaBlockDevice actually calls this — one encrypt_block
+		// commit()/AtaBlockDevice actually calls this: one encrypt_block
 		// per physical block, not a single multi-block operation.
 		let cipher = DataVolumeCipher::new(&test_key());
 		let block = crate::BLOCK_SIZE as usize;
 		let mut disk: alloc::vec::Vec<alloc::vec::Vec<u8>> = (0..8).map(|i| vec![i as u8; block]).collect();
 
 		// -- Exec: encrypt every block at its own LBA, then decrypt in a
-		// *different* order — proves each block's ciphertext only depends
+		// *different* order: proves each block's ciphertext only depends
 		// on its own (key, lba, plaintext), not on encrypt/decrypt order.
 		for (lba, buf) in disk.iter_mut().enumerate() {
 			cipher.encrypt_block(buf, lba as u64);

@@ -4,7 +4,7 @@
 //!
 //! Every engine is asked for the same thing and told the same thing: one write,
 //! durable before the call returns. Nothing is tuned differently between them
-//! and no engine gets a warmer cache than another — each workload gets a fresh
+//! and no engine gets a warmer cache than another; each workload gets a fresh
 //! engine on a fresh location, populates it outside the timed section, and is
 //! then timed over the same number of operations.
 //!
@@ -30,8 +30,8 @@
 //! # Gaps
 //!
 //! An engine that cannot express a workload is recorded with `missing` set, not
-//! with a zero. One row is expected to be a gap somewhere — reopen for the
-//! raw-file control, because a directory tree has no recovery step — as is
+//! with a zero. One row is expected to be a gap somewhere (reopen for the
+//! raw-file control, because a directory tree has no recovery step), as is
 //! anything on a platform where an engine will not open.
 
 use std::time::Instant;
@@ -46,7 +46,7 @@ use crate::report::Sample;
 /// one page on the filesystem.
 pub const VALUE_BYTES: usize = 256;
 
-/// Bytes per append in the log workload — large enough that the per-append cost
+/// Bytes per append in the log workload: large enough that the per-append cost
 /// has a data component as well as a commit component, which is the honest
 /// shape of an append-only log.
 pub const LOG_CHUNK: usize = 64 * 1024;
@@ -55,7 +55,7 @@ pub const LOG_CHUNK: usize = 64 * 1024;
 /// commit, not the payload, is what the number measures.
 pub const RECORD_BYTES: usize = 48;
 
-/// Records per durable batch in the batched-append workloads — the unit an
+/// Records per durable batch in the batched-append workloads: the unit an
 /// application that accumulates records and flushes them actually pays for.
 pub const ROWS_PER_BATCH: usize = 20;
 
@@ -153,7 +153,7 @@ pub fn by_id(id: &str) -> Option<&'static Workload> {
 /// per-operation times.
 ///
 /// `ops` and `bytes` are what one repetition performs and must be the same for
-/// every repetition — the caller guarantees that by construction, which is why
+/// every repetition: the caller guarantees that by construction, which is why
 /// a writing workload varies its keys per repetition rather than overwriting.
 /// The repetition index is handed to `body` for exactly that.
 fn measure(
@@ -235,7 +235,7 @@ fn splitmix(mut x: u64) -> u64 {
 }
 
 /// One fixed-size record: an 8-byte little-endian sequence number, then payload
-/// bytes. Deterministic in `(stream, row)` for the same reason [`value`] is —
+/// bytes. Deterministic in `(stream, row)` for the same reason [`value`] is:
 /// an all-zero or repeating buffer invites compression, deduplication, or
 /// sparsity tricks that some engine does and others don't.
 fn record(stream: &str, row: usize) -> [u8; RECORD_BYTES] {
@@ -263,12 +263,12 @@ fn record(stream: &str, row: usize) -> [u8; RECORD_BYTES] {
 /// The reading is taken once before and once after the **whole** repeat run, so
 /// the delta spans every repetition; it is divided by `ops × repeats`, the work
 /// the run actually did. Dividing by the per-repetition `ops` alone multiplies
-/// every figure by the repeat count — which is what this harness did until
+/// every figure by the repeat count, which is what this harness did until
 /// 2026-10-23, so every `volume KiB/op` recorded before that date is inflated
 /// by `Config::repeats` (3). The 2026-10-23 run is the correction.
 ///
 /// Left `None` when the engine reports no figure, or when the delta is not
-/// positive — a workload that freed space, or one whose engine cannot say, is
+/// positive: a workload that freed space, or one whose engine cannot say, is
 /// reported as not measured rather than as zero.
 fn record_space(sample: &mut Sample, engine: &dyn Engine, before: Option<u64>, ops: u64) {
 	let (Some(before), Some(after)) = (before, engine.space_used()) else {
@@ -299,7 +299,7 @@ fn prepare_all(engine: &mut dyn Engine, tags: &[String], n: usize) -> Result<()>
 
 // region:    --- The workloads
 
-/// One durable insert per operation — the headline number.
+/// One durable insert per operation: the headline number.
 fn insert_durable(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	let name = engine.name();
 	let n = cfg.insert_n;
@@ -327,7 +327,7 @@ fn insert_durable(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 ///
 /// Not comparable with the row above and marked so: the per-insert number this
 /// produces is the cost of *1/N* of a commit. It is here because the gap between
-/// the two rows is the whole argument for batching — and because LedgerFS now
+/// the two rows is the whole argument for batching, and because LedgerFS now
 /// produces it too, through a staging session sealed once, which is the same
 /// transaction SQLite's `BEGIN … COMMIT` is.
 fn insert_batched(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
@@ -427,7 +427,7 @@ fn append_log(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 
 /// Batched appends: one durable batch of fixed-size records per operation.
 ///
-/// `ops` counts batches, not records — the batch is the durability point, so
+/// `ops` counts batches, not records: the batch is the durability point, so
 /// per-batch is the number an application that flushes this way actually pays.
 /// Record generation happens outside the timed section: this measures the
 /// storage call, not the producer. Each repetition appends to its own stream,
@@ -474,7 +474,7 @@ fn append_batched(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 /// `staged_seal_every` batches durable at once.
 ///
 /// This is the row for an application that has decided a commit per batch is
-/// more durability than it needs — the promise is "a seal's worth survives, an
+/// more durability than it needs: the promise is "a seal's worth survives, an
 /// unsealed tail need not". It is marked non-comparable because it is not: the
 /// same work is being made durable an Nth as often. Every engine gets the same
 /// relaxation, in its own idiom, so the comparison between them stays honest
@@ -553,14 +553,14 @@ fn staged_fixtures(cfg: &Config, streams: &[String], batches: usize) -> Vec<Vec<
 /// and the seals in between are [`Engine::seal_staged_deferred`].
 ///
 /// This is the row for the tier the LedgerFS host calls deferred durability.
-/// The promise is the one the row above gives — "a sealed group survives, an
-/// unsealed tail need not" — except that "durable" attaches to the sync rather
+/// The promise is the one the row above gives ("a sealed group survives, an
+/// unsealed tail need not"), except that "durable" attaches to the sync rather
 /// than to every seal. It is marked non-comparable for the same reason the row
 /// above is, and it is not a claim that the seals are free: each engine's seal
 /// still does the work its architecture requires (LedgerFS flushes its objects,
 /// SQLite writes the WAL, redb commits its pages, the raw control writes the
-/// file), and only the publish step — the one that makes the group the
-/// current state — is shared.
+/// file), and only the publish step (the one that makes the group the
+/// current state) is shared.
 fn append_deferred(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	let name = engine.name();
 	if !engine.supports(Op::Deferred) {
@@ -625,7 +625,7 @@ fn append_deferred(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 /// The population happens outside the timed section, so the figure is the read
 /// path alone; the comparison is deliberately inside it, because a read-back
 /// that does not check what it read is not the operation this measures. On
-/// LedgerFS the check is not added work — every object read verifies its own
+/// LedgerFS the check is not added work: every object read verifies its own
 /// BLAKE3 hash on the way out, so verification is part of the number by
 /// construction. On the other engines it is a comparison the caller does.
 fn read_back(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
@@ -667,7 +667,7 @@ fn read_back(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	Ok(sample)
 }
 
-/// Enumerate every key in the store — a directory listing for the filesystems,
+/// Enumerate every key in the store: a directory listing for the filesystems,
 /// a full scan for the databases.
 ///
 /// Laid out `KEYS_PER_DIR` to a directory on every engine, because that is the
@@ -714,7 +714,7 @@ fn scan(engine: &mut dyn Engine, cfg: &Config, entries: usize) -> Result<Sample>
 /// What a restart costs: reopen, then touch the data once.
 ///
 /// The read is inside the timed section deliberately. SQLite recovers a WAL
-/// lazily — `open` returns before the recovery happens — so timing the open
+/// lazily (`open` returns before the recovery happens), so timing the open
 /// alone would report near zero for the engine with the most recovery to do.
 fn reopen_and_read(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	let name = engine.name();

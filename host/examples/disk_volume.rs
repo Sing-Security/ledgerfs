@@ -1,4 +1,4 @@
-//! A volume in a real file on a real disk — the hosted case.
+//! A volume in a real file on a real disk: the hosted case.
 //!
 //! ```text
 //! cargo run --example disk_volume
@@ -6,7 +6,7 @@
 //!
 //! `embed` showed an application owning its volume as a byte string. This is
 //! the other consumer: a host that keeps the volume at a path, where the OS
-//! semantics come with the deal — one writer, any number of readers, commits
+//! semantics come with the deal: one writer, any number of readers, commits
 //! end in `fsync`, and a hint sidecar appears beside the file when the writer
 //! closes, so the next process to open the volume skips the cold scan.
 //!
@@ -16,7 +16,7 @@
 
 use ledgerfs_host::{Error, FileBlockDevice, Result, Store};
 
-/// 8 MiB — plenty for a demo volume, and `create` sizes the file to exactly
+/// 8 MiB: plenty for a demo volume, and `create` sizes the file to exactly
 /// this, block-aligned.
 const VOLUME_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -29,7 +29,7 @@ fn main() {
 
 fn run() -> Result<()> {
 	// -- 1. Geometry. The volume is the whole file, so `create` is mkfs's
-	// stage: it sizes the file and opens it for writing. It does not erase —
+	// stage: it sizes the file and opens it for writing. It does not erase:
 	// erasing belongs to the format, so the guarantee holds for a partition
 	// inside an image too, which never had a `create` call at all.
 	let dir = std::env::temp_dir().join("ledgerfs-disk-example");
@@ -41,20 +41,20 @@ fn run() -> Result<()> {
 	let device = FileBlockDevice::create(&volume, VOLUME_BYTES)?;
 	println!("sized a volume file at {}", volume.display());
 
-	// -- 2. Format: the same mkfs the CLI runs against a drive — four
+	// -- 2. Format: the same mkfs the CLI runs against a drive: four
 	// superblock copies, a genesis commit, every prior block erased.
 	let mut store = Store::format_app(Box::new(device), "disk-example")?;
 	println!("formatted: app 'disk-example', commit seq {}", store.commit_seq());
 
-	// -- 3. Use it. From here on nothing is file-specific — these are the
+	// -- 3. Use it. From here on nothing is file-specific: these are the
 	// same calls `embed` made against a buffer.
 	store.mkdir("/notes", 0o755)?;
 	store.write_new_file("/notes/hello.txt", b"a volume in a plain file\n", 0o644)?;
 	println!("wrote /notes/hello.txt, commit seq {}", store.commit_seq());
 
 	// -- 4. One writer per volume. The writable handle holds an advisory
-	// lock on the file, so a second writer — another process, or a second
-	// open in this one — is refused with an error that names the file,
+	// lock on the file, so a second writer (another process, or a second open
+	// in this one) is refused with an error that names the file,
 	// instead of two allocators placing objects on the same free blocks.
 	match FileBlockDevice::open_rw(&volume, 0, VOLUME_BYTES) {
 		Err(Error::Locked { path }) => {
@@ -75,7 +75,7 @@ fn run() -> Result<()> {
 	drop(peek);
 
 	// -- 6. Close the writer. Its drop flushes the hint sidecar beside the
-	// volume — the object-id→block map that turns the *next* process's first
+	// volume: the object-id→block map that turns the *next* process's first
 	// lookup into a file read instead of a whole-volume scan.
 	drop(store);
 	let sidecar = dir.join("app.vol.hints");
@@ -98,7 +98,7 @@ fn run() -> Result<()> {
 	);
 
 	println!(
-		"\nvolume left at {} — inspect it:\n  cargo run --bin lfs-read -- {} ls / --bare",
+		"\nvolume left at {}: inspect it:\n  cargo run --bin lfs-read -- {} ls / --bare",
 		volume.display(),
 		volume.display()
 	);

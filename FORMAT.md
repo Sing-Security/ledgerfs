@@ -1,4 +1,4 @@
-# LedgerFS — On-Disk Format
+# LedgerFS: On-Disk Format
 
 This is the normative description of the bytes LedgerFS writes to a volume, and
 of the rules a reader must follow to interpret them. It describes what the code
@@ -11,15 +11,15 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** ar
 to be read as described in RFC 2119.
 
 Every section number below is **stable**. Source comments throughout the crates
-cite them — `record.rs` starts with `Per §7 and §9`, `keyslot.rs` explains why
-`KdfParams` carries an `algorithm` field with reference to §36, and so on — so
+cite them (`record.rs` starts with `Per §7 and §9`, `keyslot.rs` explains why
+`KdfParams` carries an `algorithm` field with reference to §36, and so on), so
 renumbering would break the code's own documentation. Section numbers are held
 even where the section is not implemented.
 
 A section headed **Reserved** holds a number for a capability that this
 implementation does not have. A Reserved section is normative only in the
-negative sense: it tells you the bytes or the operation it describes are not
-produced or accepted by this code, so you cannot rely on them. Nothing in a
+negative sense: it states that the bytes or the operation it describes are not
+produced or accepted by this code, and therefore cannot be relied upon. Nothing in a
 Reserved section should be implemented from this document alone; it exists so
 that a citation resolves and a reader is not left guessing.
 
@@ -34,8 +34,8 @@ that a citation resolves and a reader is not left guessing.
 ## Glossary
 
 This table defines the terms *as this format document uses them*. The
-project-wide vocabulary — including the words that belong to the host API and
-the staging tier, and the list of words this project does not use — is
+project-wide vocabulary (including the words that belong to the host API and
+the staging tier, and the list of words this project does not use) is
 [`TERMINOLOGY.md`](TERMINOLOGY.md), which is normative for prose and naming in
 every document and in the source.
 
@@ -43,10 +43,10 @@ every document and in the source.
 | --- | --- |
 | **Object** | An immutable, content-addressed blob. Its identity is the BLAKE3 hash of its canonical encoding. |
 | **ObjectId** | A 32-byte BLAKE3 hash (`BLAKE3_HASH_SIZE = 32`), the name of an object. |
-| **ObjectRef** | An ObjectId plus a `StorageHint` — where the object is believed to live. A hint may be zero and may be wrong; it is never authoritative. |
+| **ObjectRef** | An ObjectId plus a `StorageHint`: where the object is believed to live. A hint may be zero and may be wrong; it is never authoritative. |
 | **Root** | The object that names everything else. There is exactly one live root per commit. |
 | **Commit** | One transaction's worth of changes, made durable by the superblock write that names its root. |
-| **RLR** | Root Locator Ring — a ring of recently committed roots inside the superblock. |
+| **RLR** | Root Locator Ring: a ring of recently committed roots inside the superblock. |
 | **Intent log** | A ring buffer of records describing an in-flight commit, used to decide what to replay on mount. |
 | **Deadlist / PendingFree** | Blocks that are no longer reachable from the current root and are candidates for freeing. |
 | **Barrier** | A durability operation: everything written before it is on stable media before anything after it is. |
@@ -80,7 +80,7 @@ Three properties are load-bearing, in this order:
    is what makes an older root still readable, and it is the reason free space
    falls monotonically until garbage collection runs (§22).
 3. **A reader verifies what it is handed.** Content addressing means a block
-   that does not hash to the id it was fetched for is not "the wrong version" —
+   that does not hash to the id it was fetched for is not "the wrong version";
    it is not the object at all. Hints, caches, and superblock accelerators are
    all allowed to be wrong because this check exists.
 
@@ -137,7 +137,7 @@ and two roots that ought to be equal are not.
 
 Objects above the framing layer (`Inode`, `DirNode`, `ExtentNode`, `AllocNode`,
 `Root`) are encoded with `postcard`. Where a struct holds a self-referential
-`object_id` — the hash of its own encoding — that field is excluded from the
+`object_id` (the hash of its own encoding), that field is excluded from the
 encoding with `#[serde(skip)]`. A field cannot contribute the value it is being
 hashed to produce; see `Inode::object_id` and `AllocNode`'s comments for the
 failure this caused when it was not so marked.
@@ -187,7 +187,7 @@ Machine-readable limits, defined in `kernel/src/lib.rs`:
 | `MIN_RECORD_LEN` | 64 | Smallest byte run that can be an intent-log record (§17.2). |
 | `RLR_SIZE` | 56 | Entries in the embedded root locator ring (§10). |
 | `NUM_SUPERBLOCK_COPIES` | 4 | §10.4. |
-| `RESERVED_HEADER_BLOCKS` | 6 | Blocks 0–5 are never object space (§11). |
+| `RESERVED_HEADER_BLOCKS` | 6 | Blocks 0 to 5 are never object space (§11). |
 | `RESERVED_TRAILER_BLOCKS` | 2 | The last two blocks are never object space (§11). |
 
 Structural limits, defined on the types they bound:
@@ -211,14 +211,14 @@ Every stored object is wrapped in an `ObjectRecord`. The header is 60 bytes:
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 8 | `magic` — `OBJECT_RECORD_MAGIC` |
-| 8 | 2 | `object_type` — §7.2 |
-| 10 | 1 | `compression` — §28.1 |
+| 0 | 8 | `magic`: `OBJECT_RECORD_MAGIC` |
+| 8 | 2 | `object_type`: §7.2 |
+| 10 | 1 | `compression`: §28.1 |
 | 11 | 1 | `encryption` |
-| 12 | 4 | `stored_len` — bytes of payload as stored |
-| 16 | 4 | `logical_len` — bytes of payload before compression |
-| 20 | 8 | `checksum` — truncated BLAKE3 over the rest of the record |
-| 28 | 32 | `object_id` — full BLAKE3 hash |
+| 12 | 4 | `stored_len`: bytes of payload as stored |
+| 16 | 4 | `logical_len`: bytes of payload before compression |
+| 20 | 8 | `checksum`: truncated BLAKE3 over the rest of the record |
+| 28 | 32 | `object_id`: full BLAKE3 hash |
 
 Total `ObjectRecordHeader::SIZE` is 60 bytes.
 
@@ -279,8 +279,8 @@ The framing rules are:
 - The run begins with a 60-byte `ObjectRecordHeader` (§7.1).
 - `stored_len` gives the payload length in bytes immediately following the
   header.
-- The checksum covers the record — header fields from `object_type` onward plus
-  the payload — and does not cover `magic` or `checksum` itself, so a header can
+- The checksum covers the record (header fields from `object_type` onward plus
+  the payload) and does not cover `magic` or `checksum` itself, so a header can
   be validated before the fields it covers have been interpreted.
 - **Records are 8-byte aligned.** The length field and the alignment together
   are what let a reader walk a region of blocks looking for recoverable objects
@@ -288,7 +288,7 @@ The framing rules are:
   the checksum, and steps forward by the aligned record length. This is the
   mechanism behind the linear-scan fallback in §20.
 - `MIN_RECORD_LEN = 64` is the smallest byte run that can be a *record* in this
-  sense — 60 bytes of header rounded up to alignment. A run shorter than that
+  sense: 60 bytes of header rounded up to alignment. A run shorter than that
   cannot hold a header and MUST NOT be considered.
 
 ## 10. Superblock format (Normative)
@@ -311,14 +311,14 @@ extensions at absolute offsets so that the earlier fields never move:
 | … | `features_compat`, `features_ro_compat`, `features_incompat` | Feature gates (§43.2). |
 | 3464 | `ext_rlr_lba` | 0 = absent; embedded ring is authoritative. |
 | 3472 | `ext_rlr_block_count` | 0 = absent. |
-| 3476 | volume label | 4-byte length prefix + up to 256 bytes of text, ending at 3736. Not a field on the struct: written out-of-band, and **cleared by any encode** — see below. |
+| 3476 | volume label | 4-byte length prefix + up to 256 bytes of text, ending at 3736. Not a field on the struct: written out-of-band, and **cleared by any encode** (see below). |
 | 3736 | `limits` (`LedgerFsLimits`) | 0 = absent, use compiled-in defaults. |
 | 3764 | `active_root_hint` | 0 = absent; see §20. |
 | … | `keyslots` | One 128-byte slot per key, per §36. |
 | … | `superblock_checksum` | Over the rest of the block. |
 
 `LedgerFsLimits` carries only limits whose value *changes a comparison the
-reader makes* — those are the only ones where a runtime knob is meaningful
+reader makes*: those are the only ones where a runtime knob is meaningful
 rather than an invitation to disagree about a constant. It is documented at its
 definition for that reason.
 
@@ -329,7 +329,7 @@ rewrite of `Superblock::encode`:
   That is why keyslots are fields on this struct rather than left as slack: a
   commit rewrites the superblock, so a slot left out of the struct would be
   wiped by the first write after provisioning, permanently unopenable, while
-  reporting success. The volume label above is the counter-example — it is out
+  reporting success. The volume label above is the counter-example: it is out
   of band and is not re-emitted, so a commit erases it; see `KNOWN_ISSUES.md`
   §9.
 - Both extension offsets and the RLR's position are absolute constants. New
@@ -342,7 +342,7 @@ A 4096-byte write is not guaranteed to be atomic by the medium, so a
 superblock can be torn. The format handles this with a checksum rather than by
 assuming atomicity: a copy whose `superblock_checksum` does not verify is not a
 copy, and is discarded before selection. A torn write therefore costs one copy,
-not the volume — provided the copies are not all written in the same window,
+not the volume, provided the copies are not all written in the same window,
 which is what §10.4 is for.
 
 ### 10.3. Minimum durable commit (Normative)
@@ -350,7 +350,7 @@ which is what §10.4 is for.
 A commit is durable when **at least one** superblock copy naming the new root
 has been written and the barrier after it has completed. Conversely, a commit
 whose superblock write never landed is not durable and MUST NOT be replayed as
-though it were — the objects it wrote are unreachable garbage, which is a
+though it were: the objects it wrote are unreachable garbage, which is a
 space cost and not a correctness one.
 
 This is why the commit ordering in §15.1 is not interchangeable.
@@ -369,15 +369,15 @@ Four copies. Their LBAs depend on the volume size and are computed by
 
 The split between the head pair and the tail pair is the redundancy argument:
 a failure that destroys one end of the volume leaves the other pair intact. It
-is also the reason the trailing two blocks are reserved (§11) — the last two
+is also the reason the trailing two blocks are reserved (§11): the last two
 blocks of a partition are never object space.
 
 ## 11. On-disk layout
 
 | Blocks | Contents |
 | --- | --- |
-| 0–1 | Superblock copies 0 and 1. |
-| 2–3 | Intent log ring. |
+| 0-1 | Superblock copies 0 and 1. |
+| 2-3 | Intent log ring. |
 | 4 | Genesis audit record. |
 | 5 | Allocation-tree snapshot (`ALLOC_SNAPSHOT_BLOCK`, `ALLOC_SNAPSHOT_MAGIC`). |
 | 6 … N-3 | Object space. |
@@ -392,7 +392,7 @@ allocator's state must be recoverable without walking every object, and because
 a freshly formatted volume benefits from an explicit witness of its own
 creation. Both are part of the format.
 
-The intent log is **two blocks** — one 8 KiB ring, not a multi-megabyte region.
+The intent log is **two blocks**: one 8 KiB ring, not a multi-megabyte region.
 Its small size is a deliberate trade: it is a *tie-breaker* for mount selection
 (§18.5), not a durable write-ahead log, and a ring that small cannot grow into
 one by accident.
@@ -423,8 +423,8 @@ volume's write lock for its duration. The host crate's `Store` exposes exactly
 this shape; see §15.1 for the steps a commit performs.
 
 A caller with many mutations MAY build **one** transaction out of all of them
-before committing — the host crate's `Store::begin_staging` … `seal_staged`
-does exactly that — but this is library behaviour, not a format state:
+before committing (the host crate's `Store::begin_staging` … `seal_staged`
+does exactly that), but this is library behaviour, not a format state:
 
 - Everything staged before the seal lives in the caller's memory. No device
   block is allocated, no allocator state is snapshotted, no copy of the
@@ -443,11 +443,11 @@ does exactly that — but this is library behaviour, not a format state:
   postponed group whole and §15.2 still sees only the old root. It cannot leave
   a half-applied root, because no superblock naming the new one exists yet. The
   allocator snapshot published ahead of the root may mark blocks no live root
-  names — unreachable space, never a wrong answer. No feature bit is involved
+  names: unreachable space, never a wrong answer. No feature bit is involved
   and a mount needs no new behaviour.
 
 There is no on-disk representation of staged-but-unsealed data. The intent log
-(§16–§18) exists and is defined; it is not this, and §18.5/§44.2 keep root
+(§16 to §18) exists and is defined; it is not this, and §18.5/§44.2 keep root
 adoption away from it.
 
 ## 13. Commit sequence semantics (Normative)
@@ -540,16 +540,16 @@ which is the whole of §17 and §18.
 > **What the live path actually performs.** The host `Store`'s commit writes
 > the objects, then the allocator snapshot, then **one** barrier, then the
 > superblock copies, then a **second** barrier. It writes **no intent-log
-> records**: the intent-log machinery (§16–§18) is not wired into it. Mount
+> records**: the intent-log machinery (§16 to §18) is not wired into it. Mount
 > selection therefore always takes the no-replay branch on such a volume, which
-> is correct — with no records to misread, there is nothing to replay from.
+> is correct; with no records to misread, there is nothing to replay from.
 > The four-barrier sequence above is the protocol the format is built around and
 > what a writer that logs intent must do; it is not what this release's writer
 > does.
 >
 > Two barriers instead of four is not two steps skipped. Steps 6 and 10 are the
 > intent-log writes, and steps 5 and 7 exist only to order those writes against
-> the superblock — with no records written, those two barriers follow no new
+> the superblock; with no records written, those two barriers follow no new
 > dirty data at all, and a barrier with nothing dirty behind it costs nothing
 > while claiming an ordering it does not establish. Issuing it is not slower
 > than not issuing it; it is only less honest. Steps 3 and 9 remain and are the
@@ -567,7 +567,7 @@ which is the whole of §17 and §18.
 > window: a crash between a snapshot write and the barrier that covers it can
 > leave the *previous* root published with a snapshot written for the commit
 > that did not land. That snapshot is **ahead** of the published
-> root — it describes blocks as allocated that the root on media does not
+> root: it describes blocks as allocated that the root on media does not
 > reference. Under §14.2 those blocks are `Allocated` and unreachable, so they
 > leak until a later commit rewrites the tree. A block the published root *does*
 > reference cannot be marked `Free` by that snapshot, because `Free` is
@@ -600,7 +600,7 @@ exception to it. Because a commit writes it before the barrier that precedes its
 superblock (§15.1), a crash can leave a mount running the previous root with a
 snapshot written for the commit that did not land. That snapshot describes
 blocks the published root does not reference, which under §14.2 makes them
-`Allocated` and unreachable — leaked until a later commit rewrites the tree. It
+`Allocated` and unreachable, leaked until a later commit rewrites the tree. It
 cannot describe a block the published root holds as free; see §15.1.
 
 ### 15.3. Barriers and store ordering
@@ -630,7 +630,7 @@ on a memory device measures the protocol and not the medium (§ and
 | `payload` | `record_len` | Type-specific; see below. |
 | `record_hash` | 32 | BLAKE3 over the record. |
 
-`HEADER_SIZE = 30`, so `MIN_SIZE = 62`, aligned up to 64 — which is
+`HEADER_SIZE = 30`, so `MIN_SIZE = 62`, aligned up to 64, which is
 `MIN_RECORD_LEN` from §9. The alignment is not cosmetic: the ring parser scans
 at 8-byte strides and a record that were not aligned would be invisible to it.
 
@@ -655,7 +655,7 @@ compares against.
 ### 16.3. Ring buffer properties
 
 The ring wraps and overwrites. It holds recent history, not all history, and a
-record that has been overwritten is simply gone — the parser (§17) is built to
+record that has been overwritten is simply gone: the parser (§17) is built to
 tolerate exactly that rather than to require a complete history.
 
 ## 17. Intent-log ring parsing (Normative)
@@ -732,7 +732,7 @@ fetched off the device.
 
 An RLR entry is a candidate only if its own `entry_checksum` verifies and its
 `root_id` is non-zero. The ring's `rlr_head`/`rlr_tail` index the *ring*, not the
-selection — which entries matter is determined by their content, not their
+selection; which entries matter is determined by their content, not their
 position.
 
 ### 18.3. RLR monotonicity invariant
@@ -748,7 +748,7 @@ excluded. `RLR_FLAG_NON_MONOTONIC` exists to mark the condition.
 ### 18.4. Deterministic previous-known-seq
 
 For the continuity check (§18.7), "the previous commit sequence" MUST be
-computed deterministically from the decoded state — specifically, from
+computed deterministically from the decoded state, specifically from
 `PrepareRoot`'s recorded previous sequence in the intent log when the log is
 available, and from the highest `commit_seq` below the candidate in the same
 copy's RLR otherwise. Two mounts of the same bytes MUST agree.
@@ -760,21 +760,21 @@ returns a decision. The rule: if the ring holds a `CommitRoot` for a transaction
 whose sequence is at or below the mounted root, the mount is current and nothing
 is replayed. If the ring holds a `PrepareRoot` with no matching `CommitRoot` for
 a sequence *above* the mounted root, the commit was in flight and is **not**
-replayed — the objects it staged are unreachable and are left for GC (§22).
+replayed: the objects it staged are unreachable and are left for GC (§22).
 
 The log never causes a root to be adopted. A root becomes current by having its
 superblock written, and by nothing else (§10.3).
 
 ### 18.6. Replay correctness gates
 
-Replay is gated on the checks in §17.3 and §18.3 — nothing is replayed from a
+Replay is gated on the checks in §17.3 and §18.3: nothing is replayed from a
 record that failed integrity or monotonicity. §44.2 records the gate as a
 release condition.
 
 ### 18.7. Continuity enforcement
 
 `COMMIT_SEQ_CONTINUITY_UNKNOWN` exists to record that continuity could not be
-established — for instance, when the intent log was overwritten and the RLR
+established, for instance when the intent log was overwritten and the RLR
 gives no comparable predecessor. It is a *report*, and the mount proceeds under
 the conservative reading of §17.7.
 
@@ -788,7 +788,7 @@ the conservative reading of §17.7.
 A directory inode's `content_ref` names a `DirNode`. Entries are
 `DirEntry { name, inode_id, inode_hint }`, kept sorted by name so that a lookup
 is a binary search and two writers enumerating the same names produce the same
-encoding — which is what makes a directory's ObjectId stable.
+encoding, which is what makes a directory's ObjectId stable.
 
 Node ceilings and the missing split are in §8.
 
@@ -808,8 +808,8 @@ offset. `ExtentDescriptor`:
 `insert_extent` replaces any existing coverage of the same range, trimming or
 dropping overlapping extents first. This is not a nicety. Without it, a second
 write to an already-covered range appended a second, overlapping extent
-alongside the first, and the read path — which has no arbitration rule for
-overlaps — resolved the conflict by position in the vector. Because insertion at
+alongside the first, and the read path (which has no arbitration rule for
+overlaps) resolved the conflict by position in the vector. Because insertion at
 an exact-offset match shifts the new entry *before* the existing one, the older
 write won the read. Overwriting a config file and reading back the old contents
 is a severe enough symptom to be worth stating in the format document: an
@@ -835,14 +835,14 @@ them zero (see below) and remain correct.
 
 `active_root_hint` in the superblock (§10.1) is the same idea for the root
 itself, and exists for a reason worth recording: without it, every mount pays a
-full scan just to find its own root — with a 32 768-block scan limit over ATA
+full scan just to find its own root: with a 32 768-block scan limit over ATA
 PIO that is tens of seconds, which presents as a mount that hangs.
 
 > **Hints are not populated by the writer.** The CoW layer writes
 > `StorageHint::zero()` for chunks and builds references from ids alone, so
 > below the root every hint on a volume this code wrote is zero, and lookups
 > fall through to the scan. The host crate therefore keeps an optional
-> sidecar cache beside a volume — a pure cache, re-verified on use, safe to
+> sidecar cache beside a volume: a pure cache, re-verified on use, safe to
 > delete, and never written into the volume. See `KNOWN_ISSUES.md`.
 
 ## 21. Dedupe index + refcount rules
@@ -853,7 +853,7 @@ A `DedupeEntry` maps a chunk's content hash to a refcount and the set of objects
 referencing it. It is an ordinary object with type `0x06` (§7.2), rooted from
 the commit root's `dedupe_index_root`.
 
-The index is *not* consulted to write data in this release — the writer stores
+The index is *not* consulted to write data in this release: the writer stores
 each chunk it is given and does not look for an existing copy first. The
 structure, its type discriminator, and its root pointer are part of the format;
 the decision procedure is not implemented. See §29.2 and `KNOWN_ISSUES.md`.
@@ -861,8 +861,8 @@ the decision procedure is not implemented. See §29.2 and `KNOWN_ISSUES.md`.
 ### 21.2. Refcount safety (Normative)
 
 Where refcounts exist they MUST be validated before a block is freed. `gc.rs`
-states the check as four conditions — in the deadlist, no snapshot references
-it, refcount is zero, allocation state permits freeing — and requires all four.
+states the check as four conditions (in the deadlist, no snapshot references
+it, refcount is zero, allocation state permits freeing) and requires all four.
 On any uncertainty the conservative action is to keep the block, never to free
 it.
 
@@ -901,7 +901,7 @@ generational, unimplemented.
 
 `Pinned` blocks MUST NOT be freed while any snapshot that pinned them exists.
 Unpinning is a transition to `PendingFree`, not to `Free`, unless no deadlist
-entry is pending — see the fast path in §14.2.
+entry is pending; see the fast path in §14.2.
 
 ## 23. Allocation extent state machine (Normative)
 
@@ -916,10 +916,10 @@ decoder MUST treat an unknown state as non-allocatable.
 Snapshot creation is three phases, and all three MUST succeed or the whole
 operation MUST be rolled back:
 
-1. **Pin** — transition the blocks the snapshot will need from `Allocated` to
+1. **Pin**: transition the blocks the snapshot will need from `Allocated` to
    `Pinned`.
-2. **Commit** — write a root whose allocation tree reflects those pins.
-3. **Register** — add the snapshot to the active list.
+2. **Commit**: write a root whose allocation tree reflects those pins.
+3. **Register**: add the snapshot to the active list.
 
 Committing the pins before registering the snapshot is what closes the race: a
 crash between 2 and 3 leaves pinned blocks with no snapshot referencing them,
@@ -940,7 +940,7 @@ pin structure is implemented.
 ### 25.1. Reserve sizing and 25.2. Accounting
 
 `AllocationState::Reserved` exists so a volume can keep enough blocks to perform
-a deletion or a commit when it is otherwise full — a filesystem that cannot free
+a deletion or a commit when it is otherwise full: a filesystem that cannot free
 space when full is a filesystem whose operator has no recovery move.
 
 > **Reserved.** No reserve is sized, accounted, or consumed in this release.
@@ -1061,7 +1061,7 @@ snapshot needs no copy of anything.
 
 > **Reserved.** No lifecycle is implemented; see §30.1.
 
-## 31. Send and receive — replication
+## 31. Send and receive: replication
 
 > **Reserved.** `replication.rs` defines a stream format and validation rules.
 > No send or receive path is wired into the host `Store`, and no volume is
@@ -1095,7 +1095,7 @@ snapshot needs no copy of anything.
 
 ### 34.2. Extended attributes (xattrs)
 
-An `Inode` carries xattrs as a `BTreeMap<String, Vec<u8>>` — ordered, so the
+An `Inode` carries xattrs as a `BTreeMap<String, Vec<u8>>`, ordered, so the
 inode's canonical encoding is deterministic. xattrs are **stored and returned**;
 no access-control decision is made from them.
 
@@ -1132,13 +1132,13 @@ misleading name. The three fields above are the format.
 
 Two layers, deliberately separate:
 
-- **Keyslots** (`keyslot.rs`) — a randomly generated master key, wrapped once
+- **Keyslots** (`keyslot.rs`): a randomly generated master key, wrapped once
   per slot under a key-encryption key. A passphrase slot derives its KEK from
   the passphrase and a per-slot salt; an HSM slot takes its KEK from the HSM.
   Both may be populated, either unlocks the volume, and revoking one does not
   disturb the other. This indirection is why changing a passphrase rewraps 64
   bytes rather than re-encrypting the volume.
-- **Block cipher** (`data_crypto.rs`) — applied *below* the object model, so
+- **Block cipher** (`data_crypto.rs`): applied *below* the object model, so
   that exactly two functions in the disk path see plaintext and everything
   above (`cow::operations`, the extent tree, content addressing) never learns
   encryption exists.
@@ -1157,7 +1157,7 @@ question a reader will ask: the object layer already verifies
 `blake3(decoded payload) == object_id` on every read, so a tampered or corrupt
 ciphertext block fails loudly there. Adding a second, independent
 authentication mechanism at the block layer would require persisting a
-nonce-and-tag table — a much larger format change — for a property the system
+nonce-and-tag table (a much larger format change) for a property the system
 already has.
 
 > The earlier numbered revision described AES-256-GCM and ChaCha20-Poly1305 with
@@ -1179,7 +1179,7 @@ iterated BLAKE3 (§5.3).
 
 ### 37.1. Audit events
 
-`AuditChainHead` is an `Inode`... — no. `AuditChainHead` is a field of the
+`AuditChainHead` is an `Inode`... no. `AuditChainHead` is a field of the
 `Root` (§30.1), and block 4 holds a genesis audit record (§11). An audit record
 type exists with a checksum.
 
@@ -1260,7 +1260,7 @@ independently checksummed (§10.2). Selection prefers the highest verifying
 ### 41.2. Recovery priority
 
 The head pair is read first, because copies 0 and 1 sit at fixed LBAs while the
-tail pair's LBAs depend on `total_blocks` — a value that comes *from* a decoded
+tail pair's LBAs depend on `total_blocks`, a value that comes *from* a decoded
 superblock. A volume whose head pair is destroyed is still recoverable, but only
 by a reader willing to search for the tail pair rather than compute its address.
 
@@ -1278,7 +1278,7 @@ by a reader willing to search for the tail pair rather than compute its address.
 
 The superblock carries a `version` field and the `Root` carries a schema
 version and a format version. A reader MUST refuse to mount a version it does
-not know rather than mount it optimistically — an unknown version is an unknown
+not know rather than mount it optimistically: an unknown version is an unknown
 *format*, and the fields it does recognise may not mean what it assumes.
 
 ### 43.2. Feature flags
@@ -1295,7 +1295,7 @@ defined:
 ### 43.3. Upgrade path
 
 > **Reserved.** No in-place upgrade is implemented. A format change is currently
-> a new volume plus `replication` (§31), which is itself reserved — so in
+> a new volume plus `replication` (§31), which is itself reserved, so in
 > practice, a rewrite of the data.
 
 ## 44. Production readiness tiers (Normative)
@@ -1314,8 +1314,8 @@ component is.
 Tier B is the honest and unusual category: the code exists and is tested, but
 nothing calls it in the shipping path. A reader deciding whether to depend on
 LedgerFS should read Tier B as "not available". The five Tier B subsystems that
-form a self-contained set — dedupe, snapshots, chunking, the scrubber and GC
-safety — are therefore built as the separate, unpublished `ledgerfs-pending`
+form a self-contained set (dedupe, snapshots, chunking, the scrubber and GC
+safety) are therefore built as the separate, unpublished `ledgerfs-pending`
 crate rather than shipped. The rest stay in this crate, because the on-disk
 structures they describe still have to be parsed to read a volume even when
 nothing here drives them.

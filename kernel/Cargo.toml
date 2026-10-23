@@ -3,7 +3,7 @@ name = "ledgerfs"
 version = "0.7.0"
 edition = "2024"
 rust-version = "1.89"
-description = "LedgerFS — the no_std on-disk format and copy-on-write operations of a content-addressed filesystem."
+description = "LedgerFS: the no_std on-disk format and copy-on-write operations of a content-addressed filesystem."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sing-Security/ledgerfs"
 readme = "README.md"
@@ -31,12 +31,12 @@ temper_sealing = ["dep:temper-rs"]
 # Transparent XTS-AES-256 encryption of a volume's raw blocks, applied at the
 # block device (below the CoW object model, not per chunk) and persisted as a
 # genesis-time `mkfs` choice in the superblock. OFF by default and opt-in per
-# volume — a lost or corrupted key makes the volume permanently unreadable, so
+# volume: a lost or corrupted key makes the volume permanently unreadable, so
 # it is a real user-facing tradeoff rather than a default. Zero cost when the
 # feature is absent from the build at all.
 data-encryption = ["dep:xts-mode", "dep:aes", "dep:zeroize", "dep:spin"]
 
-# NOTE: `unsafe_code` is NOT forbidden here — `no_std` bare-metal code requires
+# NOTE: `unsafe_code` is NOT forbidden here: `no_std` bare-metal code requires
 # some unsafe operations, but each MUST be documented with a SAFETY comment.
 
 [lints.clippy]
@@ -52,16 +52,16 @@ blake3 = { version = "1.8.4", default-features = false }
 # -- Serialization (no_std)
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
-# -- Compression (optional — the C bindings need libc, hence std)
+# -- Compression (optional: the C bindings need libc, hence std)
 zstd = { version = "0.13", default-features = false, optional = true }
 lz4 = { version = "1", default-features = false, optional = true }
 
-# -- Sync (no_std spin lock for ATA serialization — only with `reader` feature)
+# -- Sync (no_std spin lock for ATA serialization, only with `reader` feature)
 spin = { version = "0.9", default-features = false, features = ["spin_mutex"], optional = true }
-# -- Logging (no_std compatible — used by reader.rs for boot diagnostics)
+# -- Logging (no_std compatible, used by reader.rs for boot diagnostics)
 log = { version = "0.4", default-features = false }
 
-# -- Transparent block encryption (no_std, optional — only with
+# -- Transparent block encryption (no_std, optional, only with
 # `data-encryption`). `xts-mode` 0.6 requires `aes` 0.9 / `cipher` 0.5; a
 # consumer that already has an older `aes` in its graph keeps both, and they
 # never need to interoperate.
@@ -69,7 +69,7 @@ xts-mode = { version = "0.6", default-features = false, optional = true }
 aes = { version = "0.9", default-features = false, optional = true }
 zeroize = { version = "1", default-features = false, features = ["derive"], optional = true }
 
-# -- Temper sealing (optional — only with `temper_sealing`)
+# -- Temper sealing (optional, only with `temper_sealing`)
 temper-rs = { version = "0.7", default-features = false, features = ["alloc", "signatures"], optional = true }
 
 [dev-dependencies]
@@ -77,7 +77,7 @@ temper-rs = { version = "0.7", default-features = false, features = ["alloc", "s
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 # `compress`/`decompress` are backed by libzstd and liblz4, whose C bindings
-# need libc — the module only has real code with the `std` feature, and the
+# need libc; the module only has real code with the `std` feature, and the
 # rest of it is a stub that returns `Unsupported`. Running this suite without
 # that feature therefore tests the stub, not compression.
 [[test]]

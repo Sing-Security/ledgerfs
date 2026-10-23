@@ -1,7 +1,7 @@
 //! Error type for the host-side LedgerFS reader.
 //!
 //! Hand-written `Display` with one match arm per variant, no
-//! `thiserror`/`anyhow` — the Rust10x error pattern as this repo already
+//! `thiserror`/`anyhow`: the Rust10x error pattern as this repo already
 //! practises it in `ledgerfs/src/error.rs`.
 
 use std::fmt::{self, Display};
@@ -28,7 +28,7 @@ pub enum Error {
 		/// The open or read failure, as the operating system reported it.
 		detail: String,
 	},
-	/// No MBR signature at byte 510 — not a partitioned image.
+	/// No MBR signature at byte 510: not a partitioned image.
 	NoPartitionTable {
 		/// The image file whose MBR sector was read.
 		path: PathBuf,
@@ -54,7 +54,7 @@ pub enum Error {
 		detail: String,
 	},
 	/// The superblocks are valid and say nothing has ever been committed to
-	/// this volume — which is what the image initialiser leaves behind, not
+	/// this volume, which is what the image initialiser leaves behind, not
 	/// damage.
 	VolumeUncommitted {
 		/// The block count the valid superblock advertises.
@@ -87,7 +87,7 @@ pub enum Error {
 		offset: u64,
 		/// Bytes still outstanding at that point.
 		want: usize,
-		/// Bytes actually delivered — zero when the file reported end-of-file.
+		/// Bytes actually delivered: zero when the file reported end-of-file.
 		got: usize,
 	},
 	/// A length that has to be a whole number of blocks is not one.
@@ -123,7 +123,7 @@ pub enum Error {
 	},
 	/// A staged operation would take a staging session past the capacity the
 	/// session was opened with. The operation is refused and the session is
-	/// left as it was — it is not a partial write, and it does not auto-seal.
+	/// left as it was: it is not a partial write, and it does not auto-seal.
 	StagingFull {
 		/// Session total in bytes the operation would have reached.
 		wanted: u64,
@@ -134,13 +134,13 @@ pub enum Error {
 	// -- Filesystem verbs
 	/// An operation the store's contract does not cover, named as the caller
 	/// called it. Currently the cross-directory `rename` and any `write_at`
-	/// that would land inside a file's existing bytes — both refusals rather
+	/// that would land inside a file's existing bytes; both refusals rather
 	/// than corruptions, see [`Store::rename`](crate::Store::rename).
 	Unsupported {
 		/// What was refused, named in the caller's own terms.
 		detail: String,
 	},
-	/// A file the store reads as text — an app-store marker — is not UTF-8.
+	/// A file the store reads as text (an app-store marker) is not UTF-8.
 	/// Surfaced rather than swallowed: a volume that calls itself an app store
 	/// and then cannot say whose is worth a caller's attention.
 	MarkerUnreadable {
@@ -162,7 +162,7 @@ pub enum Error {
 	},
 
 	// -- Access
-	/// A write was attempted on a volume that cannot take one — either the
+	/// A write was attempted on a volume that cannot take one: either the
 	/// device was opened read-only, or there is no allocator snapshot on the
 	/// volume. Both are stated in `detail`, because both arrive at the same
 	/// place in `commit`.
@@ -172,7 +172,7 @@ pub enum Error {
 		detail: String,
 	},
 	/// A second writer tried to open a volume an existing writer already holds.
-	/// LedgerFS is **one writer per volume** — the allocator snapshot is not
+	/// LedgerFS is **one writer per volume**: the allocator snapshot is not
 	/// shareable, so two writable handles would place objects on the same
 	/// "free" blocks. The lock that enforces this is an advisory OS file lock,
 	/// taken by every writable [`FileBlockDevice`](crate::FileBlockDevice);
@@ -212,7 +212,7 @@ impl Display for Error {
 			Self::Mount { detail } => write!(f, "mount failed: {detail}"),
 			Self::VolumeUncommitted { total_blocks } => write!(
 				f,
-				"this is a valid LedgerFS volume ({total_blocks} blocks) with no committed root — \
+				"this is a valid LedgerFS volume ({total_blocks} blocks) with no committed root; \
 				 it has been initialised but never formatted, so there is nothing to mount"
 			),
 			Self::RootUnreadable { detail } => write!(f, "root object is unreadable: {detail}"),
@@ -245,19 +245,19 @@ impl Display for Error {
 			Self::StagingFull { wanted, capacity } => write!(
 				f,
 				"staging is full: this operation would take the session to {wanted} bytes of its \
-				 {capacity}-byte budget — seal or end the session, or open a larger one"
+				 {capacity}-byte budget; seal or end the session, or open a larger one"
 			),
 			Self::Unsupported { detail } => write!(f, "unsupported: {detail}"),
 			Self::MarkerUnreadable { path, detail } => {
 				write!(f, "{path} is not readable text: {detail}")
 			}
 			Self::ContentMismatch { path, local, detail } => {
-				write!(f, "content mismatch: {path} does not match {local} — {detail}")
+				write!(f, "content mismatch: {path} does not match {local}; {detail}")
 			}
 			Self::ReadOnly { detail } => write!(f, "cannot write to this volume: {detail}"),
 			Self::Locked { path } => write!(
 				f,
-				"{} is already open for writing by another handle — LedgerFS allows one \
+				"{} is already open for writing by another handle; LedgerFS allows one \
 				 writer per volume (open it read-only to read a live volume)",
 				path.display()
 			),

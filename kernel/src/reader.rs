@@ -1,4 +1,4 @@
-//! LedgerFS shared reader — kernel-mode read-only access to on-disk objects.
+//! LedgerFS shared reader: kernel-mode read-only access to on-disk objects.
 //!
 //! This module provides a minimal, read-only path into LedgerFS for the
 //! kernel boot sequence and any post-boot kernel code that needs to read
@@ -79,7 +79,7 @@ const STORED_LEN_OFFSET: usize = 12;
 /// is not.
 const COMPRESSION_OFFSET: usize = 10;
 
-/// Byte offset of the `logical_len` (u32 LE) — the size *before* compression,
+/// Byte offset of the `logical_len` (u32 LE), the size *before* compression,
 /// and the length `decompress` must reproduce.
 const LOGICAL_LEN_OFFSET: usize = 16;
 
@@ -92,7 +92,7 @@ const START_BLOCK: u64 = crate::RESERVED_HEADER_BLOCKS;
 /// This is a *floor*, not the real bound: a compiled-in constant cannot know
 /// how big the image it is reading is. Successive bumps (4096 → 16384) each
 /// held only until the next larger image, and the failure mode is silent and
-/// misleading — an object written past the limit is simply reported
+/// misleading: an object written past the limit is simply reported
 /// `NOT FOUND`, indistinguishable from corruption. Installing a 63 MB guest
 /// ISO put objects at block 22394 and broke it again.
 ///
@@ -125,7 +125,7 @@ const MAX_RANGE_READ: usize = 8 * 1024 * 1024; // 8 MiB
 // crate-level `ATA_LOCK`, the raw `inb`/`outb`, the two bulk transfers, and
 // the wait helpers all now live in `crate::ata_io`, so the write path
 // (`writer.rs`) serializes through the exact same bus lock instead of a
-// second, separate one — see that module's doc comment for why two locks
+// second, separate one; see that module's doc comment for why two locks
 // would be a real correctness hazard, not just a style preference.
 use crate::ata_io::{
 	ATA_DATA, ATA_PRIMARY_BASE, ATA_STATUS_CMD, AtaError, SECTOR_SIZE, ata_wait_not_busy, ata_wait_ready, outb,
@@ -134,13 +134,13 @@ use crate::ata_io::{
 /// READ SECTORS command (28-bit LBA PIO). Read-specific, stays local.
 const ATA_CMD_READ_SECTORS: u8 = 0x20;
 
-/// READ SECTORS EXT — the 48-bit LBA counterpart of `ATA_CMD_READ_SECTORS`.
+/// READ SECTORS EXT, the 48-bit LBA counterpart of `ATA_CMD_READ_SECTORS`.
 const ATA_CMD_READ_SECTORS_EXT: u8 = 0x24;
 
 // ── Configurable operating limits ────────────────────────────────────
 //
 // This crate is a dependency of the consuming kernel, not the other way
-// around — `reader.rs` cannot reach the mount registry, which lives in the
+// around: `reader.rs` cannot reach the mount registry, which lives in the
 // higher-level crate. Instead, whoever parses the superblock and registers
 // the mount pushes the resolved limits down into this module via
 // `set_limits`. Nothing in this tree calls it: it is a seam for the
@@ -157,7 +157,7 @@ static LIMITS: spin::Mutex<Option<crate::superblock::LedgerFsLimits>> = spin::Mu
 ///
 /// `read_object`'s fallback is a linear scan of the whole store, and each
 /// block costs an `ata_pio_read`. That is affordable once and ruinous
-/// repeated — a lookup *miss* would otherwise re-sweep the entire store.
+/// repeated: a lookup *miss* would otherwise re-sweep the entire store.
 ///
 /// The scan already parses every block header to compare ids; this keeps what
 /// it learns. Only an 8-byte id prefix is stored. A prefix collision is not a
@@ -220,7 +220,7 @@ fn index_install(entries: Vec<(u64, u64)>, complete: bool) {
 
 	// Merge rather than replace. A sweep that exits early covers only
 	// START_BLOCK..hit, so replacing outright would *shrink* an index built by
-	// an earlier full sweep and silently send later blocks back to scanning —
+	// an earlier full sweep and silently send later blocks back to scanning,
 	// which is the case after any write, since a write clears `complete` and
 	// the next lookup is likely to exit early. Both lists are in ascending
 	// block order, so this is a linear merge; on a tie the newer entry wins,
@@ -266,7 +266,7 @@ fn merge_by_block(old: Vec<(u64, u64)>, new: Vec<(u64, u64)>) -> Vec<(u64, u64)>
 /// anything that writes to it.
 ///
 /// The recorded *entries* deliberately survive. A write can make an entry
-/// stale — the block it names may now hold something else — but every
+/// stale (the block it names may now hold something else), but every
 /// candidate is re-read and its full 32-byte id compared before being
 /// returned, so a stale entry costs one wasted read and can never yield wrong
 /// data. What a write genuinely invalidates is only the `complete` claim: the
@@ -293,7 +293,7 @@ pub fn set_limits(limits: crate::superblock::LedgerFsLimits) {
 	*LIMITS.lock() = Some(limits);
 }
 
-/// Resolved `max_object_bytes` — see `LedgerFsLimits::max_object_bytes` doc
+/// Resolved `max_object_bytes`; see `LedgerFsLimits::max_object_bytes` doc
 /// comment for what this bounds. Falls back to the pre-config hardcoded
 /// default (256 KiB) if `set_limits` was never called or the volume's
 /// value is 0 ("absent").
@@ -329,8 +329,8 @@ fn resolved_max_blocks() -> u64 {
 ///
 /// # Arguments
 ///
-/// * `lba` — Starting Logical Block Address (28-bit, 0..0x0FFF_FFFF).
-/// * `buf` — Output buffer; length must be a multiple of 512 bytes.
+/// * `lba`: Starting Logical Block Address (28-bit, 0..0x0FFF_FFFF).
+/// * `buf`: Output buffer; length must be a multiple of 512 bytes.
 ///
 /// # Safety
 ///
@@ -377,7 +377,7 @@ pub(crate) unsafe fn ata_pio_read(lba: u64, buf: &mut [u8]) -> Result<(), AtaErr
 	Ok(())
 }
 
-/// Stub for non-x86_64 targets (compile gate only — never callable).
+/// Stub for non-x86_64 targets (compile gate only, never callable).
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) unsafe fn ata_pio_read(_lba: u64, _buf: &mut [u8]) -> Result<(), AtaError> {
 	Err(AtaError::InvalidLba)
@@ -401,10 +401,10 @@ pub(crate) unsafe fn ata_pio_read(_lba: u64, _buf: &mut [u8]) -> Result<(), AtaE
 /// [`crate::commit::AtaBlockDevice`] entirely (it does its own raw
 /// sector-address arithmetic for the scan/hint fast paths). Without this
 /// wrapper the write side would encrypt while this side kept reading raw
-/// ciphertext — every object would fail its `blake3(payload) == object_id`
+/// ciphertext: every object would fail its `blake3(payload) == object_id`
 /// check and the volume would look universally corrupt. A no-op when the
 /// `data-encryption` feature is off, when no key is active for this
-/// partition, or for plaintext-header blocks — see `crate::data_crypto`.
+/// partition, or for plaintext-header blocks; see `crate::data_crypto`.
 ///
 /// # Safety
 ///
@@ -477,14 +477,14 @@ unsafe fn try_read_block(
 	// Encrypted records are still unreadable here; compressed ones are not.
 	//
 	// This used to reject both, which is why turning compression on at the
-	// write path made every object unreadable — writes succeeded and the
+	// write path made every object unreadable: writes succeeded and the
 	// read-back failed, surfacing as a create failure a hundred rows into a
 	// directory. The algorithm byte is now carried down to the payload
 	// assembly below.
 	let compression_algo = block_buf[COMPRESSION_OFFSET];
 	if block_buf[COMPRESSION_OFFSET + 1] != 0 {
 		log::trace!(
-			"[ledgerfs-reader] try_read_block: block {} encrypted — skipping",
+			"[ledgerfs-reader] try_read_block: block {} encrypted, skipping",
 			block_idx
 		);
 		return Err(ReaderError::NotFound);
@@ -509,7 +509,7 @@ unsafe fn try_read_block(
 	let stored_object_id = &block_buf[OBJECT_ID_OFFSET..OBJECT_ID_OFFSET + 32];
 	if stored_object_id != object_id.as_bytes() {
 		log::debug!(
-			"[ledgerfs-reader] try_read_block: block {} ObjectId MISMATCH — stored={:02x}{:02x}{:02x}{:02x}.. expected={:02x}{:02x}{:02x}{:02x}.. (obj_type={:02x}{:02x})",
+			"[ledgerfs-reader] try_read_block: block {} ObjectId MISMATCH: stored={:02x}{:02x}{:02x}{:02x}.. expected={:02x}{:02x}{:02x}{:02x}.. (obj_type={:02x}{:02x})",
 			block_idx,
 			stored_object_id[0],
 			stored_object_id[1],
@@ -529,17 +529,17 @@ unsafe fn try_read_block(
 	let total_record_len = HEADER_SIZE + stored_len;
 
 	let payload = if total_record_len <= BLOCK_SIZE {
-		// Single-block fast path — payload fits entirely in the first block.
+		// Single-block fast path: payload fits entirely in the first block.
 		let payload_end = HEADER_SIZE + stored_len;
 		if payload_end > block_buf.len() {
 			return Err(ReaderError::NotFound);
 		}
 		block_buf[HEADER_SIZE..payload_end].to_vec()
 	} else {
-		// Multi-block path — payload spans consecutive blocks.
+		// Multi-block path: payload spans consecutive blocks.
 		let extra_blocks = (total_record_len - BLOCK_SIZE).div_ceil(BLOCK_SIZE);
 		log::debug!(
-			"[ledgerfs-reader] try_read_block: block {} multi-block record — stored_len={} total_blocks={}",
+			"[ledgerfs-reader] try_read_block: block {} multi-block record: stored_len={} total_blocks={}",
 			block_idx,
 			stored_len,
 			1 + extra_blocks,
@@ -624,7 +624,7 @@ unsafe fn try_read_block(
 	let computed_hash = blake3::hash(&payload);
 	if computed_hash.as_bytes() != object_id.as_bytes() {
 		log::error!(
-			"[ledgerfs-reader] try_read_block: block {} BLAKE3 MISMATCH — hash={:02x}{:02x}{:02x}{:02x}.. header={:02x}{:02x}{:02x}{:02x}.. (stored_len={})",
+			"[ledgerfs-reader] try_read_block: block {} BLAKE3 MISMATCH: hash={:02x}{:02x}{:02x}{:02x}.. header={:02x}{:02x}{:02x}{:02x}.. (stored_len={})",
 			block_idx,
 			computed_hash.as_bytes()[0],
 			computed_hash.as_bytes()[1],
@@ -659,7 +659,7 @@ unsafe fn try_read_block(
 /// (wrong ID, bad magic, I/O error) the function falls back to the linear
 /// scan over `START_BLOCK..(START_BLOCK + MAX_BLOCKS)`.
 ///
-/// Pass `None` (or `Some(0)`) when no hint is available — e.g. for the
+/// Pass `None` (or `Some(0)`) when no hint is available, e.g. for the
 /// root inode whose hint is not yet known.
 ///
 /// Compressed and encrypted records are rejected (reader is plaintext-only).
@@ -698,14 +698,14 @@ pub unsafe fn read_object(
 				}
 				Err(ReaderError::ChecksumMismatch) => {
 					log::error!(
-						"[ledgerfs-reader] read_object: HINT block {} checksum mismatch — aborting",
+						"[ledgerfs-reader] read_object: HINT block {} checksum mismatch, aborting",
 						block_idx
 					);
 					return Err(ReaderError::ChecksumMismatch);
 				}
 				Err(e) => {
 					log::warn!(
-						"[ledgerfs-reader] read_object: HINT MISS at block {} ({:?}) — falling back to scan",
+						"[ledgerfs-reader] read_object: HINT MISS at block {} ({:?}), falling back to scan",
 						block_idx,
 						e,
 					);
@@ -737,7 +737,7 @@ pub unsafe fn read_object(
 	}
 
 	// A complete index has seen every object in the store, so a miss here is
-	// authoritative — re-sweeping 16384 blocks to rediscover that is exactly
+	// authoritative: re-sweeping 16384 blocks to rediscover that is exactly
 	// the cost this index exists to remove.
 	if index_is_complete() {
 		log::debug!("[ledgerfs-reader] read_object: NOT FOUND (complete index, no scan)");
@@ -785,7 +785,7 @@ pub unsafe fn read_object(
 
 		blocks_with_magic += 1;
 
-		// Record it regardless of whether it is the object being looked for —
+		// Record it regardless of whether it is the object being looked for;
 		// capturing the sweep is the whole point.
 		{
 			let seen = &block_buf[OBJECT_ID_OFFSET..OBJECT_ID_OFFSET + 8];
@@ -795,7 +795,7 @@ pub unsafe fn read_object(
 
 		// Encrypted records are skipped; compressed ones are decoded below.
 		// (This function duplicates `try_read_block`'s header parsing rather
-		// than calling it, so the same handling has to exist twice — worth
+		// than calling it, so the same handling has to exist twice, worth
 		// collapsing, but not while changing what it does.)
 		let compression_algo = block_buf[COMPRESSION_OFFSET];
 		if block_buf[COMPRESSION_OFFSET + 1] != 0 {
@@ -1010,7 +1010,7 @@ pub unsafe fn walk_path(
 		let dir = decode_dir_node(&dir_bytes)?;
 
 		log::debug!(
-			"[ledgerfs-reader] walk_path: component '{}' — dir has {} entries",
+			"[ledgerfs-reader] walk_path: component '{}': dir has {} entries",
 			component,
 			dir.entries.len(),
 		);
@@ -1050,7 +1050,7 @@ pub unsafe fn walk_path(
 	let final_bytes = unsafe { read_object(partition_start_lba, &current_ref.object_id, hint_opt(&current_ref.hint)) }?;
 	let inode = decode_inode(&final_bytes)?;
 	log::debug!(
-		"[ledgerfs-reader] walk_path: final inode OK — kind={:?} size={} obj_id={:02x}{:02x}{:02x}{:02x}...",
+		"[ledgerfs-reader] walk_path: final inode OK: kind={:?} size={} obj_id={:02x}{:02x}{:02x}{:02x}...",
 		inode.kind,
 		inode.size,
 		inode.object_id.as_bytes()[0],
@@ -1061,7 +1061,7 @@ pub unsafe fn walk_path(
 	Ok((inode, current_ref))
 }
 
-/// One resolved entry from [`read_dir_entries`] — a directory child's name
+/// One resolved entry from [`read_dir_entries`]: a directory child's name
 /// plus whether it is itself a directory (resolved from the child's own
 /// `Inode.kind`, not inferred from its contents).
 #[derive(Debug, Clone)]
@@ -1079,7 +1079,7 @@ pub struct DirListEntry {
 /// Unlike [`walk_path`], which only ever needs to know whether an
 /// intermediate component is a directory, this resolves every child's own
 /// inode too, so the caller can report `d` vs `f` per entry the same way
-/// `readdir(3)` callers expect — without that, every LedgerFS-backed
+/// `readdir(3)` callers expect; without that, every LedgerFS-backed
 /// directory listing has to fall back to a filesystem with no knowledge of
 /// this tree at all.
 ///
@@ -1248,7 +1248,7 @@ pub unsafe fn load_extent_map(partition_start_lba: u32, file_inode_ref: &ObjectR
 	let inode = decode_inode(&inode_bytes)?;
 
 	log::debug!(
-		"[ledgerfs-reader] load_extent_map: inode decoded — kind={:?} size={} content_ref.id={:02x}{:02x}{:02x}{:02x}.. content_ref.hint={}",
+		"[ledgerfs-reader] load_extent_map: inode decoded: kind={:?} size={} content_ref.id={:02x}{:02x}{:02x}{:02x}.. content_ref.hint={}",
 		inode.kind,
 		inode.size,
 		inode.content_ref.object_id.as_bytes()[0],
@@ -1284,7 +1284,7 @@ pub unsafe fn load_extent_map(partition_start_lba: u32, file_inode_ref: &ObjectR
 /// Read a byte range from a file using a previously loaded [`ExtentMap`].
 ///
 /// Only the extents that overlap `[offset, offset+buf.len())` are fetched
-/// from disk — the inode and extent-node are not re-read, making this
+/// from disk; the inode and extent-node are not re-read, making this
 /// cheap to call repeatedly for the same file.
 ///
 /// Returns the number of bytes copied into `buf` (0 means EOF or
@@ -1340,11 +1340,11 @@ pub unsafe fn read_range_cached(
 
 		let source = &chunk_bytes[chunk_offset..chunk_end];
 		// The destination position in `buf` must be derived from the
-		// extent's own logical position relative to `offset` — NOT from
+		// extent's own logical position relative to `offset`, NOT from
 		// `total_read` (a running sum of bytes copied so far). Those
 		// usually coincide for a gapless, in-order extent list, but
 		// "usually" silently produces a corrupted (shifted) buffer instead
-		// of a length mismatch whenever they don't — e.g. the first
+		// of a length mismatch whenever they don't, e.g. the first
 		// intersecting extent overlapping less than expected. A ~11 MiB
 		// file with ~2800 extents (the Alpine kernel image) hit exactly
 		// this: bytes ended up shifted by a small, fixed number of bytes
@@ -1412,7 +1412,7 @@ mod object_index_tests {
 	use super::*;
 
 	/// `OBJECT_INDEX` is one global shared by the whole crate, and the test
-	/// harness runs tests in parallel — without this every test below would be
+	/// harness runs tests in parallel; without this every test below would be
 	/// racing the others for it. Held for the body of each test that touches
 	/// the global; the pure `merge_by_block` tests do not need it.
 	static INDEX_TEST_LOCK: spin::Mutex<()> = spin::Mutex::new(());

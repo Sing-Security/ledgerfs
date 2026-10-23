@@ -105,7 +105,7 @@ impl AllocNode {
 	/// Without this the map only ever grows. [`split_and_allocate`] turns one
 	/// Free extent into an Allocated extent plus a Free remainder on every
 	/// allocation, so N sequential allocations leave N separate Allocated
-	/// entries describing what is really one contiguous run — and since the
+	/// entries describing what is really one contiguous run. Since the
 	/// allocator hands blocks out in order, that is the normal case, not a
 	/// pathological one.
 	///
@@ -204,7 +204,7 @@ impl AllocNode {
 		}
 
 		// The freshly allocated run is normally adjacent to the previous
-		// allocation — this is the merge that keeps the node bounded.
+		// allocation; this is the merge that keeps the node bounded.
 		self.coalesce_around(lba);
 
 		self.update_statistics();
@@ -285,10 +285,10 @@ impl AllocNode {
 	/// location.
 	///
 	/// Block layout:
-	/// - Bytes  0–7:  [`crate::ALLOC_SNAPSHOT_MAGIC`]
-	/// - Bytes  8–11: payload length (u32 LE)
-	/// - Bytes 12–19: BLAKE3-64 checksum of the payload
-	/// - Bytes 20–..: postcard payload, zero-padded to the end of the block
+	/// - Bytes  0-7:  [`crate::ALLOC_SNAPSHOT_MAGIC`]
+	/// - Bytes  8-11: payload length (u32 LE)
+	/// - Bytes 12-19: BLAKE3-64 checksum of the payload
+	/// - Bytes 20-..: postcard payload, zero-padded to the end of the block
 	///
 	/// The checksum is what makes a torn or half-written block detectable:
 	/// resuming a volume with a *wrong* allocator state is worse than not
@@ -301,7 +301,7 @@ impl AllocNode {
 	/// [`Error::Custom`] if the encoded node does not fit in one block. That
 	/// is a real bound (a heavily fragmented volume has many extents), and
 	/// the caller must respond by *invalidating* the on-disk snapshot rather
-	/// than leaving a stale one behind — see
+	/// than leaving a stale one behind; see
 	/// `MountedVolume::persist_alloc_snapshot`.
 	pub fn encode_snapshot_block(&self, block_size: usize) -> Result<Vec<u8>> {
 		const HEADER: usize = 20;
@@ -322,7 +322,7 @@ impl AllocNode {
 
 	/// Parse a block written by [`encode_snapshot_block`](Self::encode_snapshot_block).
 	///
-	/// Returns `Ok(None)` — not an error — when the block holds no valid
+	/// Returns `Ok(None)` (not an error) when the block holds no valid
 	/// snapshot (never written, wrong magic, implausible length, checksum
 	/// mismatch, or an undecodable payload). "No snapshot" is an expected,
 	/// recoverable state: every volume formatted before this existed reads
@@ -377,7 +377,7 @@ mod tests {
 
 	type TestResult<T> = core::result::Result<T, Box<dyn core::error::Error>>;
 
-	/// A sequential allocation pattern — what the allocator actually does —
+	/// A sequential allocation pattern (what the allocator actually does)
 	/// must not grow the node without bound. Before coalescing existed this
 	/// added one extent per allocation, and the encoded node outgrew its
 	/// single 4 KiB snapshot block after roughly a dozen commits, which left
@@ -403,13 +403,13 @@ mod tests {
 		assert_eq!(allocated.block_count, 800, "the whole run should be one extent");
 
 		// And the encoded form must still fit the snapshot block it has to
-		// live in — the property that actually broke.
+		// live in, the property that actually broke.
 		let encoded = node.encode_snapshot_block(4096)?;
 		assert_eq!(encoded.len(), 4096);
 		Ok(())
 	}
 
-	/// Extents that are adjacent but differ in state must stay separate —
+	/// Extents that are adjacent but differ in state must stay separate:
 	/// merging them would report allocated blocks as free.
 	#[test]
 	fn adjacent_extents_of_different_states_do_not_merge() -> TestResult<()> {
@@ -480,7 +480,7 @@ mod tests {
 		let node = fixture_fresh_volume_node(131_072)?;
 		let good = node.encode_snapshot_block(block_size)?;
 
-		// -- Exec & Check: never written (all zeros) — the state of every
+		// -- Exec & Check: never written (all zeros); the state of every
 		// volume formatted before snapshots existed.
 		assert!(AllocNode::decode_snapshot_block(&alloc::vec![0u8; block_size])?.is_none());
 
@@ -489,7 +489,7 @@ mod tests {
 		wrong_magic[0] ^= 0xFF;
 		assert!(AllocNode::decode_snapshot_block(&wrong_magic)?.is_none());
 
-		// Payload corrupted after the header — a torn write. The length and
+		// Payload corrupted after the header: a torn write. The length and
 		// magic still look right, so only the checksum can catch this.
 		let mut corrupt = good.clone();
 		corrupt[25] ^= 0xFF;

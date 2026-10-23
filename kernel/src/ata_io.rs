@@ -7,7 +7,7 @@
 //! ATA PIO is a single shared bus: only one command sequence (register
 //! setup → command → per-sector data transfer) may be in flight at a time,
 //! enforced by [`ATA_LOCK`]. Reads and writes MUST serialize through the
-//! *same* lock — two independent locks guarding the same physical bus would
+//! *same* lock: two independent locks guarding the same physical bus would
 //! let a read and a write interleave their port I/O on the wire, corrupting
 //! both. Before this module existed, `reader.rs` owned a private copy of
 //! this lock and all these primitives; adding a write path required either
@@ -134,7 +134,7 @@ pub enum AtaError {
 
 // region: --- Crate-level ATA lock
 
-/// Serializes all ATA PIO accesses across the kernel — reads AND writes.
+/// Serializes all ATA PIO accesses across the kernel: reads AND writes.
 ///
 /// Because ATA PIO is a shared bus with a multi-step port I/O protocol,
 /// concurrent callers must be prevented from interleaving commands.
@@ -184,12 +184,12 @@ impl Drop for AtaBusGuard {
 /// Acquire the ATA bus for one whole command sequence.
 ///
 /// **Interrupts are disabled for the lifetime of the returned guard.** This
-/// is not incidental hardening — it is required for correctness on a
+/// is not incidental hardening: it is required for correctness on a
 /// single-core system. [`ATA_LOCK`] is a bare `spin::Mutex`: a waiter busy-
 /// spins and never yields. If the timer interrupt preempts a task that is
 /// mid-command-sequence (holding the lock) and the scheduler runs a
 /// different task that also touches the ATA bus, that second task spins
-/// forever on a lock whose holder can never be rescheduled to release it —
+/// forever on a lock whose holder can never be rescheduled to release it:
 /// a hard, unrecoverable deadlock, not a slowdown. That is exactly what a
 /// data-volume open was hitting: a `read_object` block read would hang the
 /// whole disk path permanently, midway through a path walk whose earlier
@@ -197,7 +197,7 @@ impl Drop for AtaBusGuard {
 ///
 /// Clearing IF before taking the lock (not after) closes the same window on
 /// the acquisition side. Interrupts stay off only for a single command
-/// sequence — one block, not a whole scan — so a linear scan still services
+/// sequence (one block, not a whole scan), so a linear scan still services
 /// interrupts between blocks.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn lock_ata_bus() -> AtaBusGuard {

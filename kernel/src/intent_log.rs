@@ -280,7 +280,7 @@ impl IntentLog {
 
 		// Handle wrapping
 		if offset + aligned_len <= self.ring_size {
-			// No wrap needed — encode to temp first, then NT-write to ring.
+			// No wrap needed: encode to temp first, then NT-write to ring.
 			let mut temp = vec![0u8; aligned_len];
 			record.encode(&mut temp[..record_len])?;
 			// SAFETY: ring[offset..] is valid for aligned_len bytes (checked above).
@@ -291,7 +291,7 @@ impl IntentLog {
 			}
 			sfence(); // MUST precede any subsequent storage barrier (§15.3)
 		} else {
-			// Need to wrap — encode to temp, then NT-write in two parts.
+			// Need to wrap: encode to temp, then NT-write in two parts.
 			let first_part = self.ring_size - offset;
 			let second_part = aligned_len - first_part;
 

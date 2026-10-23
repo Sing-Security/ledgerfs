@@ -7,7 +7,7 @@
 //! without reading anything, and `attempt_repair` relocates without reading the
 //! alternate location, so both count work done rather than confirm it. None of
 //! the three verification kinds listed below is performed. Nothing in the host
-//! `Store` calls either entry point — `KNOWN_ISSUES.md` §11.
+//! `Store` calls either entry point (see `KNOWN_ISSUES.md` §11).
 //!
 //! Per §40 of FORMAT.md:
 //! - Verify stored_hash and ObjectId checksums
@@ -279,7 +279,7 @@ impl Default for ScrubberState {
 #[inline]
 fn prefetch_nta(ptr: *const u8) {
 	#[cfg(all(target_arch = "x86_64", not(test)))]
-	// SAFETY: prefetch is a pure hint — it never faults and has no observable
+	// SAFETY: prefetch is a pure hint: it never faults and has no observable
 	// side-effects beyond cache state. The pointer need not be valid for a read.
 	unsafe {
 		core::arch::x86_64::_mm_prefetch(ptr as *const i8, core::arch::x86_64::_MM_HINT_NTA);
@@ -389,8 +389,8 @@ impl Scrubber {
 	/// Attempt repair of corrupted object
 	///
 	/// Marks the primary location stale, then relocates to the alternate
-	/// locator supplied. Steps 2 and 3 of the intended sequence — read the
-	/// alternate, verify its hash — are not performed, so the relocation is
+	/// locator supplied. Steps 2 and 3 of the intended sequence (read the
+	/// alternate, verify its hash) are not performed, so the relocation is
 	/// recorded as a successful repair on the strength of the locator alone,
 	/// and a `true` return means an attempt was made rather than a repair
 	/// confirmed. See `KNOWN_ISSUES.md` §11.
@@ -423,7 +423,7 @@ impl Scrubber {
 		// The alternate location is not read, so nothing is verified: the
 		// relocation below is recorded as a successful repair on the strength
 		// of the locator alone. `repairs_successful` therefore counts repairs
-		// that were attempted, not repairs that were confirmed — see
+		// that were attempted, not repairs that were confirmed; see
 		// `KNOWN_ISSUES.md` §11.
 
 		// Relocate to alternate location
@@ -442,7 +442,7 @@ impl Scrubber {
 	/// Scrub batch of objects from dedupe index
 	///
 	/// Returns the number of entries walked in this batch. No object is read,
-	/// so that is not the number verified — the loop advances a cursor and
+	/// so that is not the number verified: the loop advances a cursor and
 	/// counts. Respects throttling configuration: if `write_queue_depth` meets
 	/// or exceeds `pause_threshold_queue_depth`, the scrubber pauses itself and
 	/// returns 0 immediately.
@@ -489,7 +489,7 @@ impl Scrubber {
 
 			// No read is issued. This loop advances the scan cursor and counts
 			// entries without looking at any of them, so the count it returns
-			// is the number of entries walked, not the number verified — see
+			// is the number of entries walked, not the number verified; see
 			// `KNOWN_ISSUES.md` §11.
 
 			self.state.last_scanned_object = Some(*object_id);

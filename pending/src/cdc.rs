@@ -114,7 +114,7 @@ static GEAR_TABLE: GearTableCell = GearTableCell(UnsafeCell::new(None));
 /// 2. Table is read-only after initialization
 /// 3. No concurrent modification (single-threaded kernel context during init)
 fn get_gear_table() -> &'static GearTable {
-	// SAFETY: see this function's `# Safety` section above — initialization
+	// SAFETY: see this function's `# Safety` section above; initialization
 	// is idempotent, runs single-threaded in the boot path, and the table is
 	// read-only once published.
 	unsafe {

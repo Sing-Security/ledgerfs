@@ -3,7 +3,7 @@
 //! Three things go wrong here and they want different treatment: an engine
 //! refuses a workload it cannot express, the environment fails, or the caller
 //! asked for something that does not exist. Only the middle one is a failed
-//! run — the first is a *result*, recorded as a gap rather than as a zero.
+//! run; the first is a *result*, recorded as a gap rather than as a zero.
 
 use std::fmt;
 

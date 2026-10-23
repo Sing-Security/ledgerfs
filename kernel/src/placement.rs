@@ -103,7 +103,7 @@ impl PlacementEngine {
 			// directory node's canonical form reached 4,059 bytes, the
 			// allocator rounded that to one 4,096-byte block, and the writer
 			// needed 4,119. It surfaced as an opaque `Os { code: 4 }` at the
-			// caller and was read as a "400-row table ceiling" — the real
+			// caller and was read as a "400-row table ceiling": the real
 			// ceiling was wherever the payload happened to cross a block.
 			//
 			// Compression can only shrink the stored form (`ObjectRecordWriter`
@@ -172,7 +172,7 @@ impl PlacementEngine {
 			// carries canonical bytes forward without their kind, and nothing
 			// reads the field back: a reader locates an object by its id and
 			// decodes the payload's own header. So this is uniform rather than
-			// wrong about any particular object — but it is not a type.
+			// wrong about any particular object, but it is not a type.
 			let record = ObjectRecord::from_object_id(
 				placed.object_id,
 				&placed.canonical_bytes,
@@ -237,7 +237,7 @@ mod tests {
 		// still has a 60-byte `ObjectRecordHeader` written in front of it by
 		// `commit()`. Sizing the allocation from the payload alone
 		// under-allocates by exactly that, and the commit dies with
-		// `BufferTooSmall` — which is what capped a directory on the data
+		// `BufferTooSmall`, which is what capped a directory on the data
 		// volume at ~103 entries (payload 4,059, one 4,096-byte block
 		// allocated, 4,119
 		// needed).
@@ -402,13 +402,13 @@ mod tests {
 	/// Regression test for a real bug: `Allocator::allocate` used to compute
 	/// `block_count` in 512-byte units (`allocator::BLOCK_SIZE_BYTES` was
 	/// hardcoded to 512, an ATA sector size) while `AllocNode`/
-	/// `find_free_extent`/`split_and_allocate` — and this crate's own
+	/// `find_free_extent`/`split_and_allocate` (and this crate's own
 	/// `physical_lba`/`block_count` contract downstream in `commit.rs`
 	/// (`buf_len = block_count * crate::BLOCK_SIZE`, `crate::BLOCK_SIZE ==
-	/// 4096`) — all operate in 4 KiB block units. Any object over 512 bytes
+	/// 4096`) all operate in 4 KiB block units. Any object over 512 bytes
 	/// was placed (and its write buffer sized) as if it needed up to 8x more
-	/// space than it actually did, silently reserving — and then zeroing out
-	/// via the oversized write — whatever real content sat in the extra
+	/// space than it actually did, silently reserving (and then zeroing out
+	/// via the oversized write) whatever real content sat in the extra
 	/// blocks immediately after it. A single ~600-byte object (comfortably
 	/// under one real 4 KiB block, but over the old, wrong 512-byte
 	/// threshold) is enough to trigger the bug were it still present: this
@@ -453,7 +453,7 @@ mod tests {
 		assert_eq!(
 			(lba0 as i64 - lba1 as i64).unsigned_abs(),
 			1,
-			"the two objects must land in adjacent 4 KiB blocks (lba0={lba0}, lba1={lba1}) — a gap here means \
+			"the two objects must land in adjacent 4 KiB blocks (lba0={lba0}, lba1={lba1}); a gap here means \
 			 phantom extra space was reserved per object"
 		);
 

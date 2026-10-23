@@ -2,7 +2,7 @@
 //!
 //! All mutation operations return a [`TxnPlan`] listing newly-created objects;
 //! the caller commits the plan by writing those objects to storage and updating
-//! the active root.  Read operations (`read`, `readdir`) are pure queries —
+//! the active root.  Read operations (`read`, `readdir`) are pure queries:
 //! they do not modify any state.
 //!
 //! Every operation that reads existing objects requires an [`ObjectStore`]
@@ -32,8 +32,8 @@ use crate::object::{
 ///
 /// # Single-level limitation
 ///
-/// This only CoW-copies **one level up** — `parent_dir_ref`'s own inode and
-/// dir-node — it does not walk further up to rewrite *its* parent, and so
+/// This only CoW-copies **one level up**: `parent_dir_ref`'s own inode and
+/// dir-node; it does not walk further up to rewrite *its* parent, and so
 /// on to the real root. For a flat tree (root directory with files/dirs
 /// directly under it, `parent_dir_ref` == the root's own dir inode) this is
 /// already fully correct. For a deeper tree, a caller mutating something
@@ -41,7 +41,7 @@ use crate::object::{
 /// one-level CoW repeatedly, walking from the mutated node back up to the
 /// real root, threading `new_root` forward each step (the way
 /// [`apply_ops_to_root`] already threads `current_root` between batched
-/// operations) — this function does not do that multi-level cascade for
+/// operations): this function does not do that multi-level cascade for
 /// you. Fixing that generally is tracked as a known follow-up, not solved
 /// here.
 pub fn mkdir<S: ObjectStore>(
@@ -68,7 +68,7 @@ pub fn mkdir<S: ObjectStore>(
 
 	// Update parent directory when a real parent was supplied, and point
 	// `file_tree_root` at whatever ends up being the top of the modified
-	// chain — see this function's doc comment for the single-level caveat.
+	// chain; see this function's doc comment for the single-level caveat.
 	if !parent_dir_ref.is_zero() {
 		let (parent_dir_node, parent_inode) =
 			cow_insert_dir_entry(store, parent_dir_ref, name, ObjectRef::from_id(dir_inode.object_id))?;
@@ -96,8 +96,8 @@ pub fn mkdir<S: ObjectStore>(
 /// new entry inserted, and `new_root.file_tree_root` is updated to point at
 /// the (CoW-copied) parent inode.
 ///
-/// See [`mkdir`]'s doc comment for the single-level CoW-cascade caveat —
-/// applies identically here.
+/// See [`mkdir`]'s doc comment for the single-level CoW-cascade caveat;
+/// it applies identically here.
 pub fn create_file<S: ObjectStore>(
 	store: &S,
 	root: &Root,
@@ -141,13 +141,13 @@ pub fn create_file<S: ObjectStore>(
 ///
 /// # `file_tree_root` is NOT updated by this function
 ///
-/// Unlike [`mkdir`]/[`create_file`], `write` has no `parent_dir_ref` — it
+/// Unlike [`mkdir`]/[`create_file`], `write` has no `parent_dir_ref`: it
 /// only knows the file inode it's updating, not what directory entry (if
 /// any) points at it. A caller that wants the tree to stay internally
 /// consistent after a write must separately call [`cow_update_dir_entry`]
 /// with the file's parent + name to re-point the parent's entry at the new
 /// inode this function produces, merge that into the same [`TxnPlan`], and
-/// set `new_root.file_tree_root` itself — this function deliberately
+/// set `new_root.file_tree_root` itself; this function deliberately
 /// doesn't guess at that on its own.
 pub fn write<S: ObjectStore>(
 	store: &S,
@@ -167,7 +167,7 @@ pub fn write<S: ObjectStore>(
 
 	// Pack data into a new chunk. The chunk's *stored* object id must be
 	// derived from its canonical (postcard-wrapped) bytes, not
-	// `chunk.object_id` (which is `blake3` of the raw payload only) —
+	// `chunk.object_id` (which is `blake3` of the raw payload only):
 	// `ObjectRecordReader::read` verifies `blake3(logical_payload) ==
 	// header.object_id` against whatever bytes actually got stored, i.e.
 	// the canonical wrapper. Using the wrong one here would make every
@@ -220,8 +220,8 @@ pub fn write<S: ObjectStore>(
 /// `data` must fit in a single object. Splitting a longer payload across
 /// objects is the caller's job, exactly as it is for [`write()`].
 ///
-/// `file_inode` is the file's identity — `Inode::new_file(uid, gid, mode)`,
-/// the same inode [`create_file`] builds — taken **in its unwritten state**:
+/// `file_inode` is the file's identity: `Inode::new_file(uid, gid, mode)`,
+/// the same inode [`create_file`] builds, taken **in its unwritten state**:
 /// this function fills in `size` and `content_ref` and computes the final
 /// `object_id`. It is a parameter rather than three (`uid`, `gid`, `mode`)
 /// because the owner and mode are the caller's and this function's job is the
@@ -231,7 +231,7 @@ pub fn write<S: ObjectStore>(
 /// build a directory holding a chunk.
 ///
 /// `new_root.file_tree_root` ends up at the CoW copy of the **immediate
-/// parent**, not at the volume root — the same single-level caveat
+/// parent**, not at the volume root: the same single-level caveat
 /// [`create_file`] documents.
 pub fn create_file_with_data<S: ObjectStore>(
 	store: &S,
@@ -300,8 +300,8 @@ pub fn create_file_with_data<S: ObjectStore>(
 
 /// CoW-copy `parent_inode_ref`'s directory to re-point an **existing**
 /// entry named `name` at `new_child_ref`, without inserting or removing an
-/// entry. This is [`write()`]'s missing "propagate to parent" half — see
-/// `write`'s doc comment — and is also reused by [`rename`] internally.
+/// entry. This is [`write()`]'s missing "propagate to parent" half (see
+/// `write`'s doc comment), and is also reused by [`rename`] internally.
 ///
 /// Errors if `name` doesn't exist in the parent (nothing to update).
 pub fn cow_update_dir_entry<S: ObjectStore>(
@@ -335,13 +335,13 @@ pub fn cow_update_dir_entry<S: ObjectStore>(
 /// Remove `name` from the directory at `parent_dir_ref`.
 ///
 /// The semantics are the POSIX ones: a missing source is an error (not a
-/// silent no-op), and unlinking a directory is refused — use a dedicated
+/// silent no-op), and unlinking a directory is refused; use a dedicated
 /// `rmdir` for that, not implemented in this module.
 ///
 /// There is no separate "free the node" step here: the removed inode simply
 /// becomes unreachable from
 /// the new root once this txn commits (nothing in `new_objects`
-/// references it), which is what makes it eligible for GC — there's no
+/// references it), which is what makes it eligible for GC: there's no
 /// flat node table to leak from in a content-addressed model.
 pub fn unlink<S: ObjectStore>(store: &S, root: &Root, parent_dir_ref: ObjectRef, name: &str) -> Result<TxnPlan> {
 	if parent_dir_ref.is_zero() {
@@ -389,10 +389,10 @@ pub fn unlink<S: ObjectStore>(store: &S, root: &Root, parent_dir_ref: ObjectRef,
 ///
 /// Used by [`rename`]'s cycle guard. This content-addressed model has no
 /// `.parent` back-pointers, so there is no way to check "moving into own
-/// descendant" by walking *up* from the destination — the only way to ask
+/// descendant" by walking *up* from the destination: the only way to ask
 /// "is B inside A?" is to walk down
 /// from A looking for B. `depth_budget` is a defensive backstop against
-/// pathological/malformed trees, not a realistic limit — mirrors the
+/// pathological/malformed trees, not a realistic limit; it mirrors the
 /// bounded-hop-count pattern already used elsewhere in this codebase for
 /// the same "walk a structure that's supposed to be a DAG, but don't trust
 /// that unconditionally" reason (e.g. symlink hop limits).
@@ -415,7 +415,7 @@ fn dir_contains_inode<S: ObjectStore>(
 		return Ok(false);
 	}
 	// Flat-leaf assumption, matching this module's existing single-level/
-	// unsplit-leaf limitations (see `mkdir`'s doc comment) — internal
+	// unsplit-leaf limitations (see `mkdir`'s doc comment): internal
 	// B-tree nodes don't exist in practice yet from anything in this file.
 	let dir_node = store.get_dir_node(inode.content_ref)?;
 	for entry in &dir_node.entries {
@@ -432,7 +432,7 @@ fn dir_contains_inode<S: ObjectStore>(
 ///
 /// A missing source is an error, overwriting an existing destination is only
 /// permitted when neither side is a directory (the old destination node simply
-/// becomes unreachable — see [`unlink`]'s doc comment on why there's no
+/// becomes unreachable; see [`unlink`]'s doc comment on why there's no
 /// separate free step), and moving a directory into itself or one of its own
 /// descendants is refused, by the downward walk in `dir_contains_inode`.
 ///
@@ -442,7 +442,7 @@ fn dir_contains_inode<S: ObjectStore>(
 /// `file_tree_root` is fully correct for it (same caveat as `mkdir` et al).
 /// A **cross-parent** rename touches *two* separate one-level chains (old
 /// parent, new parent) and this function can only point `file_tree_root`
-/// at one of them — it points at the destination side, since that's the
+/// at one of them; it points at the destination side, since that's the
 /// side gaining new content. If old and new parents aren't both already
 /// the true tree root, the caller is responsible for propagating the
 /// old-parent chain's update upward too (same caveat as `write`).
@@ -476,7 +476,7 @@ pub fn rename<S: ObjectStore>(
 
 	// Cycle guard: refuse moving a directory into itself or a descendant.
 	// The question is "is the destination reachable by walking DOWN from
-	// the thing being moved?" — not the other way around: we're asking
+	// the thing being moved?"; not the other way around: we're asking
 	// whether `new_parent_dir_ref` (the destination) is already inside
 	// `moved_ref` (the directory being relocated).
 	if moved_inode.kind == InodeKind::Directory
@@ -509,7 +509,7 @@ pub fn rename<S: ObjectStore>(
 					"rename: destination exists and is a directory",
 				));
 			}
-			// Overwriting a file is fine — the replaced node just
+			// Overwriting a file is fine: the replaced node just
 			// becomes unreachable from the new root once committed.
 		}
 	}
@@ -585,8 +585,8 @@ pub fn rename<S: ObjectStore>(
 /// `offset` is at/beyond the end of the file.
 ///
 /// This is [`read_inode`] plus the fetch of the inode it needs. A caller that
-/// already holds the inode — anything that resolved the path before deciding
-/// how much to ask for — should call `read_inode` and save the device read.
+/// already holds the inode (anything that resolved the path before deciding
+/// how much to ask for) should call `read_inode` and save the device read.
 pub fn read<S: ObjectStore>(
 	store: &S,
 	_root: &Root,
@@ -610,8 +610,8 @@ pub fn read<S: ObjectStore>(
 ///
 /// # Why this is a separate entry point
 ///
-/// [`read`] fetches the inode to answer three questions — is it a regular file,
-/// how long is it, and where is its content — and *then* reads the bytes. A
+/// [`read`] fetches the inode to answer three questions (is it a regular file,
+/// how long is it, and where is its content), and *then* reads the bytes. A
 /// caller that has already resolved the inode to decide what to ask for (the
 /// host's path walk holds one before it asks for a range) has those three
 /// answers in hand, and re-fetching the same object is a second read of the
@@ -681,7 +681,7 @@ pub fn readdir<S: ObjectStore>(store: &S, _root: &Root, dir_inode_ref: ObjectRef
 /// same immutable `store`. An op therefore cannot see the objects an earlier op
 /// produced. Two writes to one file, or a create followed by a write of the
 /// file it created, would each be built against the *original* inode, and the
-/// merged plan would carry both versions with only the later one reachable —
+/// merged plan would carry both versions with only the later one reachable:
 /// silent data loss, not an error. This function is for ops that touch
 /// disjoint objects; a caller that needs chained visibility has to supply it,
 /// which is what the host crate's `StagedFold` does with an overlay store.
@@ -735,7 +735,7 @@ pub fn apply_ops_to_root<S: ObjectStore>(store: &S, root: &Root, ops: &[Operatio
 
 /// CoW-copy the parent directory to insert a new [`DirEntry`].
 ///
-/// Returns `(new_dir_node, new_parent_inode)` — both ready to be added to a
+/// Returns `(new_dir_node, new_parent_inode)`: both ready to be added to a
 /// [`TxnPlan`].
 fn cow_insert_dir_entry<S: ObjectStore>(
 	store: &S,
@@ -758,7 +758,7 @@ fn cow_insert_dir_entry<S: ObjectStore>(
 	dir_node.insert_entry(entry)?;
 
 	// This is the point where a real B-tree would split. `DirNode::split`
-	// exists and works, but nothing here calls it — every directory is a
+	// exists and works, but nothing here calls it: every directory is a
 	// single flat leaf (a deliberate scope cut, see this module's
 	// doc comment). Refuse the insert that would cross the leaf bound rather
 	// than letting the node grow unbounded.
@@ -766,7 +766,7 @@ fn cow_insert_dir_entry<S: ObjectStore>(
 	// Without this the limit is not merely unimplemented, it is *silent*:
 	// entries keep appending until the encoded node exceeds the reader's
 	// `max_object_bytes`, at which point `read_object`'s scan skips the
-	// record entirely and the whole directory — every file in it — reads
+	// record entirely and the whole directory (every file in it) reads
 	// back as not found. Erroring on the one insert that crosses the line
 	// leaves every already-committed entry readable and names the missing
 	// feature. The check is here rather than in `DirNode::insert_entry`
@@ -932,14 +932,14 @@ mod tests {
 
 	#[test]
 	fn test_operations_mkdir_sets_file_tree_root() -> TestResult<()> {
-		// -- Setup & Fixtures: regression test — `mkdir`/`create_file`/`write`
+		// -- Setup & Fixtures: regression test; `mkdir`/`create_file`/`write`
 		// used to only bump `commit_seq` and never populate
 		// `new_root.file_tree_root` at all, leaving a committed root
 		// permanently unable to find anything just created through it.
 		let store = InMemoryObjectStore::new();
 		let root = Root::new();
 
-		// -- Exec: no parent — the new dir itself becomes the tree root.
+		// -- Exec: no parent: the new dir itself becomes the tree root.
 		let txn = mkdir(&store, &root, ObjectRef::zero(), "toplevel", 0, 0, 0o755)?;
 
 		// -- Check
@@ -971,7 +971,7 @@ mod tests {
 		let txn = create_file(&store, &parent_txn.new_root, parent_ref, "f.txt", 0, 0, 0o644)?;
 
 		// -- Check: file_tree_root must point at the (CoW-copied) *parent*,
-		// not the new file inode — the parent is what changed at the top of
+		// not the new file inode: the parent is what changed at the top of
 		// this one-level chain.
 		assert_ne!(
 			txn.new_root.file_tree_root.object_id, parent_ref.object_id,
@@ -1156,7 +1156,7 @@ mod tests {
 	}
 
 	/// An object larger than the reader's `max_object_bytes` must be refused
-	/// at commit time, because the reader silently skips it — the commit
+	/// at commit time, because the reader silently skips it: the commit
 	/// would report success and the data would be unreachable.
 	#[test]
 	fn test_commit_refuses_an_object_the_reader_could_never_read_back() -> TestResult<()> {
@@ -1195,7 +1195,7 @@ mod tests {
 		// -- Setup & Fixtures: regression test for the `chunk.object_id` vs
 		// `blake3(canonical_bytes)` trap documented in `commit.rs`'s
 		// `test_commit_engine_actually_writes_decodable_object_data`.
-		// `InMemoryObjectStore` alone can't catch this — it just stores
+		// `InMemoryObjectStore` alone can't catch this: it just stores
 		// raw bytes keyed by whatever id you give it, so a self-consistent
 		// but *wrong* id round-trips fine through it. Only the real
 		// `ObjectRecordReader` (which independently recomputes
@@ -1500,7 +1500,7 @@ mod tests {
 		store.apply_txn(&child_txn);
 		let parent_ref = ObjectRef::from_id(child_txn.new_root.file_tree_root.object_id);
 
-		// -- Exec & Check: POSIX semantics — refuse to unlink a directory.
+		// -- Exec & Check: POSIX semantics: refuse to unlink a directory.
 		let result = unlink(&store, &child_txn.new_root, parent_ref, "childdir");
 		assert!(result.is_err());
 
@@ -1635,9 +1635,9 @@ mod tests {
 
 	#[test]
 	fn test_operations_rename_refuses_directory_into_itself() -> TestResult<()> {
-		// -- Setup & Fixtures: root/a/b — try to rename root/a into root/a/b.
+		// -- Setup & Fixtures: root/a/b: try to rename root/a into root/a/b.
 		// Since mkdir only CoWs one level up (see its doc comment), creating
-		// "b" under "a" does not automatically update root's entry for "a" —
+		// "b" under "a" does not automatically update root's entry for "a",
 		// this test manually propagates that update via `cow_update_dir_entry`
 		// (exactly the pattern a multi-level-aware caller is documented to
 		// need), so the root handed to `rename` below is fully consistent
@@ -1685,7 +1685,7 @@ mod tests {
 		let a_dir_node = store.get_dir_node(store.get_inode(a_ref)?.content_ref)?;
 		let b_ref = a_dir_node.entries.iter().find(|e| e.name.as_str() == "b").unwrap().inode_ref();
 
-		// -- Exec & Check: moving "a" into "a/b" must be refused — it would
+		// -- Exec & Check: moving "a" into "a/b" must be refused: it would
 		// create a cycle unreachable from the real root.
 		let result = rename(
 			&store,

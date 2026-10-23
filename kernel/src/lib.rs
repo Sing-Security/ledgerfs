@@ -1,73 +1,78 @@
-//! The on-disk format of LedgerFS, and the copy-on-write operations that
+//! The on-disk format of LedgerFS and the copy-on-write operations that
 //! produce it.
 //!
-//! This is the `no_std` half of the project. It defines every byte a volume
-//! contains — superblock, object framing, the object model, the allocator, the
-//! commit protocol — and the operations that turn paths and bytes into new
-//! generations of those objects. It performs **no I/O of its own**: reads and
-//! writes go through the [`cow::ObjectStore`] trait, which the host crate
-//! implements over a `BlockDevice` and tests implement over a `Vec<u8>`. The
-//! same code therefore runs in a kernel, in a userspace process, and in a
-//! harness.
+//! This crate is the `no_std` half of the system. It defines every byte a
+//! volume contains (superblock, object framing, the object model, the
+//! allocator, the commit protocol) and the operations that turn paths and
+//! bytes into new generations of those objects. It performs **no I/O of its
+//! own**: reads and writes go through the [`cow::ObjectStore`] trait, which
+//! the host crate implements over a `BlockDevice` and tests implement over a
+//! `Vec<u8>`. The same format code therefore executes in a kernel, in a
+//! userspace process and in a test harness.
 //!
 //! [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host) is the crate to
-//! depend on if you want a volume you can open and write files to; it supplies
-//! the `ObjectStore` implementation, the mount and the `Store` verbs. This
-//! crate is for a consumer that already has a byte-addressed store of its own,
-//! or that is implementing the filesystem from the bottom (a boot loader, an
-//! OS, a tool that inspects a volume).
+//! select for an application that opens a volume and writes files to it; it
+//! supplies the `ObjectStore` implementation, the mount and the `Store`
+//! methods. This crate is for a consumer that already owns a byte-addressed
+//! store, or that is implementing the filesystem from the bottom: a boot
+//! loader, an operating system, or a tool that inspects a volume.
 //!
-//! # How the format works
+//! # The format in brief
 //!
-//! - **Everything is an object.** An immutable blob named by the BLAKE3 hash of
-//!   its canonical encoding: a [`object::Chunk`] for content, an
-//!   [`object::Inode`] for file metadata, a [`object::DirNode`] for a
+//! - **Every stored thing is an object.** An immutable blob is named by the
+//!   BLAKE3 hash of its canonical encoding: a [`object::Chunk`] for content,
+//!   an [`object::Inode`] for file metadata, a [`object::DirNode`] for a
 //!   directory, an [`object::ExtentNode`] for a file's extent list, and the
-//!   [`object::Root`] that names the tree. Identical content has one id, and a
-//!   reader verifies an object against its name before returning it.
-//! - **Nothing is modified in place.** An operation writes new generations of
-//!   every object on the path and hands back one [`cow::TxnPlan`] naming them
-//!   plus the new root. [`commit::CommitEngine`] places those objects and
+//!   [`object::Root`] that names the tree. Identical content has one
+//!   identifier, and a reader verifies an object against its name before
+//!   returning it.
+//! - **No object is modified in place.** An operation writes new generations
+//!   of every object on the path and returns one [`cow::TxnPlan`] naming them
+//!   and the new root. [`commit::CommitEngine`] places those objects and
 //!   writes them in a fixed order: objects and the allocator snapshot, a
 //!   barrier, the four superblock copies naming the new root, a barrier. That
-//!   order is the crash-consistency argument (`FORMAT.md` §15) — a crash leaves
-//!   the old root live or the new one, and never a blend.
-//! - **The superblock names the root.** [`superblock::mount_select`] picks the
-//!   highest verifying `commit_seq` among the four copies, uses the Root
-//!   Locator Ring when the newest copy is damaged, and reports a disagreement
-//!   rather than guessing between roots.
+//!   order is the crash-consistency argument (`FORMAT.md` §15): a crash leaves
+//!   the previous root live or the next one, never a blend.
+//! - **The superblock names the root.** [`superblock::mount_select`] selects
+//!   the highest verifying `commit_seq` among the four copies, uses the Root
+//!   Locator Ring when the newest copy is damaged, and reports disagreement
+//!   among the copies rather than choosing between roots without evidence.
 //! - **The allocator is persisted beside the tree, not inside it.** Its
-//!   snapshot lives at a fixed reserved block because storing it through the
-//!   allocator would change the state being written (see
+//!   snapshot occupies a fixed reserved block, because storing it through the
+//!   allocator would consume a block and change the state being recorded (see
 //!   [`ALLOC_SNAPSHOT_BLOCK`]).
 //!
-//! The normative description of these bytes is `FORMAT.md`, which this crate
-//! cites by section; the project's vocabulary is `TERMINOLOGY.md`. Where this
-//! documentation and the format document disagree, the code is right and the
-//! document is a bug.
+//! [`FORMAT.md`](https://github.com/Sing-Security/ledgerfs/blob/main/FORMAT.md)
+//! is the normative description of these bytes, and this crate cites it by
+//! section;
+//! [`TERMINOLOGY.md`](https://github.com/Sing-Security/ledgerfs/blob/main/TERMINOLOGY.md)
+//! defines the vocabulary. Where this documentation and the format document
+//! disagree, the code is correct and the document contains a defect.
 //!
 //! # What is here, and what is not
 //!
-//! The format defines more than the shipping host path drives. Subsystems
-//! marked Tier B in `FORMAT.md` §44 — deduplication at write time, snapshots,
-//! the scrubber, garbage-collection execution, content-defined chunking — are
-//! implemented and tested in the separate, unpublished `ledgerfs-pending`
-//! crate, not here; treat them as unavailable. `FORMAT.md` §44.1 and
-//! `KNOWN_ISSUES.md` in the repository say the same thing in more detail.
+//! The format defines more than the shipping host path drives. The subsystems
+//! that `FORMAT.md` §44 designates Tier B are not available to a consumer.
+//! Deduplication at write time, snapshots, the scrubber, garbage-collection
+//! execution and content-defined chunking are implemented and tested in the
+//! separate, unpublished `ledgerfs-pending` crate. Replication, the audit
+//! chain and record sealing are present in this crate, and no shipping path
+//! calls them. `FORMAT.md` §44.1 and `KNOWN_ISSUES.md` §11 state the boundary
+//! and its reasons.
 //!
 //! # Modules
 //!
 //! | | |
 //! |---|---|
 //! | [`encoding`] | canonical little-endian encoding, BLAKE3 hashing, strict decode rejection |
-//! | [`record`] | `ObjectRecord` framing — magic, length, checksum, verification |
+//! | [`record`] | `ObjectRecord` framing: magic, length, checksum, verification |
 //! | [`object`] | the object model: [`ObjectId`](object::ObjectId), [`Chunk`](object::Chunk), [`Inode`](object::Inode), [`DirNode`](object::DirNode), [`ExtentNode`](object::ExtentNode), [`Root`](object::Root) |
 //! | [`superblock`] | the 4 KiB superblock, its four copies, the Root Locator Ring, mount selection |
 //! | [`intent_log`] | the ring buffer of commit-intent records and the replay decision |
 //! | [`alloc_state`], [`alloc_node`], [`allocator`] | the allocation tree, block states, and the allocator with its emergency reserves |
 //! | [`placement`] | turns a [`cow::TxnPlan`] into placed `ObjectRecord`s |
 //! | [`commit`] | [`CommitEngine`](commit::CommitEngine): the ordered write of objects → allocator snapshot → superblocks |
-//! | [`cow`] | the operations — read, readdir, mkdir, create, write, unlink, rename — and the [`ObjectStore`](cow::ObjectStore) trait they are generic over |
+//! | [`cow`] | the operations (read, readdir, mkdir, create, write, unlink, rename) and the [`ObjectStore`](cow::ObjectStore) trait they are generic over |
 //! | [`compression`], [`lz4_block`] | the per-chunk compression policies |
 //! | [`mode`] | [`FsMode`]: read-write versus the write-embargoed read-only-safe mode |
 //! | [`keyslot`] | passphrase-derived key slots, sealed with the volume's key material |
@@ -155,23 +160,23 @@ pub const NUM_SUPERBLOCK_COPIES: usize = 4;
 /// Number of blocks at the **start** of a partition reserved for
 /// non-object metadata: superblock copies (blocks 0-1), intent log
 /// (blocks 2-3), genesis audit record (block 4), plus one block of slack
-/// (block 5). No `ObjectRecord` is ever placed here — `reader::START_BLOCK`
+/// (block 5). No `ObjectRecord` is ever placed here. `reader::START_BLOCK`
 /// (the boot-time object scan's starting point) and any `AllocNode`
 /// initialization that marks a fresh volume's free space (e.g. the runtime
 /// volume driver's volume bootstrap) must both respect this, or the
 /// placement engine can allocate a real object on top of the superblock
-/// itself — found live: a genesis commit placed its root directory's
+/// itself. Found live: a genesis commit placed its root directory's
 /// `Inode` at block 0, which a later superblock-persist call then
 /// silently overwrote, permanently orphaning the object.
 pub const RESERVED_HEADER_BLOCKS: u64 = 6;
 
 /// Number of blocks at the **end** of a partition reserved for the two
 /// trailing superblock backup copies (`total_blocks - 2`, `total_blocks -
-/// 1` — see `write_superblocks`' `copy_lbas`). Same rationale as
+/// 1`; see `write_superblocks`' `copy_lbas`). Same rationale as
 /// [`RESERVED_HEADER_BLOCKS`].
 pub const RESERVED_TRAILER_BLOCKS: u64 = 2;
 
-/// Block index (within a partition) of the **allocator snapshot** — the
+/// Block index (within a partition) of the **allocator snapshot**: the
 /// serialized `AllocNode` describing which blocks are free, allocated, or
 /// reserved.
 ///
@@ -186,7 +191,7 @@ pub const RESERVED_TRAILER_BLOCKS: u64 = 2;
 /// Nothing else on disk records which blocks are in use. The object graph
 /// reachable from the root implies it, but reconstructing that requires
 /// walking the whole partition. Without a snapshot, a volume that already
-/// has content can only be resumed **read-only** — which meant the data
+/// has content can only be resumed **read-only**, which meant the data
 /// volume was writable exactly once per disk image, on the boot that
 /// formatted it.
 ///
@@ -202,20 +207,20 @@ pub const ALLOC_SNAPSHOT_BLOCK: u64 = 5;
 ///
 /// Load-bearing on the **write** side too: `reader::read_object`'s scan
 /// silently skips any record whose `stored_len` exceeds this, so an object
-/// committed above the limit reads back as *not found* — a successful write
+/// committed above the limit reads back as *not found*: a successful write
 /// followed by vanished data. `CommitEngine` therefore refuses to place one
 /// (see `CommitEngine::set_max_object_bytes`). A volume may lower this via
 /// its superblock `LedgerFsLimits`; this is the compiled-in default.
 pub const MAX_OBJECT_SIZE: usize = 256 * 1024;
 
-/// Magic at the head of the [`ALLOC_SNAPSHOT_BLOCK`] — "ALLOCSNP".
+/// Magic at the head of the [`ALLOC_SNAPSHOT_BLOCK`], "ALLOCSNP".
 pub const ALLOC_SNAPSHOT_MAGIC: u64 = 0x414C4C4F43534E50;
 
 /// Number of RLR entries in superblock
 ///
 /// Sizing: 56 entries × 60 bytes = 3 360 bytes, ending at byte 3 440.
 /// The block is laid out 80 (header) + 3 360 (RLR) + 24 (feature flags) = 3 464
-/// bytes, after which come fixed-offset extensions — `ext_rlr_lba` and
+/// bytes, after which come fixed-offset extensions: `ext_rlr_lba` and
 /// `ext_rlr_block_count` at 3 464, a human-readable label at 3 476, the
 /// `LedgerFsLimits` block at 3 736, `active_root_hint` at 3 764, the keyslots,
 /// and the checksum in the last 8 bytes. See `superblock` for the full table;

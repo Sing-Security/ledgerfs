@@ -3,13 +3,13 @@
 //! # Why this module exists
 //!
 //! `cow::operations` is deliberately leaf-level. `mkdir` and `create_file`
-//! CoW-copy their immediate parent and stop there — their own doc comments say
+//! CoW-copy their immediate parent and stop there: their own doc comments say
 //! so, calling it a known follow-up rather than a solved problem. `write` does
 //! not even do that: it has no parent reference at all, only the file inode it
 //! is updating, so it never learns which directory entry points at that inode.
 //!
 //! The consequence is a trap, not a rough edge. `new_root.file_tree_root` after
-//! a nested `mkdir("/a/b/c")` names the CoW copy of `/a/b` — the top of *the
+//! a nested `mkdir("/a/b/c")` names the CoW copy of `/a/b`, the top of *the
 //! modified chain*, not the volume root. Commit that transaction and the
 //! filesystem is silently re-rooted at `/a/b`: every path outside it stops
 //! resolving, and the volume still mounts, because the superblock it publishes
@@ -26,7 +26,7 @@
 //! They are not written from scratch and they do not derive a single object
 //! themselves: every `DirNode`, `Inode`, `ExtentNode` and `Chunk` is produced by
 //! the kernel crate's own `cow` functions. What is duplicated is only the
-//! ordering — which parent gets re-pointed at which child, deepest first — and
+//! ordering (which parent gets re-pointed at which child, deepest first), and
 //! it is duplicated because the other implementation of it lives inside an OS,
 //! wired to interfaces a host-side store cannot depend on.
 
@@ -43,14 +43,14 @@ use crate::error::{Error, Result};
 /// name)`, one pair per path component.
 ///
 /// Built by [`HostFs::resolve_chain`](crate::HostFs::resolve_chain), whose last
-/// pair is the target itself paired with the directory it would live in — the
+/// pair is the target itself paired with the directory it would live in: the
 /// entry deliberately not looked up, since for a create it does not exist yet.
 pub(crate) type Chain = [(ObjectRef, String)];
 
 // region:    --- Transaction builders
 
-/// The transaction that creates `chain.last()` — a directory when `is_dir`,
-/// otherwise an empty regular file — cascaded to a fully consistent new root.
+/// The transaction that creates `chain.last()` (a directory when `is_dir`,
+/// otherwise an empty regular file), cascaded to a fully consistent new root.
 ///
 /// Does not check whether the target already exists; the caller does, because
 /// the caller is the one that knows whether that is an error or a no-op.
@@ -89,7 +89,7 @@ pub(crate) fn build_create_txn<S: ObjectStore>(
 /// the write to be durable was paying two of them, and the inode and directory
 /// node the first wrote were rewritten by the second.
 ///
-/// The cascade is [`build_create_txn`]'s verbatim — the kernel side leaves
+/// The cascade is [`build_create_txn`]'s verbatim: the kernel side leaves
 /// `file_tree_root` at the CoW copy of the immediate parent, exactly as
 /// `mkdir`/`create_file` do, and everything above it still has to follow.
 ///
@@ -155,8 +155,8 @@ pub(crate) fn build_write_txn<S: ObjectStore>(
 /// `new_file_ref`, cascaded to a fully consistent new root.
 ///
 /// The other half of an atomic replace: [`Store::write_file`](crate::Store::write_file)
-/// builds the new content first — objects, inode and all, under no directory
-/// entry — and this re-points the one entry the path names at it. The old
+/// builds the new content first (objects, inode and all, under no directory
+/// entry), and this re-points the one entry the path names at it. The old
 /// inode becomes unreachable in the same commit that makes the new one live,
 /// so there is no instant at which the path is absent or empty.
 ///
@@ -184,8 +184,8 @@ pub(crate) fn build_replace_txn<S: ObjectStore>(
 
 /// The file inode a kernel `write` plan produced.
 ///
-/// `write` may not name the new inode anywhere in its root — it has no parent
-/// reference, so `new_root.file_tree_root` is untouched — and the inode is the
+/// `write` may not name the new inode anywhere in its root (it has no parent
+/// reference, so `new_root.file_tree_root` is untouched), and the inode is the
 /// last object in the plan's dependency order (chunk, then extent node, then
 /// inode). This is the same read [`build_write_txn`] makes for the same
 /// reason.
@@ -198,7 +198,7 @@ pub(crate) fn written_inode_ref(txn: &TxnPlan) -> Result<ObjectRef> {
 	Ok(ObjectRef::from_id(id))
 }
 
-/// The transaction that removes `chain.last()` — a file — cascaded to a fully
+/// The transaction that removes `chain.last()` (a file), cascaded to a fully
 /// consistent new root.
 ///
 /// `unlink` already CoW-copies the immediate parent, exactly as `mkdir`/
@@ -224,7 +224,7 @@ pub(crate) fn build_unlink_txn<S: ObjectStore>(store: &S, current_root: &Root, c
 /// says it can only point `file_tree_root` at one of the **two** one-level CoW
 /// chains such a move touches: it names the destination side, and the caller is
 /// left to propagate the source side. Doing that here is not impossible, it is
-/// merely not done — the two chains can share an ancestor, and re-pointing a
+/// merely not done: the two chains can share an ancestor, and re-pointing a
 /// shared ancestor twice from stale references produces two roots rather than
 /// one. Rather than ship a cascade that is silently wrong for that case,
 /// [`Store::rename`](crate::Store::rename) refuses a cross-directory move and
@@ -253,7 +253,7 @@ pub(crate) fn build_rename_txn<S: ObjectStore>(
 /// Re-point each remaining ancestor's entry at its CoW-copied child, deepest
 /// first, and leave `new_root.file_tree_root` naming the volume root.
 ///
-/// `ancestors` is the chain with its final entry removed — that entry was
+/// `ancestors` is the chain with its final entry removed: that entry was
 /// already consumed producing `new_immediate_parent_ref`. Iterating in reverse
 /// is what makes it work: each step's new inode becomes the next step's child,
 /// so the rewrite walks up one directory level per iteration and the last one
@@ -310,7 +310,7 @@ fn last_of(chain: &Chain) -> Result<(ObjectRef, String)> {
 		.ok_or_else(|| Error::Usage("a mutation needs at least one path component".into()))
 }
 
-/// The chain without its target — what [`cascade_dir_entry_update`] consumes.
+/// The chain without its target: what [`cascade_dir_entry_update`] consumes.
 fn parent_chain(chain: &Chain) -> Result<&Chain> {
 	chain
 		.split_last()

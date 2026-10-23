@@ -3,14 +3,14 @@
 //! LedgerFS is an embeddable filesystem, so "at once" means two things that a
 //! single-process, single-threaded design never has to answer: several threads
 //! inside one embedding application, and several processes over one file (a
-//! live writer appending while a reader inspects it — the case that made
+//! live writer appending while a reader inspects it: the case that made
 //! read-only opens lock-free in the first place).
 //!
 //! # The rules this file pins
 //!
 //! - **one writer per volume, enforced where it can be.** A file-backed volume
-//!   takes an exclusive advisory lock, so a second writable handle — in another
-//!   process *or* another thread of this one — is refused with an error rather
+//!   takes an exclusive advisory lock, so a second writable handle (in another
+//!   process *or* another thread of this one) is refused with an error rather
 //!   than allowed to place objects on blocks the first handle counts as free.
 //!   An in-memory device has no lock to take, which is a fact about the
 //!   embedding contract rather than a hole: the buffer is the caller's, and a
@@ -21,7 +21,7 @@
 //!   buffer behind a `MemBlockDevice` is under a mutex, and `bytes_snapshot`
 //!   copies under it, so a snapshot taken while a commit is in flight is a
 //!   *point-in-time* copy and never a half-copied block or a torn volume. This
-//!   is not decoration — it is the same guarantee the commit protocol relies on
+//!   is not decoration: it is the same guarantee the commit protocol relies on
 //!   for crash consistency, so a snapshot must be mountable for exactly the
 //!   reason any crash point is.
 //! - **a reader reads what is there.** A write that has been committed is
@@ -59,7 +59,7 @@ fn test_a_memory_device_is_send_and_sync() -> Result<()> {
 	fn assert_send_sync<T: Send + Sync + 'static>() {}
 	assert_send_sync::<MemBlockDevice>();
 
-	// -- Exec: and the runtime half — hand one device to four threads at once
+	// -- Exec: and the runtime half: hand one device to four threads at once
 	let device = MemBlockDevice::new(8);
 	device.write_block(0, b"shared")?;
 	let barrier = Arc::new(Barrier::new(4));
@@ -152,7 +152,7 @@ fn test_a_second_writer_in_another_thread_is_refused() -> Result<()> {
 fn test_a_reader_and_a_writer_can_share_a_file_across_threads() -> Result<()> {
 	// -- Setup & Fixtures: the read-only-inspector case. A reader holding a
 	// volume open must not stop a writer, and the reader must see the writer's
-	// committed changes without reopening — otherwise every inspection of a live
+	// committed changes without reopening: otherwise every inspection of a live
 	// volume would need a copy of it first.
 	let image = TempImage::new("reader-writer");
 	let mut writer = Store::format(Box::new(FileBlockDevice::create(&image.path, 256 * BS)?), 256)?;
@@ -165,7 +165,7 @@ fn test_a_reader_and_a_writer_can_share_a_file_across_threads() -> Result<()> {
 
 	// -- Check: the reader's *device* sees the new bytes, and a fresh mount of
 	// the same file reads the new version. The long-lived reader is a snapshot
-	// of its mount point — that is inherent to mounting a root reference — so
+	// of its mount point (that is inherent to mounting a root reference), so
 	// the property being pinned is that a new mount is not blocked and does not
 	// need the writer to close first.
 	let raw = std::fs::read(&image.path)?;
@@ -192,7 +192,7 @@ fn test_a_reader_and_a_writer_can_share_a_file_across_threads() -> Result<()> {
 fn test_no_reader_ever_sees_half_of_a_block() -> Result<()> {
 	// -- Setup & Fixtures: writers replace a whole block with a constant byte,
 	// alternating between two constants; readers hash entire blocks. Every read
-	// must see one constant repeated — a mixed block would mean a read observed
+	// must see one constant repeated: a mixed block would mean a read observed
 	// a write in progress, and a commit engine that saw a half-written block
 	// would place an object over a checksum that never matched.
 	let device = MemBlockDevice::new(8);
@@ -250,7 +250,7 @@ fn test_a_snapshot_taken_during_a_commit_is_always_a_mountable_volume() -> Resul
 	// background thread commits `v0`, `v1`, `v2`… to `/state` as fast as it can
 	// while the main thread takes `bytes_snapshot`s and mounts each one. Every
 	// snapshot is a *point-in-time copy of the medium*, which is exactly what a
-	// power-loss crash leaves behind, so every one of them must mount — and the
+	// power-loss crash leaves behind, so every one of them must mount, and the
 	// file it holds must be one of the versions the writer actually wrote, never
 	// a mixture of two.
 	//
@@ -300,9 +300,9 @@ fn test_a_snapshot_taken_during_a_commit_is_always_a_mountable_volume() -> Resul
 		//
 		// The two interruptions are legal states rather than torn ones, and it
 		// is worth being precise about why: `write_file` over an existing file
-		// is *three* commits — remove, create, write (pinned by
-		// `test_each_verb_costs_a_known_number_of_commits` in `durability.rs`)
-		// — so a snapshot taken between the first and second catches the file
+		// is *three* commits (remove, create, write, pinned by
+		// `test_each_verb_costs_a_known_number_of_commits` in `durability.rs`),
+		// so a snapshot taken between the first and second catches the file
 		// genuinely absent, and one taken between the second and third catches
 		// it present and empty. Both are what a crash at that instant would
 		// leave behind, and `durability.rs` has a deterministic test for each.
@@ -348,7 +348,7 @@ fn test_concurrent_reads_through_one_device_agree() -> Result<()> {
 	// once through separate `HostFs` mounts of the same bytes. Nothing in the
 	// read path takes a lock that a reader could hold across a whole traversal,
 	// so this is a check that concurrent resolution does not share mutable state
-	// — a cache keyed by nothing in particular would show up here as one thread
+	// state: a cache keyed by nothing in particular would show up here as one thread
 	// answering with another's object.
 	let (s, watch) = watched(1024)?;
 	drop(s);
@@ -376,7 +376,7 @@ fn test_concurrent_reads_through_one_device_agree() -> Result<()> {
 
 	// -- Check: each thread's own tree is its own. (Each thread has its own copy
 	// of the bytes, so this is four independent volumes starting from one
-	// image — the property is that one image can be mounted four times with no
+	// image: the property is that one image can be mounted four times with no
 	// interference, and that the same starting bytes give each thread the same
 	// starting tree.)
 	for h in handles {
@@ -393,7 +393,7 @@ fn test_concurrent_reads_through_one_device_agree() -> Result<()> {
 fn test_two_stores_over_one_in_memory_buffer_both_work_and_that_is_the_caller_s_problem() -> Result<()> {
 	// -- Setup & Fixtures: the embeddable case with no lock to take. Two
 	// `Store`s built over clones of one buffer are two writers on one volume,
-	// and nothing here refuses that — there is no file and no OS lock, and the
+	// and nothing here refuses that: there is no file and no OS lock, and the
 	// buffer is the caller's to share as it likes. What the crate owes the
 	// caller is that this is *predictable*: each store's reads are consistent
 	// with its own commits, and neither segfaults, corrupts a block mid-read, or
@@ -414,7 +414,7 @@ fn test_two_stores_over_one_in_memory_buffer_both_work_and_that_is_the_caller_s_
 	let mut b = Store::open(Box::new(a_watch.clone()))?;
 
 	// -- Check: `b` mounts the same tree `a` committed, because it is the same
-	// volume — that part is ordinary.
+	// volume, that part is ordinary.
 	assert_eq!(
 		b.read_file("/a")?,
 		b"from a",
@@ -455,7 +455,7 @@ fn test_a_store_and_a_raw_device_handle_see_the_same_volume() -> Result<()> {
 #[test]
 fn test_a_volume_formatted_by_one_handle_mounts_in_another_thread() -> Result<()> {
 	// -- Setup & Fixtures: format and mount are pure functions of the bytes, so
-	// a volume can cross a thread boundary — the shape of an application that
+	// a volume can cross a thread boundary, the shape of an application that
 	// formats on a worker and serves from the main thread.
 	let image = TempImage::new("cross-thread-format");
 	let path = image.path.clone();
@@ -482,7 +482,7 @@ fn test_a_volume_formatted_by_one_handle_mounts_in_another_thread() -> Result<()
 #[test]
 fn test_opening_and_closing_a_volume_many_times_does_not_leak_the_lock() -> Result<()> {
 	// -- Setup & Fixtures: a lock that was not released on drop would pass any
-	// single-shot test and fail the moment a program did what programs do —
+	// single-shot test and fail the moment a program did what programs do:
 	// open, close, open. A hundred round trips through the same path, each one
 	// closing before the next opens.
 	let image = TempImage::new("lock-churn");
@@ -502,7 +502,7 @@ fn test_opening_and_closing_a_volume_many_times_does_not_leak_the_lock() -> Resu
 #[test]
 fn test_a_volume_can_be_reopened_while_a_reader_still_holds_it() -> Result<()> {
 	// -- Setup & Fixtures: an inspection tool holding a volume must not block a
-	// second inspection, and a *writer* must not be blocked by readers either —
+	// second inspection, and a *writer* must not be blocked by readers either,
 	// which is the whole reason read-only opens take no lock. A design that
 	// upgraded a reader to a write lock would serialise every reader against
 	// every writer and make the read path useless on a live system.

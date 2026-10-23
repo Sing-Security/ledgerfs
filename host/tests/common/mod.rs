@@ -10,8 +10,8 @@
 //! at 0 and 1, the allocator snapshot at 5) and the last 2 (superblock copies
 //! at N-2 and N-1), so object space starts at block 6 and a volume of 8 blocks
 //! or fewer cannot be formatted at all. 4 MiB then leaves ~1000 commits of room
-//! — a commit costs ~5 blocks of allocator snapshot plus one block per object on
-//! the mutated path — while staying small enough that the reader's linear
+//! (a commit costs ~5 blocks of allocator snapshot plus one block per object on
+//! the mutated path) while staying small enough that the reader's linear
 //! `scan`, which is O(blocks) on a cold mount, is cheap when a test does it
 //! hundreds of times.
 //!
@@ -31,18 +31,18 @@ use ledgerfs_host::{
 /// The rust10x test result: `?` on anything that implements `std::error::Error`.
 pub type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Blocks in the default test volume — 4 MiB.
+/// Blocks in the default test volume: 4 MiB.
 pub const BLOCKS: u64 = 1024;
 
-/// Blocks in the volumes that need room to churn — 64 MiB.
+/// Blocks in the volumes that need room to churn: 64 MiB.
 pub const BIG_BLOCKS: u64 = 16384;
 
 /// The smallest volume `Store::format` actually completes on.
 ///
 /// `format`'s own guard only requires `total_blocks > 8` (the 6 reserved header
-/// blocks plus the 2 trailer blocks), but a 9–13 block volume then fails inside
-/// the genesis commit — "read-only safe mode" at 9–10 and "out of space" at
-/// 11–13 — because the volume has no room for the empty root's objects plus the
+/// blocks plus the 2 trailer blocks), but a 9 to 13 block volume then fails inside
+/// the genesis commit: "read-only safe mode" at 9 to 10 and "out of space" at
+/// 11 to 13, because the volume has no room for the empty root's objects plus the
 /// allocator snapshot that follows them. 14 is the first size that commits.
 ///
 /// The guard and the commit therefore disagree, and the guard is the wrong one
@@ -82,8 +82,8 @@ pub fn app_store(blocks: u64, app: &str) -> FsResult<Store> {
 /// A formatted volume *and* a live handle on the same buffer.
 ///
 /// This is how a test reaches the bytes: a `Store` owns its device, so the way
-/// to snapshot a volume — before a risky operation, or after one, to re-mount it
-/// — is to keep the clone `MemBlockDevice` is documented to provide.
+/// to snapshot a volume (before a risky operation, or after one, to re-mount it)
+/// is to keep the clone `MemBlockDevice` is documented to provide.
 pub fn watched(blocks: u64) -> FsResult<(Store, MemBlockDevice)> {
 	let device = mem(blocks);
 	let watch = device.clone();
@@ -124,7 +124,7 @@ impl CountingDevice {
 		self.writes.load(Ordering::Relaxed)
 	}
 
-	/// Zero both counters — so a test can measure one operation rather than the
+	/// Zero both counters, so a test can measure one operation rather than the
 	/// setup that preceded it.
 	pub fn reset(&self) {
 		self.reads.store(0, Ordering::Relaxed);
@@ -169,7 +169,7 @@ pub fn open_bytes(bytes: Vec<u8>) -> FsResult<Store> {
 ///
 /// The same trick as [`watched`], for a test that reopens a volume and then
 /// keeps writing to it: a store is `moved` into `open`, so without the clone a
-/// test would have to snapshot the bytes again at every step — and a snapshot
+/// test would have to snapshot the bytes again at every step, and a snapshot
 /// taken from the *old* handle would silently be stale, since the reopened
 /// store is writing into its own copy.
 pub fn open_bytes_watched(bytes: Vec<u8>) -> FsResult<(Store, MemBlockDevice)> {
@@ -190,7 +190,7 @@ pub fn bytes(device: &MemBlockDevice) -> Vec<u8> {
 }
 
 /// Rewrite one byte of `bytes` to `value` (0 when `value` is `None`, else the
-/// XOR of the existing byte with it) — the smallest possible corruption.
+/// XOR of the existing byte with it): the smallest possible corruption.
 pub fn patch(bytes: &mut [u8], offset: usize, value: u8) {
 	bytes[offset] = value;
 }
@@ -210,7 +210,7 @@ pub fn block_offset(lba: u64) -> usize {
 /// numbers them: two at the head of the volume and two at the tail.
 ///
 /// Spelled out here rather than read from the crate because the tests that need
-/// it are the ones that damage a copy behind the crate's back — the addresses
+/// it are the ones that damage a copy behind the crate's back: the addresses
 /// are part of the on-disk format, which is exactly what those tests are
 /// pinning.
 pub fn copy_lbas(total_blocks: u64) -> [u64; 4] {
@@ -224,7 +224,7 @@ pub fn copy_lbas(total_blocks: u64) -> [u64; 4] {
 /// A temp image path, removed on drop.
 ///
 /// The whole point is the `Drop`: a test that fails must not leave a 64 MiB
-/// image in `/tmp` for the next run to step over. Removal is best-effort —
+/// image in `/tmp` for the next run to step over. Removal is best-effort:
 /// on Linux unlinking a file a `FileBlockDevice` still holds open is legal, and
 /// the handle keeps reading its (now anonymous) inode.
 pub struct TempImage {
@@ -280,7 +280,7 @@ pub fn paths(entries: &[WalkEntry]) -> Vec<String> {
 	out
 }
 
-/// The names in one directory listing, sorted — the shape most tests want to
+/// The names in one directory listing, sorted: the shape most tests want to
 /// assert on, since `read_dir` makes no ordering promise.
 pub fn names(entries: &[ledgerfs_host::Entry]) -> Vec<String> {
 	let mut out: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
@@ -315,7 +315,7 @@ pub fn expect_err<T, E: std::fmt::Debug>(what: &str, r: core::result::Result<T, 
 	}
 }
 
-/// A `NoSuchFile` that names `path` — the shape callers match on.
+/// A `NoSuchFile` that names `path`: the shape callers match on.
 pub fn is_no_such_file(e: &Error, path: &str) -> bool {
 	matches!(e, Error::NoSuchFile { path: p } if p == path)
 }
@@ -352,7 +352,7 @@ impl Rng {
 		(self.next_u64() % bound as u64) as usize
 	}
 
-	/// A `u8` that is never the one at `byte` — so a "flip" always changes it.
+	/// A `u8` that is never the one at `byte`, so a "flip" always changes it.
 	pub fn different_byte(&mut self, byte: u8) -> u8 {
 		let delta = 1 + (self.next_u64() % 255) as u8;
 		byte.wrapping_add(delta)

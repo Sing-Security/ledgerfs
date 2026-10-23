@@ -3,7 +3,7 @@
 //! Reads the partitioning the image already carries rather than recomputing
 //! the disk layout's formula from the disk size. The two agree today, but only
 //! the former stays correct for an image written by an installer with an
-//! explicit system-partition size, or a real disk formatted on target — and it
+//! explicit system-partition size, or a real disk formatted on target, and it
 //! is ~20 lines.
 //!
 //! An image carries three entries: the boot partition as type `0x83`, then the
@@ -38,10 +38,10 @@ pub const PART_TYPE_LEDGERFS: u8 = 0xC0;
 pub enum PartitionKind {
 	/// The FAT/EFI-bootable partition. Not a LedgerFS volume.
 	Boot,
-	/// The sealed system volume — populated and committed when the image is
+	/// The sealed system volume, populated and committed when the image is
 	/// built.
 	System,
-	/// The writable data volume — formatted by the image initialiser, populated
+	/// The writable data volume, formatted by the image initialiser, populated
 	/// at boot.
 	Data,
 }
@@ -95,7 +95,7 @@ impl Partition {
 /// Read the MBR of `path` and return its non-empty partition entries.
 ///
 /// Kinds are assigned by type byte and order: the first `0x83` entry is
-/// `/boot`, then the first `0xC0` is `/system` and the second is `/data` —
+/// `/boot`, then the first `0xC0` is `/system` and the second is `/data`,
 /// the order the MBR writer emits them in.
 ///
 /// "First" and "second" are limits, not a description of the likely case: an
@@ -139,8 +139,8 @@ pub fn read_partitions(path: &Path) -> Result<Vec<Partition>> {
 			boot_taken = true;
 			PartitionKind::Boot
 		} else if part_type == PART_TYPE_LEDGERFS && lfs_seen < 2 {
-			// Two, and only two. This used to name every `0xC0` entry — the
-			// first `/system`, and *everything after it* `/data` — so a table
+			// Two, and only two. This used to name every `0xC0` entry (the
+			// first `/system`, and *everything after it* `/data`), so a table
 			// with three of them produced two partitions claiming the same
 			// kind. `find_partition` then silently answered with whichever
 			// came first, and two callers given the same table could mount

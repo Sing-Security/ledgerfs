@@ -6,8 +6,8 @@
 //! implemented, and the determinism guarantees below hold. What is not
 //! implemented is the transfer: reachability is one level deep, and each
 //! entry's payload is a placeholder rather than an object, so a receive
-//! reconstructs nothing. Nothing in the host `Store` calls any of it —
-//! `KNOWN_ISSUES.md` §11.
+//! reconstructs nothing. Nothing in the host `Store` calls any of it
+//! (see `KNOWN_ISSUES.md` §11).
 //!
 //! Per §31 of FORMAT.md:
 //! - **Send streams**: Encode incremental changes between snapshots
@@ -170,8 +170,8 @@ impl SendStream {
 
 /// Walk reachable object set from root
 ///
-/// Returns the ids reachable from `root` in one step — the root's own
-/// reference fields — in a `BTreeSet`, so iteration is deterministic. The queue
+/// Returns the ids reachable from `root` in one step (the root's own
+/// reference fields) in a `BTreeSet`, so iteration is deterministic. The queue
 /// is not extended by following a reference into a child object, which would
 /// need that object's canonical bytes read off a device this module does not
 /// have. The name says reachable set; the behaviour is one level.
@@ -197,7 +197,7 @@ pub fn walk_reachable_set(root: &Root) -> BTreeSet<ObjectId> {
 		// reference *into* a child object is not done, because doing it means
 		// reading and decoding that object's canonical form and this module has
 		// no block device to read from. So what this returns is the set
-		// reachable from the root in one step, not the reachable set — which is
+		// reachable from the root in one step, not the reachable set, which is
 		// why `KNOWN_ISSUES.md` §11 lists replication as not wired in.
 	}
 
@@ -221,8 +221,8 @@ pub fn diff_roots(target_root: &Root, base_root: &Root) -> BTreeSet<ObjectId> {
 /// Enumerates the root's own references (see [`walk_reachable_set`]) and emits
 /// one entry per id. **The entries are placeholders**: their payload is an id's
 /// bytes rather than an object's contents, so a receiver reconstructs nothing.
-/// The encoder is here for its shape — ordering, framing, the self-consistency
-/// check — not as a working transfer. See `KNOWN_ISSUES.md` §11.
+/// The encoder is here for its shape (ordering, framing, the self-consistency
+/// check), not as a working transfer. See `KNOWN_ISSUES.md` §11.
 pub fn create_full_send_stream(target_root: &Root) -> Result<SendStream> {
 	let metadata = SendStreamMetadata::new(SendMode::Full, target_root.object_id, ObjectId::zero());
 
@@ -232,7 +232,7 @@ pub fn create_full_send_stream(target_root: &Root) -> Result<SendStream> {
 	// Add all reachable objects to stream.
 	//
 	// Each entry's payload is the bytes of an object id and its own id is the
-	// hash of that payload, so the entry is self-consistent — `receive_object`
+	// hash of that payload, so the entry is self-consistent: `receive_object`
 	// checks `blake3(data) == object_id` and the check passes. Neither the
 	// payload nor the id is the object's, though: the object's canonical bytes
 	// are not loaded from anywhere, because this module has no device to load
@@ -262,8 +262,8 @@ pub fn create_incremental_send_stream(target_root: &Root, base_root: &Root) -> R
 	//
 	// Same substitution as the full send above: the payload is an id's bytes
 	// and the entry's id is that payload's hash, so the entry is consistent
-	// with itself and with nothing else. The diff itself is also one step deep
-	// — see `walk_reachable_set`.
+	// with itself and with nothing else. The diff itself is also one step deep;
+	// see `walk_reachable_set`.
 	for obj_id in diff_set {
 		let data = obj_id.as_bytes().to_vec();
 		let placeholder_id = ObjectId::from_content(&data);

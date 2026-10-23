@@ -3,14 +3,14 @@
 //! `cow::operations`' builders are single-operation: `write` produces one
 //! transaction for one piece of data, and a caller that has more than one
 //! piece has to decide what the pieces mean to each other. Sequentially
-//! committed, they are several durability points — and worse, several
+//! committed, they are several durability points, and worse, several
 //! out-of-space verdicts, so a five-piece write that runs out of room on the
 //! third piece leaves the first two behind as a file the caller never asked
 //! for.
 //!
 //! This module is the other answer. A [`StagedFold`] runs the single-operation
-//! builders one after another against an [`OverlayStore`] — the volume, plus
-//! every object a previous step has staged — and threads the resulting root
+//! builders one after another against an [`OverlayStore`] (the volume, plus
+//! every object a previous step has staged) and threads the resulting root
 //! descriptor forward, so each step sees the previous steps' objects exactly
 //! as a commit would have shown them. [`seal_plan`](StagedFold::seal_plan)
 //! then hands back **one** [`TxnPlan`], in the ordinary shape every commit
@@ -28,8 +28,8 @@
 //!
 //! # The prune
 //!
-//! A staged `write` or `create` re-places every object on its path — that is
-//! what CoW is — so a fold of five writes holds five generations of the extent
+//! A staged `write` or `create` re-places every object on its path (that is
+//! what CoW is), so a fold of five writes holds five generations of the extent
 //! node, the inode and the directory pair. (An append does not: it extends a
 //! draft, and the seal builds that file's objects once.) Only the last
 //! generation is reachable from the final root. `seal_plan` walks the final
@@ -41,7 +41,7 @@
 //!
 //! The eager route costs O(history) per append, twice over. The file's
 //! `ExtentNode` is the one object whose canonical encoding grows with the
-//! file, so every staged append re-encodes and re-hashes all of it — and
+//! file, so every staged append re-encodes and re-hashes all of it, and
 //! because each generation is refused by nothing and kept until the seal, a
 //! session of N appends held O(N²) bytes in RAM. A capture loop that keeps one
 //! stream open is exactly the workload staging exists for, and it was the one
@@ -50,7 +50,7 @@
 //! A [`FileDraft`] is that state kept once instead: the decoded inode and the
 //! extent list, extended in place. Appending is a chunk hash (of the appended
 //! bytes only) and a push. The objects are built when something needs their
-//! identity — a seal, a `stat`, a `read_dir` — and not before, because an
+//! identity (a seal, a `stat`, a `read_dir`), and not before, because an
 //! object's id *is* the hash of its encoded bytes and an extent node's bytes
 //! are the whole file's history.
 //!
@@ -62,8 +62,8 @@
 //!   that lookup, so a clearer spelling that misses the cache still resolves
 //!   correctly.
 //! - Reads of contents (`read_file`, `read_at`) serve a draft without
-//!   materializing it. Reads that expose an object identity or a size —
-//!   `stat`, `read_dir` — materialize first, so nothing a caller can see names
+//!   materializing it. Reads that expose an object identity or a size
+//!   (`stat`, `read_dir`) materialize first, so nothing a caller can see names
 //!   an object the session does not hold.
 //! - Only appends keep a draft alive. A staged remove of the path drops it
 //!   (the file is leaving the tree, so its pending bytes are dead), and the
@@ -72,8 +72,8 @@
 //!   a reference captured when the draft opened: any other staged operation
 //!   since then may have re-placed the directories above it.
 //! - Materializing builds the *same* objects the eager route would have built
-//!   from the same extents — one leaf node, the inode with the draft's size and
-//!   the node's id, the entry re-pointed and the ancestors cascaded — so a
+//!   from the same extents (one leaf node, the inode with the draft's size and
+//!   the node's id, the entry re-pointed and the ancestors cascaded), so a
 //!   sealed session is still indistinguishable from the equivalent sequence of
 //!   commits. That equality is what makes draft-vs-eager a performance choice
 //!   and not a format one.
@@ -81,7 +81,7 @@
 //! # What a fold does not touch
 //!
 //! No device block is allocated and nothing reaches the disk until the
-//! returned plan is committed — placement is `CommitEngine`'s, at commit
+//! returned plan is committed; placement is `CommitEngine`'s, at commit
 //! time. Path resolution still reads the committed volume, as any verb does;
 //! what the fold adds is that every *staged* object resolves out of memory,
 //! and that the prune walk stops at the committed boundary rather than
@@ -110,9 +110,9 @@ use crate::path::{
 
 /// The objects a fold has staged so far, keyed by content id.
 ///
-/// Two operations in one fold routinely produce the *same* object — the same
+/// Two operations in one fold routinely produce the *same* object (the same
 /// bytes appended twice, or an ancestor directory two writes both CoW-copy
-/// without change — and content addressing makes those one entry here, as
+/// without change), and content addressing makes those one entry here, as
 /// they will be one object on the volume.
 #[derive(Default)]
 pub(crate) struct StagedObjects {
@@ -156,7 +156,7 @@ impl StagedObjects {
 		}
 	}
 
-	/// Whether `id` names a staged object — i.e. one the volume does not have
+	/// Whether `id` names a staged object, i.e. one the volume does not have
 	/// yet.
 	pub(crate) fn contains(&self, id: &ObjectId) -> bool {
 		self.objects.contains_key(id)
@@ -179,7 +179,7 @@ const DRAFT_EXTENT_BYTES: u64 = core::mem::size_of::<ExtentDescriptor>() as u64;
 
 /// A file the session has appended to since it was last materialized.
 ///
-/// The inode is the one the staged tree currently names — the draft's content
+/// The inode is the one the staged tree currently names: the draft's content
 /// is *ahead* of it, and `size` says by how much. `chunks` holds the canonical
 /// bytes of the chunks this draft introduced, so a staged read of the drafted
 /// tail answers from memory; extents that predate the draft resolve through
@@ -191,7 +191,7 @@ pub(crate) struct FileDraft {
 	base_inode: ObjectId,
 
 	/// Where the file was last seen. Materialization re-resolves it, so this
-	/// only has to be a path that still names the file — and no staged verb
+	/// only has to be a path that still names the file, and no staged verb
 	/// renames one.
 	path: String,
 
@@ -237,8 +237,8 @@ impl FileDraft {
 		}
 	}
 
-	/// Append `data` — split at `piece`, the volume's object ceiling, exactly
-	/// as the eager builders split it — and return the journal a capacity
+	/// Append `data` (split at `piece`, the volume's object ceiling, exactly
+	/// as the eager builders split it) and return the journal a capacity
 	/// refusal needs.
 	///
 	/// A chunk the staged set already holds is not copied into the draft: it
@@ -342,7 +342,7 @@ impl FileDraft {
 	/// at it, cascaded to the volume root.
 	///
 	/// `chain` is the target's mutation chain, resolved by the caller against
-	/// the *current* staged root — not the one the draft opened on.
+	/// the *current* staged root, not the one the draft opened on.
 	fn materialize<S: ObjectStore>(&self, store: &S, root: &Root, chain: &[(ObjectRef, String)]) -> Result<TxnPlan> {
 		// A leaf with exactly the extents an eager node would have after the
 		// same appends. Built directly rather than through `new_leaf` so the
@@ -357,7 +357,7 @@ impl FileDraft {
 
 		// The eager `cow::write` changes exactly these two inode fields, so a
 		// draft that ends where the eager route would end is the same inode
-		// object — and therefore the same id.
+		// object, and therefore the same id.
 		let mut inode = self.inode.clone();
 		inode.size = self.size;
 		inode.content_ref = ObjectRef::from_id(node.object_id);
@@ -455,8 +455,8 @@ impl Drafts {
 /// One staged operation's draft changes, so an error or a capacity refusal can
 /// put the session back exactly as it was.
 ///
-/// A staged operation touches at most one file — an append extends one draft,
-/// a remove drops one — so the journal holds a push list and at most one
+/// A staged operation touches at most one file (an append extends one draft,
+/// a remove drops one), so the journal holds a push list and at most one
 /// whole-draft removal.
 #[derive(Default)]
 struct DraftJournal {
@@ -504,7 +504,7 @@ fn flatten_extents<S: ObjectStore>(store: &S, node_ref: ObjectRef, out: &mut Vec
 /// [`ObjectStore`] whose lookups answer from the staged set first and fall
 /// through to the volume.
 ///
-/// This is the piece that lets operation N+1 see operation N's objects — see
+/// This is the piece that lets operation N+1 see operation N's objects: see
 /// the module doc for the trap it avoids. Resolution is by content id, which
 /// is why a staged lookup needs no hint: staged objects have no placement
 /// until the fold is committed.
@@ -637,8 +637,8 @@ impl StagedInner {
 		}
 	}
 
-	/// Materialize the draft at `path`, if any. A path with no draft — or no
-	/// file at all — is not an error here; the caller's own read reports it.
+	/// Materialize the draft at `path`, if any. A path with no draft (or no
+	/// file at all) is not an error here; the caller's own read reports it.
 	fn materialize_at(&mut self, base: &DiskObjectStore, path: &str) -> Result<()> {
 		let key = match self.drafts.key_for_path(path) {
 			Some(key) => key,
@@ -727,7 +727,7 @@ pub(crate) struct StagedFold<'a> {
 
 	inner: StagedInner,
 
-	/// The root descriptor the fold started from — the merged plan's
+	/// The root descriptor the fold started from: the merged plan's
 	/// `prev_root`.
 	base_root: Root,
 
@@ -765,7 +765,7 @@ impl<'a> StagedFold<'a> {
 	///
 	/// A payload longer than `chunk` is staged as a create plus further writes:
 	/// the first object is the create-with-content, and every later one is a
-	/// kernel `write` (no entry to re-point — the entry was created by the
+	/// kernel `write` (no entry to re-point: the entry was created by the
 	/// first piece and resolved through the overlay thereafter).
 	pub(crate) fn create_with_data(&mut self, path: &str, data: &[u8], mode: u32, chunk: usize) -> Result<()> {
 		self.staged_op(|fold| fold.create_with_data_inner(path, data, mode, chunk))
@@ -776,7 +776,7 @@ impl<'a> StagedFold<'a> {
 	///
 	/// Two phases in one plan, which is what makes the replace atomic:
 	///
-	/// 1. the new file is built whole — inode, chunks, extent tree — with no
+	/// 1. the new file is built whole (inode, chunks, extent tree) with no
 	///    directory entry naming it (`create_file`/`write` take a zero parent
 	///    reference for exactly this), so nothing reachable from the volume
 	///    root has changed yet;
@@ -784,8 +784,8 @@ impl<'a> StagedFold<'a> {
 	///    ancestors are cascaded.
 	///
 	/// Committed together, the old inode stops being reachable in the same
-	/// instant the new one becomes reachable. The old content is not freed —
-	/// nothing is, see `KNOWN_ISSUES.md` §1 — it simply stops being named.
+	/// instant the new one becomes reachable. The old content is not freed
+	/// (nothing is, see `KNOWN_ISSUES.md` §1); it simply stops being named.
 	pub(crate) fn replace_with_data(&mut self, path: &str, data: &[u8], mode: u32, chunk: usize) -> Result<()> {
 		self.staged_op(|fold| fold.replace_with_data_inner(path, data, mode, chunk))
 	}
@@ -796,7 +796,7 @@ impl<'a> StagedFold<'a> {
 	/// to be: each staged write produces a new generation of the file's
 	/// inode, and the reference from the previous call names an object that
 	/// exists only in the staged set. Building on a stale reference would
-	/// leave only the last write standing — the same trap committing each
+	/// leave only the last write standing: the same trap committing each
 	/// piece separately had, at fold speed.
 	pub(crate) fn write(&mut self, path: &str, offset: u64, data: &[u8]) -> Result<()> {
 		self.staged_op(|fold| fold.write_inner(path, offset, data))
@@ -808,7 +808,7 @@ impl<'a> StagedFold<'a> {
 	/// The same shape [`Store::append`](crate::Store::append) has, with two
 	/// differences that matter inside a session: the file's size is the
 	/// session's (the draft's), not the committed one, and the append is a
-	/// push onto a [`FileDraft`] rather than a `write` transaction — see the
+	/// push onto a [`FileDraft`] rather than a `write` transaction; see the
 	/// module doc.
 	pub(crate) fn append(&mut self, path: &str, data: &[u8], mode: u32, chunk: usize) -> Result<()> {
 		self.staged_op(|fold| fold.append_inner(path, data, mode, chunk))
@@ -834,7 +834,7 @@ impl<'a> StagedFold<'a> {
 		})
 	}
 
-	/// Whether anything — staged or committed — is named at `path`.
+	/// Whether anything (staged or committed) is named at `path`.
 	///
 	/// Resolves through the overlay and does not materialize: the answer is an
 	/// existence bit, and the callers are the ones that refuse on it.
@@ -850,7 +850,7 @@ impl<'a> StagedFold<'a> {
 	///
 	/// `committed_seq` is the volume's current commit sequence; the merged
 	/// root carries `committed_seq + 1`, because the fold is one commit no
-	/// matter how many operations built it — the per-operation increments the
+	/// matter how many operations built it; the per-operation increments the
 	/// builders threaded are discarded here.
 	pub(crate) fn seal_plan(&mut self, committed_seq: u64) -> Result<TxnPlan> {
 		// Anything still in a draft becomes an object here: a commit has to
@@ -936,7 +936,7 @@ impl<'a> StagedFold<'a> {
 
 		// The single-entry chain whose parent is the zero reference: the kernel
 		// builders take that to mean "build the file, name it nowhere". Only
-		// the create uses it — a content `write` needs no chain at all, and
+		// the create uses it: a content `write` needs no chain at all, and
 		// the entry is re-pointed in phase 2 with the real one.
 		let unnamed = [(ObjectRef::zero(), name)];
 		let file_ref = self.build_content(&unnamed, path, data, mode, chunk)?;
@@ -952,7 +952,7 @@ impl<'a> StagedFold<'a> {
 			Some((file_ref, inode)) => match inode.kind {
 				InodeKind::Directory => Err(Error::IsADirectory { path: path.to_string() }),
 				InodeKind::RegularFile => {
-					// An empty append to a file that exists changes nothing —
+					// An empty append to a file that exists changes nothing, and
 					// and must not open a draft, or the session would report
 					// work to seal that a seal would then have to materialize.
 					if data.is_empty() {
@@ -960,8 +960,8 @@ impl<'a> StagedFold<'a> {
 					}
 					self.append_to_draft(path, file_ref.object_id, inode, data, chunk)
 				}
-				// Anything else fails the way the eager route fails it — the
-				// kernel's `write` refuses a non-regular file — rather than
+				// Anything else fails the way the eager route fails it: the
+				// kernel's `write` refuses a non-regular file, rather than
 				// growing a second, differently worded refusal here.
 				_ => self.write_at_inner(path, inode.size, data, chunk),
 			},
@@ -1062,7 +1062,7 @@ impl<'a> StagedFold<'a> {
 			} else {
 				// A create's entry names the inode the *first* piece made, and
 				// every piece makes a new one. The entry has to follow, and so
-				// does the cascade above it — which is why the chain is
+				// does the cascade above it, which is why the chain is
 				// re-resolved each time: the previous piece CoW-copied the
 				// parent and its ancestors, so the chain resolved before the
 				// loop names objects the fold has already replaced.
@@ -1086,12 +1086,12 @@ impl<'a> StagedFold<'a> {
 	///
 	/// A create named in a real directory leaves `new_root.file_tree_root`
 	/// naming the volume root (the cascade put it there), so the file is found
-	/// by resolving the path again over the overlay — after the create was
+	/// by resolving the path again over the overlay after the create was
 	/// absorbed. Re-resolving rather than reusing the chain's parent reference
 	/// is deliberate: that reference names the *committed* directory, and the
 	/// new entry lives in the CoW copy the cascade just made.
 	///
-	/// The zero-parent form — a replace's first phase — names nothing, and the
+	/// The zero-parent form (a replace's first phase) names nothing, and the
 	/// kernel puts the bare inode in `file_tree_root` exactly so a caller can
 	/// find it.
 	fn staged_file_ref(&self, parent_ref: ObjectRef, path: &str) -> Result<ObjectRef> {
@@ -1107,7 +1107,7 @@ impl<'a> StagedFold<'a> {
 		self.inner.root = txn.new_root;
 	}
 
-	/// Drop the draft on `key` — the file is leaving the tree — keeping it in
+	/// Drop the draft on `key` (the file is leaving the tree), keeping it in
 	/// the journal so a refused operation can put it back.
 	fn discard_draft(&mut self, key: ObjectId) {
 		if let Some(draft) = self.inner.drafts.remove(&key) {
@@ -1137,8 +1137,8 @@ impl<'a> StagedFold<'a> {
 			}
 			Ok(()) => {
 				// An operation that left both the root and the drafts where
-				// they were changed nothing — an empty append to an existing
-				// file, say — and must not count toward "there is something to
+				// they were changed nothing (an empty append to an existing
+				// file, say) and must not count toward "there is something to
 				// seal".
 				let changed =
 					self.inner.root.object_id != before_root || self.inner.drafts.revision() != before_revision;
@@ -1198,7 +1198,7 @@ impl<'a> StagedFold<'a> {
 /// gives: `Store` stays `Sync`, so an embedder may keep reading a handle from
 /// several threads. The lock is uncontended on the single-threaded path the
 /// staging tier is for. (A poisoned lock is recovered from rather than
-/// propagated — a panic elsewhere does not make the staged bytes wrong, and
+/// propagated: a panic elsewhere does not make the staged bytes wrong, and
 /// the alternatives are a `Result` on six read paths or a session that dies
 /// with the panic.)
 ///
@@ -1225,7 +1225,7 @@ impl StagedState {
 		self.inner.lock().unwrap_or_else(PoisonError::into_inner)
 	}
 
-	/// The canonical bytes staged so far — objects and drafts both.
+	/// The canonical bytes staged so far: objects and drafts both.
 	pub(crate) fn bytes(&self) -> u64 {
 		self.lock().total_bytes()
 	}
@@ -1256,7 +1256,7 @@ impl StagedState {
 		self.lock().read_at(base, path, offset, len)
 	}
 
-	/// Stat a path in the staged view, so it carries a staged size — and a
+	/// Stat a path in the staged view, so it carries a staged size, and a
 	/// content reference the session can actually produce.
 	pub(crate) fn stat(&self, base: &DiskObjectStore, path: &str) -> Result<Inode> {
 		let mut inner = self.lock();
@@ -1289,7 +1289,7 @@ impl StagedState {
 /// This is sugar over [`begin_staging`](crate::Store::begin_staging) and its
 /// verbs, for the caller whose session is one block of code. It holds `&mut
 /// Store`, so reads during the session go through [`store`](Self::store) while
-/// no other verb on the store can run — which is the same one-writer rule the
+/// no other verb on the store can run, which is the same one-writer rule the
 /// session already enforces.
 pub struct Staging<'a> {
 	store: &'a mut crate::Store,
@@ -1324,12 +1324,12 @@ impl<'a> Staging<'a> {
 		self.store.staged_remove(path)
 	}
 
-	/// The store, for reads — which, during a session, are the staged tier.
+	/// The store, for reads, which, during a session, are the staged tier.
 	pub fn store(&self) -> &crate::Store {
 		self.store
 	}
 
-	/// The store, mutably — for anything the wrapper does not name.
+	/// The store, mutably, for anything the wrapper does not name.
 	pub fn store_mut(&mut self) -> &mut crate::Store {
 		self.store
 	}
@@ -1359,7 +1359,7 @@ impl Drop for Staging<'_> {
 
 // region:    --- Reachability
 
-/// Mark `inode_ref` — and everything under it that is staged — as kept.
+/// Mark `inode_ref` (and everything under it that is staged) as kept.
 ///
 /// The walk stops at the committed/staged boundary: a committed object's
 /// subtree is already on the volume and reachable, so none of it is the

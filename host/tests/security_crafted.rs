@@ -3,14 +3,14 @@
 //! well-formed volume could never contain.
 //!
 //! A volume is untrusted input. It is a file a user downloaded, or a disk
-//! pulled out of a machine that was compromised — so its object graph, its
+//! pulled out of a machine that was compromised, so its object graph, its
 //! directory nodes and its extent chains are all attacker-chosen. Everything
 //! above the block device resolves those structures by *recursing* into them:
 //! `HostFs::resolve` descends a `DirNode`'s children, `read_dir` gathers a
 //! directory through `cow::operations`' recursive `collect_dir_entries`, and
 //! `Store::walk` recurses once per directory level. None of those walks bounds
 //! its own depth, so a volume whose metadata is a long chain turns a harmless
-//! listing into unbounded recursion — and unbounded recursion is a stack
+//! listing into unbounded recursion, and unbounded recursion is a stack
 //! overflow, which aborts the process that mounted the volume.
 //!
 //! Two rules run through this file, the same two as `security_media.rs`:
@@ -30,12 +30,12 @@
 //! The chains built here are finite, so on an ordinary thread a deep walk
 //! eventually runs out of chain and returns `Ok`. What it runs out of *first*
 //! depends on the stack, and the defect is precisely that the walk has no bound
-//! of its own — so the depth at which it dies is the thread's stack, not any
+//! of its own, so the depth at which it dies is the thread's stack, not any
 //! property of the volume. Each test therefore runs the read on a thread with a
 //! deliberately small stack ([`SMALL_STACK`]), which turns "unbounded" into a
 //! deterministic abort: before the guard, the walk overflows the stack and the
 //! test binary dies; after it, the walk refuses the chain long before the
-//! stack matters. A stack overflow is not catchable, which is the point — it is
+//! stack matters. A stack overflow is not catchable, which is the point: it is
 //! why this is a denial of service and not a returned error.
 
 mod common;
@@ -53,7 +53,7 @@ use std::thread;
 
 const BS: usize = BLOCK_SIZE as usize;
 
-/// Stack for the threads that run the reads under test — small enough that an
+/// Stack for the threads that run the reads under test, small enough that an
 /// unbounded recursion overflows it well before it would overflow the 8 MiB a
 /// normal thread gets, so the abort is deterministic rather than a race with
 /// the depth of the chain.
@@ -74,7 +74,7 @@ const BLOCK_COUNT: u64 = 16_384;
 /// A volume being assembled by hand, one block-aligned `ObjectRecord` at a
 /// time.
 ///
-/// Starts at the first block past the reserved header (superblock copies 0–1, the
+/// Starts at the first block past the reserved header (superblock copies 0 to 1, the
 /// journal, the genesis audit and the allocator snapshot all live below
 /// [`RESERVED_HEADER_BLOCKS`]), so every placed object lands in real object
 /// space and the superblock copies are written last, over the top, by
@@ -121,7 +121,7 @@ impl Crafted {
 	/// superblock copies, and hand back the finished volume.
 	///
 	/// `active_commit_seq = 1` because `mount_select` builds its candidate list
-	/// only from copies with a committed sequence — a zero there is the
+	/// only from copies with a committed sequence: a zero there is the
 	/// "initialised but never formatted" state, not a hostile one. The hint
 	/// makes the root a single read rather than a scan.
 	fn finish(mut self, root_inode: (ObjectId, u64)) -> Vec<u8> {
@@ -147,7 +147,7 @@ impl Crafted {
 /// matches and always descends), ending in a leaf.
 ///
 /// Each internal node's single child reference is the *verified* id of the node
-/// below it — the format keeps `blake3(payload) == object_id` even for a
+/// below it: the format keeps `blake3(payload) == object_id` even for a
 /// hostile volume, so the chain is a genuine not-yet-cyclic one. That the
 /// descent has no self-reference is what makes this a depth problem rather than
 /// an infinite-loop one, and both are the same denial of service.
@@ -212,8 +212,8 @@ fn directory_inode(volume: &mut Crafted, content: (ObjectId, u64)) -> (ObjectId,
 // region:    --- Support
 
 /// Run `read` on a thread with [`SMALL_STACK`], so an unbounded recursion in it
-/// overflows deterministically. A stack overflow aborts the whole process — it
-/// cannot be caught — which is exactly the failure this file is about.
+/// overflows deterministically. A stack overflow aborts the whole process. It
+/// cannot be caught, which is exactly the failure this file is about.
 fn on_small_stack<T, F>(read: F) -> T
 where
 	T: Send + 'static,
@@ -249,7 +249,7 @@ fn test_a_deep_dir_node_chain_is_refused_by_resolve_and_read_dir() -> Result<()>
 	let bytes = volume.finish(root);
 
 	// -- Exec & Check: resolving an absent name must descend the whole chain
-	// before it can answer "no such file" — so an unbounded walk overflows and
+	// before it can answer "no such file", so an unbounded walk overflows and
 	// the test binary dies here, while a bounded one returns a refusal.
 	let resolve = on_small_stack(move || {
 		let fs = HostFs::mount_device(Box::new(MemBlockDevice::from_bytes(bytes)?))?;
@@ -278,7 +278,7 @@ fn test_a_deep_dir_node_chain_is_refused_by_resolve_and_read_dir() -> Result<()>
 
 #[test]
 fn test_a_deeply_nested_directory_tree_is_refused_by_walk() -> Result<()> {
-	// -- Setup & Fixtures: not a wide directory but a deep one — four thousand
+	// -- Setup & Fixtures: not a wide directory but a deep one: four thousand
 	// directories, each holding one subdirectory. No DirNode holds a chain, so
 	// the guard on the *degree* of a node does not cover this; the recursion is
 	// in `Store::walk`'s own descent, one level per directory.
@@ -310,7 +310,7 @@ fn test_a_dir_node_child_pointing_at_block_u64_max_is_refused_not_followed() -> 
 	// object id but a storage hint of `u64::MAX`. The hint is a physical block
 	// number straight off the volume, so on a hostile one it is attacker-chosen;
 	// `u64::MAX * 4096` overflows a `u64`, and the classic bug is to check the
-	// product *after* computing it — which a mount of this volume would turn
+	// product *after* computing it, which a mount of this volume would turn
 	// into a panic on the mounting process.
 	let mut volume = Crafted::new(BLOCKS);
 	let bogus = ObjectId::from_content(b"no record on this volume carries this id");
@@ -320,7 +320,7 @@ fn test_a_dir_node_child_pointing_at_block_u64_max_is_refused_not_followed() -> 
 	let root = directory_inode(&mut volume, chain);
 	let bytes = volume.finish(root);
 
-	// -- Exec: no small stack needed — the point is that this *returns* at all.
+	// -- Exec: no small stack needed; the point is that this *returns* at all.
 	let fs = mount_bytes(bytes)?;
 	let result = fs.resolve("anything");
 

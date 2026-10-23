@@ -16,7 +16,7 @@ repository = "https://github.com/Sing-Security/ledgerfs"
 default = ["sqlite", "redb"]
 # One feature per comparison engine. A deployment that only compares against
 # SQLite builds with `--no-default-features --features sqlite`: no redb code
-# is compiled, linked, or in the binary — the same per-deployment rule the
+# is compiled, linked, or in the binary: the same per-deployment rule the
 # engines' own users follow. `ledgerfs` and `raw-file` are always present;
 # one is the subject and the other is the control.
 sqlite = ["dep:rusqlite"]

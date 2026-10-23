@@ -14,7 +14,7 @@ grows a `publish` key, the release is wrong, not the manifest.
 ## The gate that cannot be skipped
 
 **A `cargo publish` requires an independent verification pass first.** Not a
-re-read of the diff by the author, and not "the tests are green" — a separate
+re-read of the diff by the author, and not "the tests are green". A separate
 review whose job is to ask what the package contains and what a fresh consumer
 gets. crates.io cannot delete a version; it can only yank it, and the name stays
 taken forever. Everything below is the mechanical part of that pass; the
@@ -31,7 +31,7 @@ The things that pass must answer, because they have been wrong before:
   Links to repository documents must be absolute
   (`https://github.com/Sing-Security/ledgerfs/blob/main/...`).
 - Does `cargo package` reproduce the crate you think you are shipping? Read
-  `cargo package --list` line by line — it is the actual file list.
+  `cargo package --list` line by line; it is the actual file list.
 - Does the dependency graph resolve from crates.io alone? A path dependency
   that is not also a version requirement is a publish-time error, and a
   pre-release dependency is a consumer-time one.
@@ -43,7 +43,7 @@ The things that pass must answer, because they have been wrong before:
 
 1. **Decide the version.** `ledgerfs` and `ledgerfs-host` version independently;
    bump the one whose public surface changed. Note that the on-disk format has
-   its own version field, which is a third number again — a format change is not
+   its own version field, which is a third number again, so a format change is not
    automatically a crate major.
 2. **Fold [`CHANGELOG.md`](CHANGELOG.md).** `## [Unreleased]` becomes the new
    version's section with today's date; the entries go under `Added`, `Changed`,
@@ -70,7 +70,7 @@ The things that pass must answer, because they have been wrong before:
    ```
 
    For `ledgerfs-host`, `cargo package` (with verification on) fails until
-   `ledgerfs` is on the registry — that is the publish order, not a defect. Use
+   `ledgerfs` is on the registry; that is the publish order, not a defect. Use
    `--no-verify` for the file-list check, and re-run it verified after step 5.
 
 5. **Publish in order, without `--no-verify`.**
@@ -103,7 +103,7 @@ The things that pass must answer, because they have been wrong before:
 
 - `ledgerfs` follows the format. A change that alters the bytes of an object, a
   superblock or an allocator snapshot changes the format version field in the
-  superblock, and is documented in [`FORMAT.md`](FORMAT.md) — including the
+  superblock, and is documented in [`FORMAT.md`](FORMAT.md), including the
   mount-compatibility story: a volume written by the new format either mounts in
   the old reader or is refused by it as an incompatible feature, never decoded
   as something else.

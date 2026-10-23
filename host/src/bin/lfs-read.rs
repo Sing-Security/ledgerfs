@@ -1,4 +1,4 @@
-//! `lfs-read` — inspect a LedgerFS volume from the host.
+//! `lfs-read`: inspect a LedgerFS volume from the host.
 //!
 //! The acceptance harness for the read path in this crate: point it at a real
 //! built image and it either walks the volume or says exactly where it stopped.
@@ -30,14 +30,14 @@ struct Cli {
 	command: String,
 	positional: Vec<String>,
 	part: PartitionKind,
-	/// Treat the whole file as one volume — no partition table is read or
+	/// Treat the whole file as one volume; no partition table is read or
 	/// expected. The reader counterpart of `lfs-write --bare`.
 	bare: bool,
 }
 
 /// Default to the system volume: it is the partition an image always has a
 /// committed root on. The data volume gets one only after the image's first
-/// boot, when a runtime bootstraps a genesis root — so it mounts on a booted
+/// boot, when a runtime bootstraps a genesis root, so it mounts on a booted
 /// image but not on a freshly built one (see the crate docs).
 const DEFAULT_PART: PartitionKind = PartitionKind::System;
 
@@ -50,7 +50,7 @@ usage: lfs-read <IMAGE> <COMMAND> [PATH] [--bare] [--part system|data]
   cat <PATH>       write a file's contents to stdout
   stat <PATH>      show one inode's metadata
 
-  --bare           the file is the volume — no partition table is read
+  --bare           the file is the volume: no partition table is read
   --part KIND      which partition to open, 'system' (default) or 'data'";
 
 fn parse_args(argv: Vec<String>) -> Result<Cli> {
@@ -74,7 +74,7 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 				.next()
 				.ok_or_else(|| Error::Usage(format!("--part needs a value\n\n{USAGE}")))?;
 			part = PartitionKind::parse(&value)
-				.ok_or_else(|| Error::Usage(format!("unknown partition '{value}' — expected system or data")))?;
+				.ok_or_else(|| Error::Usage(format!("unknown partition '{value}': expected system or data")))?;
 			continue;
 		}
 		if image.is_none() {
@@ -126,7 +126,7 @@ impl Cli {
 // endregion: --- Cli
 
 /// `fn main() -> Result<()>` would print the error's `Debug`, not its
-/// `Display` — every hand-written message in `error.rs` bypassed by the one
+/// `Display`: every hand-written message in `error.rs` bypassed by the one
 /// thing that shows errors to a human. So the work goes in `run` and `main`
 /// prints it properly.
 fn main() {
@@ -155,7 +155,7 @@ fn run() -> Result<()> {
 }
 
 /// A usage error is not a failure of the tool, so it goes to stdout and exits
-/// `2` — distinct from the `1` `main` gives a volume that said no. A script
+/// `2`, distinct from the `1` `main` gives a volume that said no. A script
 /// can then tell "you called me wrong" from "the filesystem refused".
 fn usage_exit(message: &str) -> ! {
 	println!("{message}");
@@ -278,7 +278,7 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 		if status.is_healthy() {
 			", all agree"
 		} else {
-			" — see below"
+			"; see below"
 		}
 	);
 	if !status.is_healthy() {
@@ -296,7 +296,7 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 		println!("  {}", COPY_WARNING);
 	}
 
-	// Then the root, via a full open — a volume with no valid root is a real
+	// Then the root, via a full open: a volume with no valid root is a real
 	// and expected state (the data volume before its first boot), not a tool
 	// error.
 	match open_fs(cli) {
@@ -313,7 +313,7 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 		}
 		Err(e) => {
 			println!();
-			println!("root           UNREADABLE — {e}");
+			println!("root           UNREADABLE: {e}");
 		}
 	}
 
@@ -373,11 +373,11 @@ fn cmd_stat(cli: &Cli) -> Result<()> {
 ///
 /// This is the state a volume is in after a writer that updates the primary
 /// copy only has committed to it: the other three are left behind. Worth
-/// saying out loud, because the mount still succeeds — nothing else in the
+/// saying out loud, because the mount still succeeds, and nothing else in the
 /// stack surfaces it.
 const COPY_WARNING: &str = "\
 note: the copies disagree, so the redundancy this format is built around is not
-  currently being maintained — a writer that updates the primary copy only
+  currently being maintained; a writer that updates the primary copy only
   leaves the others behind. Damage to the selected copy rolls this volume
   back to whatever the surviving copies name, not forward to the committed
   state.";
@@ -390,7 +390,7 @@ fn kind_char(kind: InodeKind) -> char {
 	}
 }
 
-/// Where inside the target the volume sits — the one fact `info` prints that
+/// Where inside the target the volume sits: the one fact `info` prints that
 /// differs between a partitioned image and a bare file.
 enum Frame {
 	Partitioned(Partition),

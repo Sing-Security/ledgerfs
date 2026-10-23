@@ -39,7 +39,7 @@ The tree is indented with hard tabs and `max_width = 120`; the settings are in
 
 ## On-disk format changes
 
-`FORMAT.md` is normative, and it is not a summary written after the fact — it
+`FORMAT.md` is normative, and it is not a summary written after the fact: it
 describes the same bytes the code writes, section by section, and the code cites
 it by section number. If you change a field, an encoding, a limit, or an ordering
 constraint:
@@ -63,8 +63,8 @@ when you remove the barrier to one that passes when you keep it.
 The barrier count is not the thing to optimise, and a barrier is not expensive
 in itself: one that follows no new dirty data costs nothing on any real device.
 What costs is a barrier that follows new data. Two that do are the floor for
-this protocol's design — one to get the objects on media before the superblock
-names them, one to commit — so a change that removes a barrier has to say which
+this protocol's design (one to get the objects on media before the superblock
+names them, one to commit), so a change that removes a barrier has to say which
 of those two it removed and why the ordering it established no longer matters.
 
 ## Tests
@@ -82,12 +82,12 @@ of those two it removed and why the ordering it established no longer matters.
 ## Benchmarks
 
 `benchmarks/` is a plain binary, not a criterion suite, and it refuses to run on
-a filesystem that cannot give it an honest answer — a tmpfs has no barrier to
+a filesystem that cannot give it an honest answer: a tmpfs has no barrier to
 pay for, so every durability number measured on one is fiction. If you add a
 workload, keep the guard and keep the machine record: a number without the
 device, filesystem, and durability setting it came from is not a result.
 
-Checked-in results live in `benchmarks/results/`. The hostname is a machine fingerprint, so the harness records `redacted` unless you export `LEDGERFS_BENCH_HOST=<label>` for the run — keep private labels out of files you intend to commit. Regenerate `BENCHMARKS.md`
+Checked-in results live in `benchmarks/results/`. The hostname is a machine fingerprint, so the harness records `redacted` unless you export `LEDGERFS_BENCH_HOST=<label>` for the run; keep private labels out of files you intend to commit. Regenerate `BENCHMARKS.md`
 from them rather than editing the tables by hand.
 
 ## Commits

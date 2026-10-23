@@ -52,7 +52,7 @@ impl BlockDevice for NullBlockDevice {
 	}
 }
 
-/// Real ATA-PIO-backed [`BlockDevice`] for the primary bus — the
+/// Real ATA-PIO-backed [`BlockDevice`] for the primary bus: the
 /// implementation this trait's doc comment has been waiting on.
 ///
 /// `lba` in [`BlockDevice::write_blocks`] is a **partition-relative
@@ -70,7 +70,7 @@ pub struct AtaBlockDevice {
 #[cfg(all(feature = "reader", target_arch = "x86_64"))]
 impl AtaBlockDevice {
 	/// `partition_start_lba` is the partition's starting ATA sector
-	/// address (not a LedgerFS block index) — the same value threaded
+	/// address (not a LedgerFS block index): the same value threaded
 	/// through `reader.rs`'s public functions and published via
 	/// the mount layer's reported partition start LBA.
 	pub fn new(partition_start_lba: u32) -> Self {
@@ -100,7 +100,7 @@ impl BlockDevice for AtaBlockDevice {
 
 			// Transparent at-rest encryption, when a volume key has been
 			// activated for THIS partition and this block is in the
-			// encrypted object region — a no-op otherwise (including for
+			// encrypted object region, and a no-op otherwise (including for
 			// every non-data-volume partition and every plaintext-header
 			// block). Encrypts a copy rather than in place: `data` is the
 			// caller's buffer and `write_blocks` must not mutate it. See
@@ -121,7 +121,7 @@ impl BlockDevice for AtaBlockDevice {
 
 			// SAFETY: caller of `commit()` guarantees ring 0 execution with
 			// I/O port access enabled and that `partition_start_lba` names
-			// a real, valid LedgerFS partition — the same contract every
+			// a real, valid LedgerFS partition: the same contract every
 			// other unsafe ATA call in this crate operates under.
 			unsafe { crate::writer::ata_pio_write(abs_sector, chunk) }
 				.map_err(|e| Error::InvalidOperation(alloc::format!("write_blocks: ATA write failed: {e:?}")))?;
@@ -142,7 +142,7 @@ impl AtaBlockDevice {
 	/// Read raw blocks starting at partition-relative block index `lba`
 	/// into `buf` (`buf.len()` must be a nonzero multiple of the LedgerFS
 	/// block size). The read counterpart to [`BlockDevice::write_blocks`]
-	/// — deliberately not part of the `BlockDevice` trait itself (which
+	/// deliberately not part of the `BlockDevice` trait itself (which
 	/// only models the write side `CommitEngine` needs), since this exists
 	/// for a different caller: userspace fetching raw bytes (e.g. a
 	/// `Superblock`) it can't reach any other way, via the
@@ -165,13 +165,13 @@ impl AtaBlockDevice {
 			// ceiling the 48-bit path exists to remove.
 			let abs_sector: u64 = self.partition_start_lba as u64 + block_lba * SECTORS_PER_BLOCK;
 
-			// SAFETY: same contract as write_blocks above — caller
+			// SAFETY: same contract as write_blocks above: caller
 			// guarantees ring 0, I/O port access enabled, and a valid
 			// LedgerFS partition at `partition_start_lba`.
 			unsafe { crate::reader::ata_pio_read(abs_sector, chunk) }
 				.map_err(|e| Error::InvalidOperation(alloc::format!("read_blocks: ATA read failed: {e:?}")))?;
 
-			// Exact inverse of the write path's encryption step — a block
+			// Exact inverse of the write path's encryption step: a block
 			// that was passed through untouched on write is passed through
 			// untouched here too. See `crate::data_crypto`.
 			#[cfg(feature = "data-encryption")]
@@ -241,11 +241,11 @@ pub struct CommitResult {
 	///
 	/// That is quadratically bad in practice, because CoW rewrites the root
 	/// inode on every commit and the root is therefore always the
-	/// most-recently-placed (highest-block) object — while being the *first*
+	/// most-recently-placed (highest-block) object, while being the *first*
 	/// thing every path resolution fetches. So each commit made the next
 	/// path resolution scan further, and a write that should be milliseconds
 	/// grew without bound. Returning the hints lets a caller keep them beside
-	/// its open volume and turn those lookups into a single O(1) hinted read —
+	/// its open volume and turn those lookups into a single O(1) hinted read,
 	/// which is what the host crate's sidecar hint cache does.
 	pub storage_hints: BTreeMap<ObjectId, crate::placement::StorageHint>,
 }
@@ -258,7 +258,7 @@ pub struct CommitEngine {
 	/// Global sequence counter for intent log
 	next_seq: u64,
 
-	/// Largest object this engine will commit — see
+	/// Largest object this engine will commit; see
 	/// [`set_max_object_bytes`](Self::set_max_object_bytes).
 	max_object_bytes: usize,
 }
@@ -280,7 +280,7 @@ impl CommitEngine {
 	/// write side, because the two disagree silently otherwise:
 	/// `reader::read_object`'s scan skips any record whose `stored_len`
 	/// exceeds the limit, so an object committed above it is simply never
-	/// found again. The commit reports success and the data is gone — the
+	/// found again. The commit reports success and the data is gone: the
 	/// worst shape a filesystem bug can take. Refusing the commit turns that
 	/// into a clean, immediate error naming the object that was too big.
 	pub fn set_max_object_bytes(&mut self, max_object_bytes: usize) {
@@ -300,8 +300,8 @@ impl CommitEngine {
 	/// just chose, write the updated allocator snapshot to
 	/// [`ALLOC_SNAPSHOT_BLOCK`](crate::ALLOC_SNAPSHOT_BLOCK), then
 	/// `storage_barrier()` once. That single barrier is the whole guarantee
-	/// this call makes on its own — nothing may name an object, nor resume from
-	/// that snapshot, until their bytes are durable — and it is the only
+	/// this call makes on its own (nothing may name an object, nor resume from
+	/// that snapshot, until their bytes are durable), and it is the only
 	/// barrier issued here. The snapshot shares the barrier rather than
 	/// following it with one of its own; see the comment at the write for why
 	/// that is the same guarantee at half the cost.
@@ -309,13 +309,13 @@ impl CommitEngine {
 	/// **Not real:** the intent log. `FORMAT.md` §15.1's protocol brackets the
 	/// commit with `PREPARE_ROOT` and `COMMIT_ROOT` records in an on-disk ring,
 	/// and this engine does build those `IntentLogRecord`s and return them in
-	/// `CommitResult::intent_records` — but nothing writes a ring, so there is
+	/// `CommitResult::intent_records`, but nothing writes a ring, so there is
 	/// no record on the device for the protocol's ordering barriers to be
 	/// ordering against. Issuing them anyway cost two device barriers per
 	/// commit to guard writes that never happen; they are gone.
 	///
 	/// **Not this function's job:** the superblock and the RLR. There is no
-	/// `Superblock` parameter to write through, so the caller updates both —
+	/// `Superblock` parameter to write through, so the caller updates both:
 	/// `ledgerfs-host`'s `Store::commit` is where this engine's write phase and
 	/// the volume's commit point actually meet.
 	///
@@ -379,7 +379,7 @@ impl CommitEngine {
 		// Step 3: Prepare ObjectRecords and actually write them to `device`.
 		//
 		// Each placed object already has a real physical location
-		// (`physical_lba`/`block_count`) from the allocator — write the
+		// (`physical_lba`/`block_count`) from the allocator: write the
 		// encoded record into a `block_count`-block-sized buffer (zero-
 		// padded past the record's real length, matching how the reader
 		// tolerates trailing zero padding within an allocated extent) and
@@ -406,7 +406,7 @@ impl CommitEngine {
 		// Calculate bytes written
 		let bytes_written: u64 = object_records.iter().map(|r: &ObjectRecord| r.total_size() as u64).sum();
 
-		// Step 3: the allocator snapshot, written here — before the barrier —
+		// Step 3: the allocator snapshot, written here, before the barrier,
 		// so that one barrier covers it and the objects together.
 		//
 		// What this buys is the superblock's ordering requirement at no extra
@@ -414,7 +414,7 @@ impl CommitEngine {
 		// snapshot is durable before any root that depends on these placements
 		// can become live. A snapshot that lands *ahead* of the published root
 		// only leaks space, because this filesystem never frees
-		// (`KNOWN_ISSUES.md` §1) — it can never mark a block free that a live
+		// (`KNOWN_ISSUES.md` §1): it can never mark a block free that a live
 		// root still uses. Writing it after the barrier instead would cost a
 		// second device barrier and buy nothing.
 		let snapshot = alloc_node.encode_snapshot_block(crate::BLOCK_SIZE as usize)?;
@@ -426,7 +426,7 @@ impl CommitEngine {
 		// was already issued there.)
 		device.storage_barrier()?;
 
-		// PREPARE_ROOT intent — built and returned, not persisted. See this
+		// PREPARE_ROOT intent: built and returned, not persisted. See this
 		// function's docs for why no barrier follows it.
 		let root_id = txn_plan.new_root.object_id;
 		let prepare_intent = PrepareRootIntent {
@@ -443,7 +443,7 @@ impl CommitEngine {
 		// The superblock update that makes this root live is the caller's:
 		// `CommitResult::root_id` and `commit_seq` are what it writes.
 
-		// COMMIT_ROOT intent — built and returned, not persisted.
+		// COMMIT_ROOT intent: built and returned, not persisted.
 		let commit_intent = IntentLogRecord::new(
 			self.next_seq,
 			tx_id,
@@ -527,7 +527,7 @@ mod tests {
 		// A chunk's canonical form is its raw data (see
 		// `Chunk::encode_canonical`), so `chunk.object_id`,
 		// `blake3(canonical)`, and `blake3(payload)` are all the same value
-		// here — the invariant `ObjectRecordReader::read` enforces
+		// here: the invariant `ObjectRecordReader::read` enforces
 		// (`blake3(stored_bytes) == header.object_id`). Any framing applied
 		// on the way to disk breaks it and silently corrupts every read from
 		// the data volume, so the assertion below goes through
@@ -550,7 +550,7 @@ mod tests {
 		//
 		// The device sees one write per placed object **plus** the allocator
 		// snapshot, which `commit()` writes last, to its own fixed block, under
-		// the same barrier as the objects — see its docs. Asserting that shape
+		// the same barrier as the objects; see its docs. Asserting that shape
 		// rather than the raw count is what keeps this test honest: a raw count
 		// would go green again if the snapshot write were dropped.
 		let (snapshot_lba, snapshot) = device.writes.last().expect("commit() writes the allocator snapshot");
@@ -576,11 +576,11 @@ mod tests {
 		);
 
 		// -- Check: the bytes written actually decode back into a valid
-		// ObjectRecord whose payload matches what was committed — not just
+		// ObjectRecord whose payload matches what was committed: not just
 		// "some bytes were written", but the *right* bytes. (`decode`
 		// already self-verifies `blake3(decoded_payload) ==
 		// header.object_id` internally and returns `Err` if not, so a
-		// successful decode here already proves that invariant — this
+		// successful decode here already proves that invariant; this
 		// assertion is the belt-and-braces external check.)
 		let (_lba, written_bytes) = &device.writes[0];
 		let (header, decoded_payload) = crate::record::ObjectRecordReader::read(written_bytes)?;
@@ -597,14 +597,14 @@ mod tests {
 	}
 
 	/// `Allocator::allocate`'s `block_count` must be in the same units as
-	/// everything downstream — `AllocNode`'s free-space tracking and
+	/// everything downstream: `AllocNode`'s free-space tracking and
 	/// `buf_len = block_count * crate::BLOCK_SIZE`. If it counts 512-byte
 	/// sectors instead of 4 KiB blocks, every object over 512 bytes is
 	/// written as an oversized zero-padded buffer that clobbers the content
 	/// in the blocks after it. See `allocator::BLOCK_SIZE_BYTES`.
 	///
-	/// Commits two ~600-byte objects — over that threshold, under one 4 KiB
-	/// block each — in one transaction and asserts the two `write_blocks`
+	/// Commits two ~600-byte objects, over that threshold, under one 4 KiB
+	/// block each, in one transaction, and asserts the two `write_blocks`
 	/// calls cover non-overlapping byte ranges.
 	#[test]
 	fn test_commit_engine_adjacent_objects_over_512_bytes_do_not_overlap() -> TestResult<()> {
@@ -633,7 +633,7 @@ mod tests {
 		// -- Check
 		//
 		// Two object writes plus the allocator snapshot, which is written last
-		// and is not an object — see the sibling test above for why the shape is
+		// and is not an object; see the sibling test above for why the shape is
 		// asserted rather than the bare count.
 		let (snapshot_lba, _) = device.writes.last().expect("commit() writes the allocator snapshot");
 		assert_eq!(
@@ -650,7 +650,7 @@ mod tests {
 		let (lba0, buf0) = &device.writes[0];
 		let (lba1, buf1) = &device.writes[1];
 
-		// Each write must cover exactly one real 4 KiB block — not the
+		// Each write must cover exactly one real 4 KiB block, not the
 		// old bug's inflated 8-block (32 KiB) buffer for a <1 KiB object.
 		assert_eq!(
 			buf0.len(),
@@ -670,7 +670,7 @@ mod tests {
 		let end1 = start1 + buf1.len() as u64;
 		assert!(
 			end0 <= start1 || end1 <= start0,
-			"overlapping writes: [{start0}, {end0}) vs [{start1}, {end1}) — an oversized write from one object's \
+			"overlapping writes: [{start0}, {end0}) vs [{start1}, {end1}): an oversized write from one object's \
 			 placement clobbered the other's block"
 		);
 

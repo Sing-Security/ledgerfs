@@ -1,6 +1,6 @@
 //! Error types for the Tier B subsystems.
 //!
-//! Same shape as `ledgerfs::Error` — a flat enum over a `Result` alias — and
+//! Same shape as `ledgerfs::Error` (a flat enum over a `Result` alias), and
 //! deliberately a *different* type. These variants describe failures the core
 //! format cannot produce: a refcount that would overflow, a missing dedupe
 //! entry, a corrupt block found by the scrubber. While they lived in the

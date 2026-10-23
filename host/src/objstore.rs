@@ -6,8 +6,8 @@
 //! an [`ObjectRef`] to the `ObjectRecord` sitting on a real volume and hands
 //! the verified payload back.
 //!
-//! Everything above this trait — `read`, `readdir`, `mkdir`, `write`,
-//! `unlink`, `rename` in `cow::operations` — is generic over `ObjectStore` and
+//! Everything above this trait (`read`, `readdir`, `mkdir`, `write`,
+//! `unlink`, `rename` in `cow::operations`) is generic over `ObjectStore` and
 //! therefore already works once this compiles. None of it is reimplemented
 //! here.
 //!
@@ -59,7 +59,7 @@ pub struct DiskObjectStore {
 	///
 	/// Poisoning is recovered, not propagated: a poisoned cache holds at worst
 	/// a stale hint, and every hint is re-verified against the block it names
-	/// before it is trusted — see [`read_object`](Self::read_object).
+	/// before it is trusted; see [`read_object`](Self::read_object).
 	hints: Mutex<HashMap<ObjectId, u64>>,
 
 	/// Upper bound on a linear scan, from the superblock's resolved limits.
@@ -140,7 +140,7 @@ impl DiskObjectStore {
 		let buf = if total <= BLOCK_SIZE as usize {
 			first
 		} else {
-			// A record may span many blocks (`MAX_OBJECT_SIZE` is 256 KiB —
+			// A record may span many blocks (`MAX_OBJECT_SIZE` is 256 KiB:
 			// 64 blocks). Read the exact length, not a rounded block count.
 			let mut whole = vec![0u8; total];
 			self.device.read_bytes_at(lba * BLOCK_SIZE as u64, &mut whole)?;
@@ -162,7 +162,7 @@ impl DiskObjectStore {
 	///
 	/// This is where the hint's safety lives. A hint or cache entry that names
 	/// the wrong block is not detectable without reading it, and reading it is
-	/// the fetch — so the check is not skippable, and it costs nothing. What must
+	/// the fetch, so the check is not skippable, and it costs nothing. What must
 	/// never happen is accepting a *header* without the rest of the record, and
 	/// `read_record` verifies the whole thing end to end: magic, checksum,
 	/// decompression and `blake3(payload) == header.object_id`.
@@ -201,7 +201,7 @@ impl DiskObjectStore {
 	///
 	/// Loads the disk-backed half of the cache first: on a reopen that is what
 	/// turns the whole-volume scan into a map hit. The map is a *claim*, not an
-	/// answer — the read that follows verifies the block it names, so a stale
+	/// answer: the read that follows verifies the block it names, so a stale
 	/// entry costs one record read and a fall-through rather than a wrong
 	/// answer. (A record may span blocks, so "one record read" is more bytes
 	/// than the header-only probe this replaced; it is not more reads, and on a
@@ -226,7 +226,7 @@ impl DiskObjectStore {
 	/// superblock), so on a freshly remounted volume every other object has hint
 	/// `0` and must be scanned for. CoW rewrites a path's whole ancestor chain on
 	/// every write, so on a volume that has seen many commits the objects a read
-	/// actually needs sit at the *tail* — past `max_scan_blocks`. Scanning only
+	/// actually needs sit at the *tail*, past `max_scan_blocks`. Scanning only
 	/// the bounded window then reports `ObjectNotFound` for objects that are
 	/// present, which is how a migrated volume reads as corrupt. So the bounded
 	/// pass runs first (cheap when the target is near the head), then the
@@ -260,8 +260,8 @@ impl DiskObjectStore {
 					}
 				}
 			}
-			// The scan is the expensive half of this module — ~0.8 s on a
-			// 1 GiB volume — and it has just produced the complete index. Making
+			// The scan is the expensive half of this module (~0.8 s on a
+			// 1 GiB volume), and it has just produced the complete index. Making
 			// it durable is the whole point of the sidecar: the next open of this
 			// volume, in this process or another, loads that index instead of
 			// walking the volume again.
@@ -299,7 +299,7 @@ impl DiskObjectStore {
 				break;
 			}
 			// A block that is not the start of a record fails the magic check
-			// and is skipped — free space is zeroed, so this is the common case.
+			// and is skipped; free space is zeroed, so this is the common case.
 			if let Ok(header) = ObjectRecordHeader::decode(&block)
 				&& header.object_id == *id.as_bytes()
 			{
@@ -326,7 +326,7 @@ impl DiskObjectStore {
 	/// Read the sidecar into the map, once per handle.
 	///
 	/// Called from [`cached_lba`](Self::cached_lba) rather than from `new`, so a store
-	/// that is opened and never read past its root pays nothing — and so the
+	/// that is opened and never read past its root pays nothing, and so the
 	/// load happens on the same thread as the first lookup, keeping the whole
 	/// cost on the caller's cold path instead of on the mount.
 	///
@@ -352,7 +352,7 @@ impl DiskObjectStore {
 	///
 	/// Best-effort: a sidecar that cannot be written costs the next open one
 	/// scan. The dirty flag is cleared first, so a concurrent `remember` from a
-	/// commit is not lost to this flush's window — it simply marks it dirty
+	/// commit is not lost to this flush's window; it simply marks it dirty
 	/// again and the next flush picks it up.
 	fn flush_cache(&self) {
 		let Some(cache) = &self.hint_cache else {

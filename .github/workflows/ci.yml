@@ -15,8 +15,8 @@ on:
     branches: [main]
 
 # `rust-toolchain.toml` pins this repository to `stable` plus rustfmt and
-# clippy, so every `cargo` invocation below — including the ones under a
-# `rustup show` step — resolves to that toolchain without an install action.
+# clippy, so every `cargo` invocation below, including the ones under a
+# `rustup show` step, resolves to that toolchain without an install action.
 env:
   CARGO_TERM_COLOR: always
 
@@ -54,7 +54,7 @@ jobs:
 
   # The host crate advertises Linux, macOS and Windows: the file device's
   # positioned I/O and lock are cfg-gated per family, not Unix-assumed. This
-  # job is what keeps that true — it runs the same suite on a native runner,
+  # job is what keeps that true: it runs the same suite on a native runner,
   # exercising `seek_read`/`seek_write`, `try_lock`, and the creation-time
   # volume identity against a real Windows kernel instead of a cross-check.
   host-windows:
@@ -71,7 +71,7 @@ jobs:
       - run: cargo +1.89 check -p ledgerfs-host
 
   # `pending/` is not published, but its tests are the only thing keeping the
-  # subsystems it holds honest — nothing in the shipping path calls them, so
+  # subsystems it holds honest: nothing in the shipping path calls them, so
   # nothing else would notice if they rotted.
   pending:
     name: pending
@@ -81,7 +81,7 @@ jobs:
       - run: rustup show
       - run: cargo test -p ledgerfs-pending
 
-  # `rust-version` in a manifest is a published claim — "this builds on 1.89" —
+  # `rust-version` in a manifest is a published claim ("this builds on 1.89"),
   # and nothing else in this file compiles anywhere near it. Both published
   # crates are built here at their declared floor; `+1.89` overrides the
   # `stable` pin in `rust-toolchain.toml` for these commands only.
@@ -98,7 +98,7 @@ jobs:
 
   # The benchmark harness is not published, but it is the source of every number
   # in BENCHMARKS.md, so a change that breaks it breaks the published claims.
-  # Build only — running it on a shared runner measures the runner.
+  # Build only: running it on a shared runner measures the runner.
   benchmarks:
     name: benchmarks build
     runs-on: ubuntu-latest

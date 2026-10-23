@@ -7,7 +7,7 @@
 //! ```
 //!
 //! This is the shape a recorder that cannot afford a commit per batch wants.
-//! Records are staged — no allocator, no device block, no barrier — and read
+//! Records are staged (no allocator, no device block, no barrier) and read
 //! back at memory speed; an explicit seal turns everything staged into **one**
 //! ordinary commit, after which the data has exactly the guarantee every write
 //! in this store has. Nothing about the format changes: a sealed session is
@@ -19,7 +19,7 @@
 
 use ledgerfs_host::{Error, MemBlockDevice, Result, Store};
 
-/// 8 MiB — the reserved regions plus enough object space to keep the demo out
+/// 8 MiB: the reserved regions plus enough object space to keep the demo out
 /// of the out-of-space path (which `Store::staged_bytes` and
 /// `Error::StagingFull` exist for, and which this demo does not exercise).
 const BLOCKS: u64 = 2048;
@@ -59,7 +59,7 @@ fn run() -> Result<()> {
 		store.staged_append("/capture/log.jsonl", record.as_bytes(), 0o644)?;
 		staged_records += 1;
 	}
-	// A new file too — a session is not a single-file concept.
+	// A new file too: a session is not a single-file concept.
 	store.staged_write_new_file("/capture/summary.json", b"{\"sealed\":false}\n", 0o644)?;
 	println!(
 		"staged {staged_records} appends + 1 new file: {} bytes in RAM, commit_seq still {seq_before}",
@@ -117,7 +117,7 @@ fn run() -> Result<()> {
 
 	// -- 5. Now every read is the committed tier and there is nothing left to
 	// disagree with. The seal was one transaction, so a crash during it leaves
-	// either the old root or the new one — never a half-applied batch.
+	// either the old root or the new one, never a half-applied batch.
 	let sealed = store.read_file("/capture/log.jsonl")?;
 	if sealed != store.read_file_committed("/capture/log.jsonl")? {
 		return Err(mismatch("/capture/log.jsonl", "after a seal the two tiers must agree"));
@@ -126,7 +126,7 @@ fn run() -> Result<()> {
 
 	// -- 6. The proof that this is durability, not caching: drop the store and
 	// reopen the volume from its bytes, the way the next start would. No
-	// recovery path runs — a plain mount is the whole story.
+	// recovery path runs: a plain mount is the whole story.
 	let bytes = mirror.bytes_snapshot();
 	drop(store);
 	let reopened = Store::open(Box::new(MemBlockDevice::from_bytes(bytes)?))?;

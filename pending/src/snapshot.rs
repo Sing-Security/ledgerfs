@@ -7,7 +7,7 @@
 //! dedupe index and the deadlist consistent with a snapshot are not, so a
 //! snapshot's sharing is invisible to the index and nothing reaches the
 //! deadlist when a snapshot is deleted. Nothing in the host `Store` calls any
-//! of it — `KNOWN_ISSUES.md` §11.
+//! of it (see `KNOWN_ISSUES.md` §11).
 //!
 //! Per §24, §30, and §22.3 of FORMAT.md:
 //! - Atomic snapshot creation (pin → commit → register)

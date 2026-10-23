@@ -3,7 +3,7 @@
 //! ## Why this exists
 //!
 //! LedgerFS's compression was implemented against the `lz4` and `zstd` crates,
-//! both of which the `std` feature gates — and the kernel and the runtime
+//! both of which the `std` feature gates, while the kernel and the runtime
 //! volume driver take this crate with `default-features = false`. So on target
 //! every algorithm except `CompressionAlgorithm::None` returned
 //! `InvalidEncoding`, and because the write path uses `compress(..)?` an object
@@ -43,7 +43,7 @@ const MIN_MATCH: usize = 4;
 ///
 /// Two format rules collapse into this one number: a match may not begin within
 /// the last 12 bytes, and the last 5 bytes must be literals. Since 12 > 5 the
-/// first implies the second, so there is no separate end-literals guard — the
+/// first implies the second, so there is no separate end-literals guard: the
 /// encoder's match limit is already stricter than the literal rule.
 const LAST_MATCH_GUARD: usize = 12;
 /// Offsets are 16-bit, so a match can reach back this far at most.
@@ -105,7 +105,7 @@ pub fn compress(src: &[u8]) -> Vec<u8> {
 		table[h] = pos;
 		filled[h] = true;
 
-		// A candidate is usable only if it is in range and actually matches —
+		// A candidate is usable only if it is in range and actually matches:
 		// the hash is lossy, so this comparison is what makes it correct.
 		if !seen || pos <= candidate || pos - candidate > MAX_OFFSET || read_u32(src, candidate) != seq {
 			pos += 1;
@@ -373,7 +373,7 @@ mod tests {
 	/// Cross-check against the reference C implementation.
 	///
 	/// Only buildable with `--features std`, which is what pulls in the `lz4`
-	/// crate — but that is precisely the point: it pins this encoder to the
+	/// crate, but that is precisely the point: it pins this encoder to the
 	/// same on-disk format the std path produces, so blocks written by either
 	/// are readable by the other.
 	#[cfg(feature = "std")]

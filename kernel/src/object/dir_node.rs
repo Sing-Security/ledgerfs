@@ -45,7 +45,7 @@ impl DirEntry {
 /// Entries are sorted by name for deterministic ordering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirNode {
-	/// Content-addressed ID of this node — `#[serde(skip)]`, matching
+	/// Content-addressed ID of this node: `#[serde(skip)]`, matching
 	/// `AllocNode`'s convention: see `Inode::object_id`'s doc comment for
 	/// why a self-referential field can't be part of its own hash input.
 	#[serde(skip)]
@@ -175,14 +175,14 @@ impl DirNode {
 	}
 
 	/// Update object ID based on current content. See `Inode::update_object_id`'s
-	/// doc comment — safe in any order since `object_id` is `#[serde(skip)]`.
+	/// doc comment: safe in any order since `object_id` is `#[serde(skip)]`.
 	pub fn update_object_id(&mut self) {
 		let canonical = self.encode_canonical().unwrap();
 		self.object_id = ObjectId::from_content(&canonical);
 	}
 
 	/// Encode, adopt the object id those bytes hash to, and hand the bytes
-	/// back — the one-pass form of `update_object_id` + `encode_canonical`.
+	/// back: the one-pass form of `update_object_id` + `encode_canonical`.
 	pub fn seal_canonical(&mut self) -> Result<Vec<u8>> {
 		let canonical = self.encode_canonical()?;
 		self.object_id = ObjectId::from_content(&canonical);
@@ -196,7 +196,7 @@ impl DirNode {
 	}
 
 	/// Decode node from canonical bytes, recomputing `object_id` directly
-	/// from `bytes` — see `Inode::decode_canonical`'s doc comment.
+	/// from `bytes`; see `Inode::decode_canonical`'s doc comment.
 	pub fn decode_canonical(bytes: &[u8]) -> Result<Self> {
 		let mut node: Self = postcard::from_bytes(bytes).map_err(Error::from)?;
 		node.object_id = ObjectId::from_content(bytes);
@@ -214,7 +214,7 @@ mod tests {
 	///
 	/// `MAX_ENTRIES` is 400, derived from a comment estimating "~300 bytes"
 	/// per entry against a 128 KiB canonical ceiling. `needs_split` enforces
-	/// **both** bounds, so whichever binds first is the real limit — and if
+	/// **both** bounds, so whichever binds first is the real limit, and if
 	/// the byte estimate is wrong, the advertised entry count is fiction.
 	/// This measures it instead of estimating.
 	#[test]
@@ -288,8 +288,8 @@ mod tests {
 	#[test]
 	fn test_dirnode_object_id_matches_blake3_of_its_own_stored_bytes() -> TestResult<()> {
 		// -- Setup & Fixtures: regression test for the same real bug
-		// documented in `Inode::test_inode_object_id_matches_blake3_of_its_own_stored_bytes`
-		// — `object_id` used to be a normal serialized field, making
+		// documented in `Inode::test_inode_object_id_matches_blake3_of_its_own_stored_bytes`.
+		// `object_id` used to be a normal serialized field, which made
 		// `update_object_id()` self-referentially inconsistent with what
 		// actually gets stored on disk. Found live via a genesis `DirNode`
 		// that became permanently unreadable after a real commit.

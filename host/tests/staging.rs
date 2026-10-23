@@ -4,7 +4,7 @@
 //! session is open its writes are RAM only, so they are fast and they are not
 //! durable; the seal turns all of them into **one** ordinary commit, after
 //! which they have exactly the guarantee every write in this store has. These
-//! tests pin both halves — that nothing reaches the device before the seal, and
+//! tests pin both halves: that nothing reaches the device before the seal, and
 //! that after it a plain mount sees a complete, byte-exact tree.
 
 mod common;
@@ -30,7 +30,7 @@ fn test_staged_appends_seal_as_one_commit() -> Result<()> {
 	let start = staged.commit_seq();
 	let free_start = staged.free_bytes().expect("writable");
 
-	// -- Exec: staged — five appends, then one seal
+	// -- Exec: staged; five appends, then one seal
 	staged.begin_staging(0)?;
 	for i in 0..5 {
 		staged.staged_append("/log/stream", format!("record {i}\n").as_bytes(), 0o644)?;
@@ -48,7 +48,7 @@ fn test_staged_appends_seal_as_one_commit() -> Result<()> {
 	assert_eq!(sealed.commit_seq, start + 1);
 	assert!(!staged.staging_is_open(), "a successful seal closes the session");
 
-	// -- Exec: committed — the same five appends, one commit each
+	// -- Exec: committed; the same five appends, one commit each
 	for i in 0..5 {
 		committed.append("/log/stream", format!("record {i}\n").as_bytes(), 0o644)?;
 	}
@@ -83,8 +83,8 @@ fn test_staged_appends_seal_as_one_commit() -> Result<()> {
 
 /// A deferred seal is a commit the *volume* has not heard of yet.
 ///
-/// Everything it wrote is on the device — the commit engine's barrier covered
-/// the objects and the allocator snapshot — but the superblock naming the new
+/// Everything it wrote is on the device: the commit engine's barrier covered
+/// the objects and the allocator snapshot, but the superblock naming the new
 /// root is held back. So the handle reads its own seal immediately, while a
 /// mount of the same bytes sees the root from before it.
 #[test]
@@ -190,7 +190,7 @@ fn test_deferred_seal_without_sync_is_lost_cleanly() -> Result<()> {
 	Ok(())
 }
 
-/// `sync` with nothing pending writes nothing at all — the call is safe to
+/// `sync` with nothing pending writes nothing at all: the call is safe to
 /// make at every durability point without paying for it.
 #[test]
 fn test_sync_without_a_deferred_seal_is_a_no_op() -> Result<()> {
@@ -232,7 +232,7 @@ fn test_intermediate_object_generations_are_pruned_at_seal() -> Result<()> {
 	// -- Check: five chunks, plus **one** generation of every metadata object:
 	// one extent node, the file inode, the /log DirNode and its inode, and the
 	// root's DirNode and inode. Committing each append separately would carry
-	// five of each — 35 objects rather than these 11.
+	// five of each: 35 objects rather than these 11.
 	assert_eq!(
 		result.objects_written, 11,
 		"the seal must write the staged chunks plus one generation of metadata, not one per op"
@@ -262,7 +262,7 @@ fn test_a_crash_before_the_seal_loses_the_staged_writes_exactly() -> Result<()> 
 	// crash would
 	let crashed = open_bytes(bytes(&watch))?;
 
-	// -- Check: the committed tier is exactly what was committed — the append
+	// -- Check: the committed tier is exactly what was committed: the append
 	// and the new file are gone, whole, not partially applied
 	assert_eq!(crashed.read_file("/a")?, b"committed");
 	assert!(
@@ -302,7 +302,7 @@ fn test_the_two_read_tiers_disagree_mid_session() -> Result<()> {
 		"a root listing carries the file"
 	);
 
-	// -- Check: a second mount of the same bytes sees committed only — by
+	// -- Check: a second mount of the same bytes sees committed only, by
 	// construction, since staging wrote no device bytes at all
 	let other = open_bytes(bytes(&watch))?;
 	assert_eq!(other.read_file("/state")?, b"v1");
@@ -325,12 +325,12 @@ fn test_a_staged_read_touches_no_device_blocks() -> Result<()> {
 	let staged_bytes_read = store.read_file("/staged")?;
 
 	// -- Check: every object on that path is staged, so the read is zero device
-	// reads — the staged root inode included
+	// reads, the staged root inode included
 	assert_eq!(staged_bytes_read.len(), 2500);
 	assert_eq!(
 		counts.reads(),
 		0,
-		"a staged read must not touch the device — staged objects are in memory"
+		"a staged read must not touch the device: staged objects are in memory"
 	);
 
 	// -- Exec: the same read through the committed tier, for contrast
@@ -488,7 +488,7 @@ fn test_an_empty_seal_is_refused_and_end_staging_discards() -> Result<()> {
 	let e = expect_err("empty seal", store.seal_staged());
 
 	// -- Check: nothing to seal is a usage error, not a commit that changed no
-	// path — and the session stays open rather than being silently closed
+	// path, and the session stays open rather than being silently closed
 	assert!(matches!(e, Error::Usage(_)), "got {e:?}");
 	assert!(store.staging_is_open());
 	assert_eq!(store.commit_seq(), seq);
@@ -885,7 +885,7 @@ fn test_a_drafted_read_crosses_the_committed_and_staged_boundary() -> Result<()>
 	Ok(())
 }
 
-/// A `stat` asks for an inode, and a draft does not have one yet — so the read
+/// A `stat` asks for an inode, and a draft does not have one yet, so the read
 /// materializes. It must not publish: the committed tier still answers what a
 /// crash would leave, and the seal is still the only commit.
 #[test]
@@ -1001,7 +1001,7 @@ fn test_a_drafted_file_can_be_removed_before_the_seal() -> Result<()> {
 	store.staged_remove("/doomed")?;
 	let result = store.seal_staged()?;
 
-	// -- Check: /kept's chunk, its node, its inode and the root pair — nothing
+	// -- Check: /kept's chunk, its node, its inode and the root pair; nothing
 	// for the drafted bytes of /doomed
 	assert_eq!(result.objects_written, 5, "a removed draft must not be materialized");
 	let reopened = open_bytes(bytes(&watch))?;
@@ -1014,7 +1014,7 @@ fn test_a_drafted_file_can_be_removed_before_the_seal() -> Result<()> {
 }
 
 /// The deferred seal is the same seal without the superblock, and it has to
-/// flush drafts exactly as the durable one does — otherwise a caller batching
+/// flush drafts exactly as the durable one does; otherwise a caller batching
 /// seals would hold the last group's bytes in RAM.
 #[test]
 fn test_a_deferred_seal_materializes_the_drafts() -> Result<()> {
@@ -1061,7 +1061,7 @@ fn test_a_store_with_a_session_open_is_still_send_and_sync() -> Result<()> {
 	s.staged_append("/a", b"staged", 0o644)?;
 
 	// -- Check: the value is usable from a scoped thread while the session is
-	// open on this one — the lock is what makes that legal
+	// open on this one; the lock is what makes that legal
 	let seen = std::thread::scope(|scope| {
 		scope
 			.spawn(|| {

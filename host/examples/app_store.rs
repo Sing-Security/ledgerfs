@@ -5,7 +5,7 @@
 //! cargo run --example app_store
 //! ```
 //!
-//! This is the shape a real consumer — a relay writing a turn's files, say —
+//! This is the shape a real consumer, a relay writing a turn's files, say,
 //! programs against: stamp the volume as mine, keep a log *in chunks*, replace
 //! a state file, do an atomic replace with a scratch name and `rename`, watch
 //! free space, rebuild the volume when a long life has filled it with dead
@@ -15,7 +15,7 @@
 
 use ledgerfs_host::{Error, MemBlockDevice, Result, Store, rebuild_into};
 
-/// 8 MiB — room for the reserved regions plus real object space to watch fall.
+/// 8 MiB: room for the reserved regions plus real object space to watch fall.
 const BLOCKS: u64 = 2048;
 
 fn main() {
@@ -40,7 +40,7 @@ fn run() -> Result<()> {
 
 	// -- 2. A log is written in **chunks**, never by appending to one growing
 	// file. `append` exists, but every commit CoWs the whole file object, so
-	// appending N times to one file writes O(N²) bytes — the way a 4 MiB
+	// appending N times to one file writes O(N²) bytes: the way a 4 MiB
 	// transcript costs gigabytes. A chunk that is written once and never touched
 	// again costs its own size and nothing more.
 	store.mkdir("/relay", 0o755)?;
@@ -64,7 +64,7 @@ fn run() -> Result<()> {
 	store.write_file("/relay/state.json", b"{\"phase\":\"running\"}\n", 0o644)?;
 
 	// -- 4. An atomic replace: build the new content under a scratch name, then
-	// `rename` it into place — one transaction, so a reader never sees a
+	// `rename` it into place: one transaction, so a reader never sees a
 	// half-written state file.
 	store.write_new_file("/relay/state.json.new", b"{\"phase\":\"stopped\"}\n", 0o644)?;
 	store.rename("/relay/state.json.new", "/relay/state.json")?;
@@ -73,7 +73,7 @@ fn run() -> Result<()> {
 		String::from_utf8_lossy(&store.read_file("/relay/state.json")?).trim()
 	);
 
-	// -- 5. Free space only falls — CoW frees nothing yet, so replacing a file
+	// -- 5. Free space only falls: CoW frees nothing yet, so replacing a file
 	// leaves every previous version behind. Sixty state writes: the file is a
 	// few dozen bytes, and watch what it costs.
 	let before = store.free_bytes().unwrap_or(0);
@@ -93,7 +93,7 @@ fn run() -> Result<()> {
 	);
 
 	// -- 6. The way back is a rebuild: copy the live tree into a fresh volume
-	// and swap it in. Not in place — a volume has one writer, and the source has
+	// and swap it in. Not in place: a volume has one writer, and the source has
 	// to survive until the copy has been checked. A compaction pass is exactly
 	// this.
 	let mut compacted = Store::format_app(Box::new(MemBlockDevice::new(BLOCKS)), "example")?;
@@ -106,7 +106,7 @@ fn run() -> Result<()> {
 		compacted.free_bytes().unwrap_or(0)
 	);
 
-	// Verify before the swap — compare the whole tree, or "it looked fine" is
+	// Verify before the swap: compare the whole tree, or "it looked fine" is
 	// the only thing standing between a rebuild and a destroyed campaign.
 	if store.walk()? != compacted.walk()? {
 		return Err(Error::ContentMismatch {

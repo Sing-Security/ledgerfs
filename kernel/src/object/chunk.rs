@@ -38,7 +38,7 @@ impl Chunk {
 		}
 	}
 
-	/// Encode chunk to canonical bytes — **the raw data, and nothing else**.
+	/// Encode chunk to canonical bytes: **the raw data, and nothing else**.
 	///
 	/// # Why a chunk is not postcard-framed like every other object
 	///
@@ -49,33 +49,33 @@ impl Chunk {
 	///
 	/// This used to postcard-serialize the whole struct
 	/// (`[object_id][len][data][flags][flags]`), which put three independent
-	/// consumers into disagreement — a raw-bytes writer that populates a
+	/// consumers into disagreement: a raw-bytes writer that populates a
 	/// volume and the kernel's `reader.rs` both treat a chunk object's stored
 	/// payload as raw file bytes, while the CoW write path wrote it framed.
 	/// Nothing caught it: the record's `object_id` really is
 	/// `blake3(canonical_bytes)`, so verification passed and only the
 	/// *interpretation* was wrong. A 31-byte file written through the CoW
-	/// path read back as the first 31 bytes of the chunk's own BLAKE3 id —
+	/// path read back as the first 31 bytes of the chunk's own BLAKE3 id,
 	/// garbage of exactly the right length.
 	///
 	/// Making raw the canonical form settles it in favour of the two
 	/// consumers that already agreed, needs no on-disk change to the system
 	/// volume (which already stored raw file bytes), and makes
 	/// `object_id == blake3(canonical) == blake3(data)` hold
-	/// universally — the same identity [`new`](Self::new) and
+	/// universally: the same identity [`new`](Self::new) and
 	/// [`verify`](Self::verify) already use.
 	///
 	/// `compression_flags`/`encryption_flags` are consequently not persisted
 	/// here. They are declared reserved-and-zero, and the `ObjectRecord`
 	/// header that wraps every object on disk already carries its own
 	/// compression/encryption flag bytes (`reader.rs` checks them before
-	/// accepting a record) — that header, not a duplicate inside the
-	/// payload, is where this metadata belongs.
+	/// accepting a record). That header, not a duplicate inside the payload,
+	/// is where this metadata belongs.
 	pub fn encode_canonical(&self) -> Result<Vec<u8>> {
 		Ok(self.data.clone())
 	}
 
-	/// Decode chunk from canonical bytes — see [`encode_canonical`](Self::encode_canonical).
+	/// Decode chunk from canonical bytes; see [`encode_canonical`](Self::encode_canonical).
 	pub fn decode_canonical(bytes: &[u8]) -> Result<Self> {
 		Ok(Self::new(bytes.to_vec()))
 	}
@@ -119,13 +119,13 @@ mod tests {
 	/// Regression test for the garbled-content bug: a chunk's stored
 	/// bytes must be *exactly* its data, with no framing.
 	///
-	/// Three independent consumers read chunk objects — a raw-bytes writer
+	/// Three independent consumers read chunk objects: a raw-bytes writer
 	/// that populates a volume, the kernel's `reader.rs`, and
 	/// `cow::operations`. The first two treat the stored payload as raw file
 	/// bytes.
 	/// When `encode_canonical` postcard-framed the whole struct instead, a
 	/// file written through the CoW path read back as the leading bytes of
-	/// its own BLAKE3 id — and the record-level hash check could not catch it,
+	/// its own BLAKE3 id, and the record-level hash check could not catch it,
 	/// because the framed bytes really did hash to the stored id. Asserting
 	/// on the exact byte sequence, not just a round trip, is what pins the
 	/// convention: a round-trip-only test passes under either encoding.
@@ -143,7 +143,7 @@ mod tests {
 		assert_eq!(
 			chunk.object_id,
 			ObjectId::from_content(&canonical),
-			"object_id must equal blake3(canonical) — the invariant ObjectRecordReader::read enforces"
+			"object_id must equal blake3(canonical), the invariant ObjectRecordReader::read enforces"
 		);
 		// And what a raw-bytes writer stores decodes back to the same chunk a
 		// CoW writer would have produced.

@@ -1,7 +1,7 @@
 //! Live ATA write-path round-trip self-test.
 //!
 //! `commit.rs`'s unit tests (`RecordingBlockDevice`) prove the *encoding*
-//! logic is correct — that `commit()` builds the right bytes and calls
+//! logic is correct: `commit()` builds the right bytes and calls
 //! `write_blocks` with them. They cannot prove the *hardware* protocol
 //! itself is correct, since a host-run `cargo test` never executes real
 //! `outb`/`inb` port I/O. This module is the live counterpart: write
@@ -11,7 +11,7 @@
 //! # Intended usage
 //!
 //! Call [`write_read_roundtrip_test`] against a **disposable, scratch-only
-//! disk image** — never against a real install image. It overwrites
+//! disk image**, never against a real install image. It overwrites
 //! whatever is at the given block unconditionally; it has no way to know
 //! whether that block holds real data. A dedicated harness builds a minimal
 //! throwaway image and boots it in a virtual machine specifically to run
@@ -41,8 +41,8 @@ pub struct RoundtripResult {
 /// # Safety
 ///
 /// Caller must ensure ring 0 execution with I/O port access enabled, that
-/// `partition_start_lba` names a real ATA-accessible disk region, and —
-/// critically — that `block_idx` is a genuinely disposable scratch block:
+/// `partition_start_lba` names a real ATA-accessible disk region, and,
+/// critically, that `block_idx` is a genuinely disposable scratch block:
 /// this function overwrites it unconditionally with no regard for whether
 /// real data lives there.
 #[cfg(all(feature = "reader", target_arch = "x86_64"))]
@@ -55,7 +55,7 @@ pub unsafe fn write_read_roundtrip_test(partition_start_lba: u32, block_idx: u64
 	// block-position-independent (catches a class of bug where the wrong
 	// block gets read back, e.g. an off-by-one in LBA arithmetic, since
 	// the pattern still self-verifies but a reader would need to know
-	// `block_idx` to reconstruct it exactly — deliberately does, via the
+	// `block_idx` to reconstruct it exactly; it deliberately does so, via the
 	// `block_idx` mix-in below).
 	let mut pattern = vec![0u8; block_size];
 	for (i, b) in pattern.iter_mut().enumerate() {
@@ -68,7 +68,7 @@ pub unsafe fn write_read_roundtrip_test(partition_start_lba: u32, block_idx: u64
 	device.storage_barrier()?;
 
 	// Read back via the real ATA read path (not the write path's own
-	// buffer) — the whole point is to prove the two independently-coded
+	// buffer): the whole point is to prove the two independently-coded
 	// directions agree on what's actually on the wire/disk.
 	let sectors_per_block: u64 = 8; // matches reader.rs / writer.rs convention (4096 / 512)
 	let abs_sector_u64 = partition_start_lba as u64 + block_idx * sectors_per_block;

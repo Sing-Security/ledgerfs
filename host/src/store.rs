@@ -2,7 +2,7 @@
 //!
 //! `HostFs` reads a volume through [`ObjectStore`]. This module closes the
 //! loop: [`Store`] owns the commit path, so a host process can create,
-//! format, write and re-mount a LedgerFS volume — on a disk image, on a bare
+//! format, write and re-mount a LedgerFS volume: on a disk image, on a bare
 //! file, or in memory.
 //!
 //! # What the kernel crate does and does not do
@@ -18,7 +18,7 @@
 //! 1. **Feed the placement hints back into the object cache.** `CommitResult`'s
 //!    own doc comment explains why this is not optional: CoW rewrites the root
 //!    inode on every commit, so the root is always the highest-block object and
-//!    the first thing any path resolution fetches — but the reference built by
+//!    the first thing any path resolution fetches, but the reference built by
 //!    `cow::operations` carries hint `0`. Without the hints, every resolution
 //!    after every commit falls back to a full linear scan, and the cost grows
 //!    with each commit.
@@ -40,7 +40,7 @@
 //!
 //! # Which field names the root
 //!
-//! `new_root.file_tree_root` — the root directory's **`Inode`** — is what goes
+//! `new_root.file_tree_root` (the root directory's **`Inode`**) is what goes
 //! into `active_root_id`. Not `new_root.object_id`, which is the id of the
 //! in-memory [`Root`] descriptor and names nothing on disk, and not
 //! `CommitResult::root_id`, which carries that same descriptor id. The other
@@ -87,7 +87,7 @@ pub enum Origin {
 /// A mounted, addressable LedgerFS volume: the read half, the CoW write and
 /// commit machinery, and the allocator that places new objects.
 pub struct Store {
-	/// The read half — path resolution, listing, and the object cache the
+	/// The read half: path resolution, listing, and the object cache the
 	/// commit path fills.
 	fs: HostFs,
 
@@ -116,8 +116,8 @@ pub struct Store {
 	/// Whether this handle's root is ahead of the volume's superblock because
 	/// of a deferred seal. See [`Store::seal_staged_deferred`].
 	///
-	/// The objects of a deferred seal are durable — the commit engine's own
-	/// barrier covered them — but the superblock naming them has deliberately
+	/// The objects of a deferred seal are durable (the commit engine's own
+	/// barrier covered them), but the superblock naming them has deliberately
 	/// not been written yet, because writing it before a barrier on a device
 	/// that reorders writes is the one thing that could make a crash boot a
 	/// root pointing at absent objects.
@@ -138,8 +138,8 @@ pub const STORE_CONTRACT_VERSION: &str = "2";
 ///
 /// Everything under it belongs to the store; an app keeps its own data in any
 /// other top-level directory. Reserving exactly one name, rather than a
-/// scattering of dot-files, is what lets tooling — the export path, `lfs-read`,
-/// a future fsck — recognise a volume's own metadata without knowing which app
+/// scattering of dot-files, is what lets tooling (the export path, `lfs-read`,
+/// a future fsck) recognise a volume's own metadata without knowing which app
 /// wrote it.
 pub const STORE_DIR: &str = "/.ledgerfs";
 
@@ -158,7 +158,7 @@ impl Store {
 	/// device itself.
 	///
 	/// The embedding entry point. An application that has a [`BlockDevice`] in
-	/// its own heap has already said how big the volume is — repeating that
+	/// its own heap has already said how big the volume is: repeating that
 	/// number alongside the device is one more chance for the two to disagree,
 	/// and `MemBlockDevice::new(n)`/`format(device, n)` makes the caller write
 	/// `n` twice for no reason. [`format`](Self::format) keeps the explicit
@@ -174,8 +174,8 @@ impl Store {
 	///
 	/// [`format_device`](Self::format_device) plus three commits that lay down
 	/// [`STORE_DIR`] and its two marker files. A store formatted this way is
-	/// still an ordinary LedgerFS volume — the markers are ordinary files, not
-	/// a format change — so a plain `lfs-read` lists them and a plain
+	/// still an ordinary LedgerFS volume (the markers are ordinary files, not
+	/// a format change), so a plain `lfs-read` lists them and a plain
 	/// [`Store::open`] reads them. What they add is that an app can ask a volume
 	/// whether it is *its* volume before trusting what it finds there; see
 	/// [`app`](Self::app) and [`contract_version`](Self::contract_version).
@@ -202,7 +202,7 @@ impl Store {
 	///    leaves a whole volume that simply has no root, not a half-formatted
 	///    one);
 	/// 2. erase every other block, so what the device held before is gone;
-	/// 3. a genesis transaction — an empty root directory — through the real
+	/// 3. a genesis transaction (an empty root directory) through the real
 	///    commit engine;
 	/// 4. the allocator snapshot;
 	/// 5. the superblock again, now naming the genesis root.
@@ -218,8 +218,8 @@ impl Store {
 	/// [`InMemoryObjectStore`], not against the device. It has to be: nothing
 	/// has committed yet, so the device has no root and no directory to read,
 	/// and `mkdir` with a zero parent reference creates the root inode without
-	/// consulting the store at all. Mounting the volume first — which is what
-	/// this used to do — cannot work, because `mount_select` builds its
+	/// consulting the store at all. Mounting the volume first (which is what
+	/// this used to do) cannot work, because `mount_select` builds its
 	/// candidate list from copies with `active_commit_seq > 0` and a
 	/// freshly-initialised volume has none.
 	pub fn format(device: Box<dyn BlockDevice>, total_blocks: u64) -> Result<Self> {
@@ -243,7 +243,7 @@ impl Store {
 
 		// A hint cache beside this volume describes blocks that are about to
 		// stop holding what it says. Entries are re-verified on use, so a stale
-		// one could never be *read* as the wrong object — but a volume
+		// one could never be *read* as the wrong object, but a volume
 		// re-formatted in place keeps its inode, so the identity check in the
 		// header would not notice, and every lookup would pay a failed hint read
 		// before falling back. Removing it here is the source-side half of the
@@ -264,13 +264,13 @@ impl Store {
 		// its predecessor's blocks would disclose them to whoever could read the
 		// device, and would leave stale `ObjectRecord`s for a hint-less reader's
 		// scan to trip over. The four superblock copies just written are the only
-		// blocks that survive — and `ALLOC_SNAPSHOT_BLOCK`, the journal and the
+		// blocks that survive; `ALLOC_SNAPSHOT_BLOCK`, the journal and the
 		// audit are rewritten below, so erasing them here loses nothing.
 		erase_except_superblocks(device.as_ref(), total_blocks)?;
 		device.barrier()?;
 
 		// -- Step 3: the genesis transaction. A zero parent reference means
-		// "create the root", which reads nothing from the store — see this
+		// "create the root", which reads nothing from the store; see this
 		// function's doc comment.
 		let root = Root::new();
 		let txn = mkdir(&InMemoryObjectStore::new(), &root, ObjectRef::zero(), "", 0, 0, 0o755)?;
@@ -318,7 +318,7 @@ impl Store {
 	/// than failing: its content is still perfectly readable, and saying so is
 	/// more useful than refusing to mount it.
 	///
-	/// A volume that has never been committed to does not get this far —
+	/// A volume that has never been committed to does not get this far:
 	/// [`Volume::mount`](crate::Volume::mount) refuses it with
 	/// [`VolumeUncommitted`](Error::VolumeUncommitted), which names the actual
 	/// state rather than reporting a mount failure.
@@ -389,7 +389,7 @@ impl Store {
 	///
 	/// [`commit`](Self::commit) reports this as its error and `lfs-write info`
 	/// prints it, so what a caller is told before writing is the same sentence
-	/// it gets if it tries anyway — the two cannot drift apart.
+	/// it gets if it tries anyway; the two cannot drift apart.
 	pub fn write_refusal(&self) -> Option<String> {
 		if !self.fs.store.device().is_writable() {
 			return Some("the device was opened read-only".to_string());
@@ -423,7 +423,7 @@ impl Store {
 	/// allocator snapshot and the superblock behind it.
 	///
 	/// Returns the engine's own [`CommitResult`] for inspection. The two
-	/// persistence steps are not optional and not separable — see this
+	/// persistence steps are not optional and not separable; see this
 	/// module's doc comment.
 	pub fn commit(&mut self, txn: TxnPlan) -> Result<CommitResult> {
 		self.commit_inner(txn, true)
@@ -434,7 +434,7 @@ impl Store {
 	///
 	/// The commit engine's own barrier has already run, so *objects and the
 	/// allocator snapshot are durable either way*. Only the superblock is
-	/// held back — and it has to be held back entirely, not written without
+	/// held back, and it has to be held back entirely, not written without
 	/// a barrier: a superblock that reaches media before the objects it
 	/// names is the one failure mode this ordering exists to prevent.
 	fn commit_inner(&mut self, txn: TxnPlan, persist: bool) -> Result<CommitResult> {
@@ -481,7 +481,7 @@ impl Store {
 				// things are wrong if it does, and both were live bugs:
 				//
 				// - the allocator node above was taken *out* of `self`, so an
-				//   early return here left the store owning no snapshot at all —
+				//   early return here left the store owning no snapshot at all;
 				//   every later write then answered "there is no allocator
 				//   snapshot on the volume" about a volume that has one, which
 				//   bricked the handle for the life of the process;
@@ -518,7 +518,7 @@ impl Store {
 		// Move the read half to the root just committed. Without this the
 		// store keeps resolving paths through the root it mounted at, so the
 		// very transaction that succeeded is invisible to `read_dir`/`resolve`
-		// for the rest of the session — and the failure is a `NoSuchFile` for
+		// for the rest of the session, and the failure is a `NoSuchFile` for
 		// the directory that was just created.
 		self.fs.root_inode_ref = self.root.file_tree_root;
 		self.fs.volume.publish_root(&self.root);
@@ -560,7 +560,7 @@ impl Store {
 	}
 
 	/// Whether this handle holds a committed root the volume's superblock
-	/// does not name yet — i.e. [`sync`](Self::sync) has something to do.
+	/// does not name yet, i.e. [`sync`](Self::sync) has something to do.
 	pub fn has_pending_sync(&self) -> bool {
 		self.sb_pending
 	}
@@ -570,8 +570,8 @@ impl Store {
 	///
 	/// Best-effort by design: it runs on the error path of [`commit`](Self::commit),
 	/// and a repair that itself fails must not replace the error the caller asked
-	/// about. A failure here leaves the handle as it was — which is exactly the
-	/// state this exists to avoid — so it also leaves `alloc_node` as `None` and
+	/// about. A failure here leaves the handle as it was (which is exactly the
+	/// state this exists to avoid), so it also leaves `alloc_node` as `None` and
 	/// the handle refusing further writes, rather than guessing at a placement
 	/// table and writing over live data.
 	///
@@ -587,7 +587,7 @@ impl Store {
 		let node = match read_alloc_snapshot(self.fs.store.device(), total_blocks) {
 			Ok(Some(node)) => node,
 			// Nothing to restore from. The volume is read-only, or its snapshot
-			// is unreadable — either way the refusal stands.
+			// is unreadable; either way the refusal stands.
 			Ok(None) | Err(_) => return,
 		};
 
@@ -632,7 +632,7 @@ impl Store {
 		}
 	}
 
-	/// A byte range of a file — at most `len` bytes from `offset`.
+	/// A byte range of a file: at most `len` bytes from `offset`.
 	///
 	/// For a caller watching an append-only file (a log, a transcript) without
 	/// holding the whole thing: remember how many bytes you have seen, ask for
@@ -656,7 +656,7 @@ impl Store {
 		}
 	}
 
-	/// Read a whole file from the **committed** tier — the last root a
+	/// Read a whole file from the **committed** tier: the last root a
 	/// superblock published, BLAKE3-verified as always.
 	///
 	/// Identical to [`read_file`](Self::read_file) outside a staging session,
@@ -670,7 +670,7 @@ impl Store {
 	/// Create the directory at `path`.
 	///
 	/// One transaction, cascaded by `build_create_txn` so the published root
-	/// is the volume root and not the CoW copy of `path`'s parent — see the
+	/// is the volume root and not the CoW copy of `path`'s parent; see the
 	/// `mutate` module for what goes wrong otherwise.
 	pub fn mkdir(&mut self, path: &str, mode: u32) -> Result<()> {
 		let chain = self.fs.resolve_chain(path)?;
@@ -695,13 +695,13 @@ impl Store {
 	/// of content, the extent tree over them and the directory entry are
 	/// placed and committed together: the commit is this volume's durability
 	/// point, so a caller storing a record waits on one of them, and a payload
-	/// larger than one object no longer costs one commit per object — nor
+	/// larger than one object no longer costs one commit per object, nor
 	/// leaves a prefix of itself behind when a later piece runs out of room.
 	///
 	/// The pieces are still one object each. That ceiling belongs to the
 	/// format, not to this transaction: a single larger object would be refused
 	/// by `CommitEngine` (and skipped silently by readers) because it exceeds
-	/// the volume's own limit — [`Superblock::max_object_bytes`], which resolves
+	/// the volume's own limit: [`Superblock::max_object_bytes`], which resolves
 	/// an all-zero `LedgerFsLimits` to the compiled-in default rather than to
 	/// zero.
 	pub fn write_new_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
@@ -728,7 +728,7 @@ impl Store {
 	/// Write `data` to `path`, replacing whatever was there.
 	///
 	/// **One commit, atomic.** An existing file is not removed first: the new
-	/// content is built whole — inode, chunks, extent tree — under no
+	/// content is built whole (inode, chunks, extent tree) under no
 	/// directory entry, and the one entry the path names is re-pointed at it
 	/// in the same transaction. A crash at any point before that commit lands
 	/// leaves the old file exactly as it was, and afterwards leaves the new
@@ -762,7 +762,7 @@ impl Store {
 	/// LedgerFS suited to an append-only log like a relay transcript: the new
 	/// bytes go into a fresh chunk object and a fresh extent at the end of the
 	/// extent tree, and nothing already written is rewritten. Creating the file
-	/// when it is missing is the logging case, not POSIX `O_APPEND` — a caller
+	/// when it is missing is the logging case, not POSIX `O_APPEND`; a caller
 	/// that wants "must already exist" can [`stat`](Self::stat) first.
 	///
 	/// **One transaction**, however many objects `data` spans: the pieces are
@@ -778,7 +778,7 @@ impl Store {
 			}
 			Err(Error::NoSuchFile { .. }) => {
 				// Creating the file and writing its first record is one logical
-				// operation, so it is one commit — the same combined create the
+				// operation, so it is one commit: the same combined create the
 				// `write_new_file` path uses.
 				self.write_new_file(path, data, mode)?;
 				return Ok(());
@@ -794,7 +794,7 @@ impl Store {
 	/// `offset` must be at or past the file's current end. LedgerFS's `write`
 	/// builds a fresh extent for the bytes and does not split an existing one,
 	/// so overwriting bytes that are already stored cannot be done through this
-	/// call — the store refuses it with [`Error::Unsupported`] rather than
+	/// call: the store refuses it with [`Error::Unsupported`] rather than
 	/// leaving the extent tree with two overlapping ranges. Use
 	/// [`write_file`](Self::write_file) to replace a file's content, or
 	/// [`append`](Self::append) to extend it.
@@ -807,7 +807,7 @@ impl Store {
 			return Err(Error::Unsupported {
 				detail: format!(
 					"write_at: offset {offset} is inside {path}, which is {} bytes; overwriting \
-					 stored bytes is not supported — use write_file to replace it",
+					 stored bytes is not supported; use write_file to replace it",
 					inode.size
 				),
 			});
@@ -819,7 +819,7 @@ impl Store {
 	///
 	/// A directory is refused. In a content-addressed model there is no "free
 	/// the node" step: the removed inode simply becomes unreachable from the
-	/// new root once the transaction commits, and is eligible for GC then — see
+	/// new root once the transaction commits, and is eligible for GC then; see
 	/// the kernel's `cow::operations::unlink`, whose semantics this follows.
 	pub fn remove(&mut self, path: &str) -> Result<()> {
 		let inode = self.stat(path)?;
@@ -843,7 +843,7 @@ impl Store {
 	///
 	/// A **cross-directory** move is refused with [`Error::Unsupported`] rather
 	/// than performed: `rename`'s two chains can share an ancestor, and this
-	/// crate's cascade cannot yet reconcile them — see `build_rename_txn`'s doc
+	/// crate's cascade cannot yet reconcile them; see `build_rename_txn`'s doc
 	/// comment in the `mutate` module. Move the content with
 	/// [`write_file`](Self::write_file) plus [`remove`](Self::remove) if a
 	/// cross-directory move is needed today.
@@ -890,7 +890,7 @@ impl Store {
 	/// fold re-resolves the file through an overlay of the pieces already
 	/// staged, so piece N+1 builds on piece N. The merged plan is pruned to
 	/// what the final root reaches, so the intermediate generations of the
-	/// inode and extent node are not written at all — the device bytes are the
+	/// inode and extent node are not written at all: the device bytes are the
 	/// chunks plus one copy of the metadata, not one copy per piece.
 	fn write_chunks(&mut self, path: &str, start_offset: u64, data: &[u8]) -> Result<()> {
 		if data.is_empty() {
@@ -924,7 +924,7 @@ impl Store {
 
 	/// The app that owns this volume, if it is an application store.
 	///
-	/// `Ok(None)` is an ordinary LedgerFS volume with no marker — a store a
+	/// `Ok(None)` is an ordinary LedgerFS volume with no marker: a store a
 	/// plain `mkfs` produced, or one another system formatted. An `Err` is only
 	/// for a marker that exists and cannot be read as text: a volume that
 	/// claims to be an app store and then contradicts itself is worth
@@ -971,13 +971,13 @@ impl Store {
 ///
 /// # What it is for
 ///
-/// A commit is this volume's durability point — objects, allocator snapshot,
-/// barrier, superblock, barrier — and on a batched capture workload that price
+/// A commit is this volume's durability point (objects, allocator snapshot,
+/// barrier, superblock, barrier), and on a batched capture workload that price
 /// is paid per batch. A staging session moves the price to the seal: staged
 /// writes thread a staged root and touch no device block and no allocator
 /// state, and an append extends a per-file draft rather than building the
-/// file's objects — so a session's cost is the bytes it appended, not the
-/// history of the files it appended to — until
+/// file's objects, so a session's cost is the bytes it appended, not the
+/// history of the files it appended to, until
 /// [`seal_staged`](#method.seal_staged) folds everything staged into **one**
 /// transaction of the ordinary shape.
 ///
@@ -988,7 +988,7 @@ impl Store {
 /// [`read_dir`](#method.read_dir) resolve through the staged root: a caller
 /// reads its own writes back at memory speed, and a staged object costs zero
 /// device reads. [`read_file_committed`](#method.read_file_committed) is the
-/// other tier — the last root a superblock published — and is exactly what a
+/// other tier (the last root a superblock published) is exactly what a
 /// crash at this instant would leave behind. Any *other* handle on the volume
 /// sees the committed tier only, by construction.
 ///
@@ -997,7 +997,7 @@ impl Store {
 /// Once `seal_staged` returns, the staged work has the same guarantee as any
 /// write in this store: it is one atomic commit, its objects are BLAKE3-verified
 /// on every read, and a plain mount recovers it with no new recovery code. The
-/// format does not change — a sealed session is indistinguishable from the
+/// format does not change: a sealed session is indistinguishable from the
 /// equivalent sequence of commits, except that it is one commit.
 ///
 /// Before the seal the staged tier is RAM only: a crash loses it exactly, not
@@ -1005,8 +1005,8 @@ impl Store {
 ///
 /// # Capacity
 ///
-/// `capacity_bytes` bounds the bytes the session is holding — the objects it
-/// has built plus each file draft's chunks and extent descriptors — and `0`
+/// `capacity_bytes` bounds the bytes the session is holding (the objects it
+/// has built plus each file draft's chunks and extent descriptors), and `0`
 /// means unbounded. A staged operation that would exceed it is refused with
 /// [`Error::StagingFull`] and leaves the session as it was. A session never
 /// seals itself: an implicit seal would be an implicit durability point, which
@@ -1015,7 +1015,7 @@ impl Store {
 	/// Open a staging session with a byte budget (`0` = unbounded).
 	///
 	/// Refuses on a volume that cannot be written, and refuses a second session
-	/// on the same store — one staged root, one caller.
+	/// on the same store: one staged root, one caller.
 	pub fn begin_staging(&mut self, capacity_bytes: u64) -> Result<()> {
 		if let Some(refusal) = self.write_refusal() {
 			return Err(Error::ReadOnly { detail: refusal });
@@ -1048,7 +1048,7 @@ impl Store {
 		self.staged.as_ref().map(StagedState::bytes)
 	}
 
-	/// Stage an append — creating the file when the name is free — exactly as
+	/// Stage an append (creating the file when the name is free) exactly as
 	/// [`append`](Self::append) would, but with no commit and no device write.
 	///
 	/// The size it appends at is the **staged** size, so consecutive staged
@@ -1079,7 +1079,7 @@ impl Store {
 	/// Commit everything staged as **one** transaction and close the session.
 	///
 	/// The plan is pruned to what the final staged root reaches, so the commit
-	/// carries the staged content plus one generation of each metadata object —
+	/// carries the staged content plus one generation of each metadata object;
 	/// not one generation per operation. On success the session is gone; on any
 	/// error the session is left exactly as it was and can be sealed again.
 	///
@@ -1093,9 +1093,9 @@ impl Store {
 	/// Seal the session into a commit that is **consistent but not yet
 	/// durable when this returns**.
 	///
-	/// The seal does everything [`seal_staged`](Self::seal_staged) does —
-	/// builds one transaction, places and writes its objects, and flushes
-	/// them behind the commit engine's barrier — and then stops. The
+	/// The seal does everything [`seal_staged`](Self::seal_staged) does
+	/// (builds one transaction, places and writes its objects, and flushes
+	/// them behind the commit engine's barrier), and then stops. The
 	/// superblock that makes the new root the volume's root is not written
 	/// until [`sync`](Self::sync), or until any ordinary commit, which
 	/// writes a still newer root and flushes everything beneath it in the
@@ -1106,7 +1106,7 @@ impl Store {
 	/// A crash before that point leaves the *previous* root live: the work
 	/// this seal staged is gone, exactly as if the seal had never been
 	/// called. It cannot leave a half-applied root, because the superblock
-	/// naming this one was never written — the format's old-or-new rule is
+	/// naming this one was never written; the format's old-or-new rule is
 	/// not being tested here, it is being avoided. The allocator snapshot
 	/// *was* written and flushed (it rides with the objects), so a
 	/// crash-recovered volume may have blocks marked in use that the live
@@ -1137,7 +1137,7 @@ impl Store {
 			Ok(txn) => txn,
 			Err(e) => {
 				// The fold borrowed nothing that outlives this call, but the
-				// session's objects are moved into it — hand them back so a
+				// session's objects are moved into it; hand them back so a
 				// caller can retry rather than lose the staged work.
 				self.staged = Some(fold.into_state());
 				return Err(e);
@@ -1191,7 +1191,7 @@ impl Store {
 	/// The allocator's user-visible count: it excludes the reserve the
 	/// allocator keeps for its own use, so it is the number an app should treat
 	/// as its budget. It falls on every commit and, as of this crate, never
-	/// rises — a CoW write commits a new version of every object a transaction
+	/// rises: a CoW write commits a new version of every object a transaction
 	/// touches and frees nothing, because GC is not wired up. An always-on
 	/// store therefore fills monotonically, and one that runs for long enough
 	/// has to watch this number and rotate. That is precisely why a free-space
@@ -1218,8 +1218,8 @@ impl Store {
 /// Bridges this crate's read/write [`BlockDevice`] to the kernel crate's
 /// write-only `commit::BlockDevice`.
 ///
-/// The kernel trait models exactly what `CommitEngine` needs — `write_blocks`
-/// plus a barrier — and has no read method, because the kernel reads through a
+/// The kernel trait models exactly what `CommitEngine` needs (`write_blocks`
+/// plus a barrier) and has no read method, because the kernel reads through a
 /// separate path entirely (`reader.rs`, over ATA PIO). One host device serves
 /// both directions, so the two halves meet here instead of in a second device
 /// type.
@@ -1244,7 +1244,7 @@ impl ledgerfs::commit::BlockDevice for CommitDevice<'_> {
 /// The engine is write-only by design (see [`CommitDevice`]), so this is where
 /// the two halves of one host [`BlockDevice`] meet. Nothing is persisted here:
 /// placement, object writes and the barriers between them are all the engine
-/// does, and the allocator snapshot and superblock are the caller's job — see
+/// does, and the allocator snapshot and superblock are the caller's job; see
 /// this module's doc comment.
 fn run_commit(
 	engine: &mut CommitEngine,
@@ -1264,7 +1264,7 @@ fn run_commit(
 /// placement the engine reported.
 ///
 /// `cow::operations` builds its object references through `ObjectRef::from_id`,
-/// which sets the hint to `0` — meaning "scan for it". For the root that is the
+/// which sets the hint to `0`, meaning "scan for it". For the root that is the
 /// most expensive possible answer: CoW rewrites the root inode on **every**
 /// commit, so it is always the highest-block object *and* the first object every
 /// path resolution fetches. See [`CommitResult`]'s own doc comment.
@@ -1281,7 +1281,7 @@ fn root_with_hint(txn: &TxnPlan, result: &CommitResult) -> Root {
 ///
 /// [`Store::format`]'s initial snapshot is the only caller. Every later one is
 /// written by `CommitEngine`, inside its write phase and under the barrier that
-/// also covers the transaction's objects — see this module's doc comment.
+/// also covers the transaction's objects; see this module's doc comment.
 fn persist_alloc_snapshot(device: &dyn BlockDevice, alloc_node: &AllocNode) -> Result<()> {
 	let snapshot = alloc_node.encode_snapshot_block(BLOCK_SIZE as usize)?;
 	device.write_block(ALLOC_SNAPSHOT_BLOCK, &snapshot)?;
@@ -1329,7 +1329,7 @@ fn erase_except_superblocks(device: &dyn BlockDevice, total_blocks: u64) -> Resu
 /// and the two ends are reserved. Not cosmetic: `bootstrap_genesis`'s own doc
 /// comment records that without it the first genesis commit placed its root
 /// `Inode` at block 0, which the superblock write then overwrote, orphaning the
-/// object — the superblock, the alloc snapshot and the genesis audit live in
+/// object, the superblock, the alloc snapshot and the genesis audit live in
 /// the header, and the backup superblock copies live in the trailer.
 fn genesis_allocator(total_blocks: u64) -> Result<(AllocNode, Allocator)> {
 	let free_start = RESERVED_HEADER_BLOCKS;
@@ -1376,7 +1376,7 @@ fn read_alloc_snapshot(device: &dyn BlockDevice, total_blocks: u64) -> Result<Op
 ///
 /// `Superblock::encode` takes `&mut self` because it recomputes the checksums
 /// as it writes them, so this encodes a copy rather than mutating the caller's
-/// — a writer should not have the volume's mounted state changed underneath it
+/// as it writes them, so this encodes a copy rather than mutating the caller's;
 /// by an I/O call.
 fn write_all_superblock_copies(device: &dyn BlockDevice, superblock: &Superblock) -> Result<()> {
 	let mut encoded = superblock.clone();
@@ -1391,15 +1391,15 @@ fn write_all_superblock_copies(device: &dyn BlockDevice, superblock: &Superblock
 /// Write an already-published `superblock` to all four copies and make it
 /// durable.
 ///
-/// The publishing itself — setting the active slot and recomputing its
-/// checksum — is [`Volume::publish_root`]'s job for a mounted volume, and
+/// The publishing itself (setting the active slot and recomputing its
+/// checksum) is [`Volume::publish_root`]'s job for a mounted volume, and
 /// [`Superblock`]'s own for [`Store::format`]. Splitting it that way keeps the
 /// in-memory view and the on-disk copies updated by the same step instead of
 /// two that can drift.
 ///
 /// The other three copies exist so a damaged primary is survivable. A writer
 /// that updates only the primary leaves them naming a root the volume no longer
-/// has — see this crate's `lib.rs` on the state the data volume is in for
+/// has; see this crate's `lib.rs` on the state the data volume is in for
 /// exactly that reason.
 fn persist_superblock(device: &dyn BlockDevice, superblock: &Superblock) -> Result<()> {
 	write_all_superblock_copies(device, superblock)?;
@@ -1417,7 +1417,7 @@ mod tests {
 
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
-	/// 4 MiB — big enough for the reserved regions plus real object space.
+	/// 4 MiB: big enough for the reserved regions plus real object space.
 	const BLOCKS: u64 = 1024;
 
 	/// A directory's entry names, which is what most of these assertions are
@@ -1461,7 +1461,7 @@ mod tests {
 	#[test]
 	fn test_store_format_erases_what_the_device_held() -> Result<()> {
 		// -- Setup & Fixtures: a device that already holds something, which is
-		// the ordinary case — formatting over an existing volume, not into a
+		// the ordinary case: formatting over an existing volume, not into a
 		// fresh one. Nothing of it may survive, or `mkfs` has left the previous
 		// volume's contents readable to anyone who can read the device.
 		let device = MemBlockDevice::from_bytes(vec![0xAB; BLOCKS as usize * BLOCK_SIZE as usize])?;
@@ -1472,7 +1472,7 @@ mod tests {
 		// -- Check: nothing of the old pattern survived. Looked for as a *run*
 		// rather than a single byte, because the genesis commit legitimately
 		// writes objects of its own and a BLAKE3 hash will contain a 0xAB about
-		// once every 256 bytes — a one-byte test would fail on new data. Sixteen
+		// once every 256 bytes; a one-byte test would fail on new data. Sixteen
 		// in a row is what only the old, uniformly-filled device can produce.
 		let mut buf = [0u8; BLOCK_SIZE as usize];
 		for lba in 0..BLOCKS {
@@ -1494,8 +1494,8 @@ mod tests {
 	#[test]
 	fn test_store_mutations_three_deep_do_not_re_root_the_volume() -> Result<()> {
 		// The ancestor cascade's reason for existing. `mkdir("/a/b/c")` comes
-		// back with `new_root.file_tree_root` naming the CoW copy of `/a/b` —
-		// the top of the chain it modified, not the volume root — so committing
+		// back with `new_root.file_tree_root` naming the CoW copy of `/a/b`
+		// (the top of the chain it modified, not the volume root), so committing
 		// it as-is silently re-roots the filesystem at `/a/b`: `/a` disappears
 		// from `/` and takes `sibling` with it. The volume still mounts, because
 		// the superblock published is perfectly valid and merely points somewhere
@@ -1534,7 +1534,7 @@ mod tests {
 		// A payload past the volume's object ceiling, so it takes more than one
 		// transaction. Each write replaces the file's inode with a CoW copy under
 		// a new object id, so a second write through the *first* write's
-		// reference does not fail — it rebuilds the file from the original empty
+		// reference does not fail: it rebuilds the file from the original empty
 		// inode and keeps only the last chunk, silently.
 		let device = MemBlockDevice::new(BLOCKS);
 		let mut store = Store::format(Box::new(device), BLOCKS)?;
@@ -1603,7 +1603,7 @@ mod tests {
 	#[test]
 	fn test_store_refuses_commit_without_allocator_snapshot() -> Result<()> {
 		// -- Setup & Fixtures: format, then blank the snapshot block to
-		// simulate the bricking state — formatted, but with no allocator state
+		// simulate the bricking state: formatted, but with no allocator state
 		// behind the published root.
 		let device = MemBlockDevice::new(BLOCKS);
 		let mirror = device.clone();
@@ -1642,7 +1642,7 @@ mod tests {
 	#[test]
 	fn test_store_refuses_a_write_on_a_read_only_device() -> Result<()> {
 		// -- Setup & Fixtures: a real volume on disk, then a read-only handle
-		// to it. This was not hypothetical — it is the state `lfs-write` sat in
+		// to it. This was not hypothetical: it is the state `lfs-write` sat in
 		// when a mutating command opened its target with `FileBlockDevice::open`,
 		// where the symptom was `EBADF` from inside `write_at`.
 		let path = std::env::temp_dir().join(format!("ledgerfs-store-{}.img", std::process::id()));
@@ -1654,7 +1654,7 @@ mod tests {
 		let mut store = Store::open(Box::new(FileBlockDevice::open(&path, 0, size)?))?;
 
 		// -- Check: two different questions, two different answers. The volume
-		// is a healthy, resumable one — `origin` describes the volume — while
+		// is a healthy, resumable one (`origin` describes the volume), while
 		// this handle is the reason it cannot be written.
 		assert_eq!(store.origin(), Origin::ResumedWritable);
 		assert!(!store.is_writable());
@@ -1680,7 +1680,7 @@ mod tests {
 	#[test]
 	fn test_store_refuses_a_volume_that_was_never_formatted() -> Result<()> {
 		// -- Setup & Fixtures: a raw superblock and nothing else, which is
-		// what the image initialiser alone leaves behind — every copy valid, no
+		// what the image initialiser alone leaves behind: every copy valid, no
 		// commit ever made.
 		let device = MemBlockDevice::new(BLOCKS);
 		write_all_superblock_copies(&device, &Superblock::new(BLOCKS))?;
@@ -1691,8 +1691,8 @@ mod tests {
 			.expect("an unformatted volume must not open");
 
 		// -- Check: the volume is intact and simply has nothing committed to
-		// it. Reporting `NoValidSuperblock` here — which is what the mount
-		// selection itself returns — would call a format state damage.
+		// it. Reporting `NoValidSuperblock` here (which is what the mount
+		// selection itself returns) would call a format state damage.
 		assert!(
 			matches!(err, Error::VolumeUncommitted { total_blocks: BLOCKS }),
 			"got {err:?}"
@@ -1731,7 +1731,7 @@ mod tests {
 		let mut store = Store::format(Box::new(device), BLOCKS)?;
 
 		// -- Exec: append to a path that does not exist yet, twice. This is the
-		// relay-transcript shape — the log is created by its first line.
+		// relay-transcript shape: the log is created by its first line.
 		store.append("/log.jsonl", b"{\"turn\":1}\n", 0o644)?;
 		store.append("/log.jsonl", b"{\"turn\":2}\n", 0o644)?;
 
@@ -1775,7 +1775,7 @@ mod tests {
 		store.write_new_file("/state.json", b"{\"a\":1}", 0o644)?;
 
 		// -- Exec: replace with *shorter* content. This is the case a plain
-		// extend would get wrong — the old tail would survive.
+		// extend would get wrong: the old tail would survive.
 		store.write_file("/state.json", b"{}", 0o644)?;
 
 		// -- Check
@@ -1859,7 +1859,7 @@ mod tests {
 		assert_eq!(store.read_file("/f")?, b"hello world");
 
 		// -- Exec & Check: writing *inside* the existing bytes is refused rather
-		// than done wrongly — a second extent overlapping the first is not a
+		// than done wrongly: a second extent overlapping the first is not a
 		// replace, it is a corrupt extent tree.
 		let err = store.write_at("/f", 2, b"X").unwrap_err();
 		assert!(matches!(err, Error::Unsupported { .. }), "got {err:?}");
@@ -1883,7 +1883,7 @@ mod tests {
 		// -- Exec
 		store.write_new_file("/f", &vec![7u8; 64 * 1024], 0o644)?;
 
-		// -- Check: writing consumes space, and nothing gives it back — CoW
+		// -- Check: writing consumes space, and nothing gives it back; CoW
 		// frees nothing until GC is wired up. An always-on store has to watch
 		// this number; that is why it is on the surface.
 		let after = store.free_bytes().expect("still writable");
@@ -1921,7 +1921,7 @@ mod tests {
 		assert!(marker_names.contains(&"APP".to_string()));
 		assert!(marker_names.contains(&"VERSION".to_string()));
 
-		// -- Exec & Check: the identity survives a reopen — that is the whole
+		// -- Exec & Check: the identity survives a reopen; that is the whole
 		// point of writing it down.
 		let reopened = Store::open(Box::new(MemBlockDevice::from_bytes(mirror.bytes_snapshot())?))?;
 		assert_eq!(reopened.app()?, Some("example".to_string()));
@@ -1951,7 +1951,7 @@ mod tests {
 		// even when the file grew by less than it asked for.
 		assert_eq!(store.read_at("/log.jsonl", 13, 4096)?, b"third\n");
 
-		// -- Check: at or past the end is empty, not an error — that is how the
+		// -- Check: at or past the end is empty, not an error; that is how the
 		// follower learns there is nothing new rather than by matching on Err.
 		assert_eq!(store.read_at("/log.jsonl", 19, 4096)?, b"");
 		assert_eq!(store.read_at("/log.jsonl", 9999, 4096)?, b"");

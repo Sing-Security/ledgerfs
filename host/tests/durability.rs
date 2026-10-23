@@ -11,9 +11,9 @@
 //! - **Four copies**: any one of them can be destroyed and the volume still
 //!   mounts. Simulated by zeroing each in turn.
 //! - **Snapshot first**: the allocator snapshot is written before the
-//!   superblock that names it, so the dangerous intermediate state — a
+//!   superblock that names it, so the dangerous intermediate state (a
 //!   superblock naming a tree whose allocations the allocator does not know
-//!   about — cannot occur.
+//!   about) cannot occur.
 //!
 //! Plus the accounting that an always-on store depends on: the commit sequence
 //! advances by a known amount per verb, free space never rises, and a write
@@ -32,7 +32,7 @@ fn test_every_commit_persists_all_four_superblock_copies() -> Result<()> {
 	// -- Setup & Fixtures
 	let mut store = store(BLOCKS)?;
 
-	// -- Exec: a handful of mutations, checking after each — a writer that
+	// -- Exec: a handful of mutations, checking after each: a writer that
 	// maintained the primary copy only (which the runtime volume driver's writer
 	// does, per this crate's `lib.rs`) would fail this on the first assertion.
 	for step in 0..5 {
@@ -107,7 +107,7 @@ fn test_any_single_superblock_copy_can_be_lost() -> Result<()> {
 #[test]
 fn test_garbage_in_one_copy_is_stepped_over_like_a_dead_one() -> Result<()> {
 	// -- Setup & Fixtures: a copy that decodes by checksum but is nonsense is a
-	// different hazard from a blank one — the decode has to reject it, or the
+	// different hazard from a blank one: the decode has to reject it, or the
 	// mount would trust it.
 	let device = mem(BLOCKS);
 	let watch = device.clone();
@@ -155,7 +155,7 @@ fn test_losing_both_leading_copies_is_a_named_mount_failure() -> Result<()> {
 
 #[test]
 fn test_a_volume_whose_copies_name_different_roots_mounts_the_newest() -> Result<()> {
-	// -- Setup & Fixtures: the state a single-copy writer leaves behind — the
+	// -- Setup & Fixtures: the state a single-copy writer leaves behind: the
 	// scenario `lib.rs` documents for the shipped data partition. Built here by
 	// committing a mutation and then restoring the *trailing* copies from before
 	// it, so copy 0 is ahead of the rest.
@@ -179,7 +179,7 @@ fn test_a_volume_whose_copies_name_different_roots_mounts_the_newest() -> Result
 	let back = open_bytes(mixed)?;
 
 	// -- Check: `mount_select` takes the highest `commit_seq`, so the volume
-	// reads at its newest state rather than its oldest — the same behaviour an
+	// reads at its newest state rather than its oldest: the same behaviour an
 	// operator of the shipped image gets. `/old` is present in both trees;
 	// `/new` exists only in the newer one, so it is what distinguishes a
 	// newest-wins mount from an oldest-wins one.
@@ -191,7 +191,7 @@ fn test_a_volume_whose_copies_name_different_roots_mounts_the_newest() -> Result
 		"the mounted tree is the newer one, whose listing has both files"
 	);
 
-	// -- Check: and the disagreement is *reported* rather than averaged over —
+	// -- Check: and the disagreement is *reported* rather than averaged over:
 	// this is the audit signal an operator needs, and losing it would be worse
 	// than the disagreement itself.
 	let status = back.fs().volume.copy_status();
@@ -254,7 +254,7 @@ fn test_a_crash_between_the_snapshot_and_the_superblock_keeps_the_old_tree() -> 
 	));
 	assert_eq!(names(&back.read_dir("/")?), vec!["kept".to_string()]);
 
-	// -- Check: and the allocator that ran ahead is still usable — the store
+	// -- Check: and the allocator that ran ahead is still usable: the store
 	// must not have lost writability to the rollback, or a crash would cost the
 	// volume its ability to take writes.
 	assert_eq!(back.origin(), ledgerfs_host::Origin::ResumedWritable);
@@ -290,7 +290,7 @@ fn test_every_prefix_of_a_mutation_session_mounts_to_a_whole_tree() -> Result<()
 		assert_eq!(back.commit_seq(), *seq, "snapshot {i}");
 		assert_eq!(names(&back.read_dir("/")?), *expected_names, "snapshot {i}");
 		// Every file the snapshot claimed to have is still readable, with the
-		// content that step wrote — no snapshot is a half-written tree.
+		// content that step wrote: no snapshot is a half-written tree.
 		for step in 0..=i {
 			let name = format!("/file-{step:02}");
 			assert_eq!(
@@ -309,8 +309,8 @@ fn test_every_prefix_of_a_mutation_session_mounts_to_a_whole_tree() -> Result<()
 
 /// The per-verb cost, in commits, pinned as a contract.
 ///
-/// A caller that reasons about how much a write costs — an append-only log, a
-/// rotation policy — needs these numbers to be stable. Every verb that puts
+/// A caller that reasons about how much a write costs (an append-only log, a
+/// rotation policy) needs these numbers to be stable. Every verb that puts
 /// content into a new file is **one** commit: the create and the write are a
 /// single transaction, because the commit is this volume's durability point
 /// and a caller waiting for one small record should not be waiting on two.
@@ -318,7 +318,7 @@ fn test_every_prefix_of_a_mutation_session_mounts_to_a_whole_tree() -> Result<()
 /// "One" holds however many objects the payload spans, too. The pieces past
 /// the first are folded into the same transaction rather than committed one
 /// each, so a large write's durability cost is one barrier pair rather than
-/// one per object — see `host/src/staging.rs`.
+/// one per object; see `host/src/staging.rs`.
 ///
 /// `write_file` *replacing* an existing file is one commit as well. It is not a
 /// remove followed by a create: the new content is built whole under no
@@ -330,7 +330,7 @@ fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	// -- Setup & Fixtures
 	let mut store = store(BLOCKS)?;
 
-	// -- Check: `format` is itself one commit — the genesis root.
+	// -- Check: `format` is itself one commit: the genesis root.
 	assert_eq!(store.commit_seq(), 1, "format commits the genesis root");
 
 	let expect = |store: &Store, n: u64, what: &str| {
@@ -359,7 +359,7 @@ fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	store.write_new_file("/f", b"again", 0o644)?;
 	expect(&store, 8, "write_new_file on a now-free name");
 
-	// -- Exec: replacing an existing file is one atomic commit — the new
+	// -- Exec: replacing an existing file is one atomic commit: the new
 	// content and the entry that names it are placed together.
 	store.write_file("/f", b"replaced", 0o644)?;
 	expect(&store, 9, "write_file over an existing file");
@@ -375,7 +375,7 @@ fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	// -- Exec: a write that spans several objects is still **one** commit.
 	// Content past `max_object_bytes` is several chunks, and the chunks, the
 	// extent tree over them, the inode and the directory entry are folded into
-	// a single transaction — the cost of a large write is its bytes, not one
+	// a single transaction: the cost of a large write is its bytes, not one
 	// durability point per object.
 	store.write_new_file("/big", &vec![0u8; 400_000], 0o644)?;
 	expect(&store, 12, "write_new_file spanning two objects");
@@ -399,7 +399,7 @@ fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
 	// one commit whatever it spans.
 	//
 	// The window is still worth pinning, because it is exactly what a caller
-	// gets if it does the two steps itself — which is the obvious way to write
+	// gets if it does the two steps itself, which is the obvious way to write
 	// a replace, and the reason the store provides one verb that does not.
 	//
 	// Between the remove and the create a reader sees the file gone; between
@@ -412,13 +412,13 @@ fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
 	// This test drives the same three states through public verbs, one commit at
 	// a time, so the window is demonstrated deterministically rather than raced
 	// for. `rename` onto an existing name is a single commit and does not have
-	// the window — see `test_a_rename_onto_an_existing_file_...` in
-	// `security_paths.rs` — and neither does `write_file` now.
+	// the window; see `test_a_rename_onto_an_existing_file_...` in
+	// `security_paths.rs`, and neither does `write_file` now.
 	let (mut store, watch) = watched(1024)?;
 	store.write_new_file("/state", b"{\"n\": 1}", 0o644)?;
 	let committed = bytes(&watch);
 
-	// -- Exec: the first commit of a replace — the file is removed
+	// -- Exec: the first commit of a replace: the file is removed
 	store.remove("/state")?;
 	let after_remove = bytes(&watch);
 
@@ -432,7 +432,7 @@ fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
 		"the remove must be visible as a missing file"
 	);
 
-	// -- Exec: the second commit — the file is back, with no content yet
+	// -- Exec: the second commit: the file is back, with no content yet
 	store.create_file("/state", 0o644)?;
 	let after_create = bytes(&watch);
 
@@ -455,7 +455,7 @@ fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
 	let after_write = bytes(&watch);
 
 	// -- Check: and now it is whole. The three states are distinct, which is
-	// what makes the window real rather than theoretical — a reader cannot tell
+	// what makes the window real rather than theoretical: a reader cannot tell
 	// the empty state from a file that was written empty on purpose.
 	let done = open_bytes(after_write)?;
 	assert_eq!(done.read_file("/state")?, b"{\"n\": 2}");
@@ -471,7 +471,7 @@ fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
 fn test_a_reader_never_sees_the_old_and_the_new_contents_at_once() -> Result<()> {
 	// -- Setup & Fixtures: the other half of the window above. Between the three
 	// commits of a replace there is no state in which `read_file` returns a
-	// mixture — the old bytes with the new length, or the new bytes with a stale
+	// mixture: the old bytes with the new length, or the new bytes with a stale
 	// tail. That would be worse than either interrupted state, because it looks
 	// like a successful read of a plausible file.
 	//
@@ -490,7 +490,7 @@ fn test_a_reader_never_sees_the_old_and_the_new_contents_at_once() -> Result<()>
 	store.write_file("/f", &new, 0o644)?;
 	states.push(bytes(&watch));
 
-	// -- Check: every state holds one of exactly three things — the whole old
+	// -- Check: every state holds one of exactly three things: the whole old
 	// version, the whole new version, or nothing. Never a slice of one with the
 	// length of the other, which is what a reader who caught a half-applied
 	// replace would see.
@@ -585,7 +585,7 @@ fn test_commit_sequence_never_goes_backwards_across_a_remount() -> Result<()> {
 fn test_the_active_root_hint_is_published_and_survives_a_remount() -> Result<()> {
 	// -- Setup & Fixtures: `active_root_hint` exists so that fetching the root
 	// inode is one block read instead of a scan. It is an accelerator, so a
-	// wrong one is not corruption — but a *missing* one is the difference
+	// wrong one is not corruption, but a *missing* one is the difference
 	// between a mount that is instant and one that is O(volume).
 	let device = mem(BLOCKS);
 	let watch = device.clone();
@@ -640,7 +640,7 @@ fn test_the_published_root_reference_is_the_one_the_volume_mounted_at() -> Resul
 		"the remount lands on the same root"
 	);
 
-	// The root is a directory, as `require_root` insists — a superblock pointed
+	// The root is a directory, as `require_root` insists: a superblock pointed
 	// at anything else is a volume whose paths can never resolve.
 	assert_eq!(store.fs().store.inode(published)?.kind, InodeKind::Directory);
 	Ok(())
@@ -654,7 +654,7 @@ fn test_the_published_root_reference_is_the_one_the_volume_mounted_at() -> Resul
 fn test_a_commit_that_does_not_fit_leaves_the_previous_tree_intact() -> Result<()> {
 	// -- Setup & Fixtures: a small volume with a real tree in it, then an
 	// append far too big for what is left. `append` on an existing file is one
-	// `write_chunks` loop, so a refusal is a refusal of that transaction — not
+	// `write_chunks` loop, so a refusal is a refusal of that transaction: not
 	// the create-then-write artefact where the *create* half commits and the
 	// content half fails (`test_a_failed_write_new_file_leaves_an_empty_file` in
 	// `verbs.rs` covers that one).
@@ -677,7 +677,7 @@ fn test_a_commit_that_does_not_fit_leaves_the_previous_tree_intact() -> Result<(
 	}
 
 	// -- Check: the tree, the sequence and the free-space reading are all as
-	// they were. A failed commit must not have half-applied its allocations —
+	// they were. A failed commit must not have half-applied its allocations:
 	// that would leak blocks on every retry, and a caller that retried in a
 	// loop would walk the volume capacity down to nothing.
 	assert_eq!(
@@ -707,8 +707,8 @@ fn test_a_commit_that_does_not_fit_leaves_the_previous_tree_intact() -> Result<(
 fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 	// -- Setup & Fixtures: the regression this guards is not "the write failed",
 	// it is "the write failed and the store never worked again". A failed commit
-	// used to leave the handle owning no allocator at all, so every later write —
-	// however small, however much room the volume had — was refused with "there
+	// used to leave the handle owning no allocator at all, so every later write,
+	// however small, however much room the volume had, was refused with "there
 	// is no allocator snapshot on the volume". For a long-lived embedder (a
 	// relay process is one) a single out-of-space write was therefore fatal for
 	// the life of the process, and the message pointed at the volume rather than
@@ -717,7 +717,7 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 	// Everything here is phrased in terms of "after the refusal", because that is
 	// the state the bug showed up in.
 	//   The volume is small enough that a 10 MB append cannot fit, but roomy
-	// enough that the writes *after* the refusals can — a full volume would fail
+	// enough that the writes *after* the refusals can: a full volume would fail
 	// them for the wrong reason and hide what this test is about.
 	let (mut store, watch) = watched(MIN_BLOCKS + 60)?;
 	store.mkdir("/d", 0o755)?;
@@ -751,7 +751,7 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 		"a refusal must not change how the volume was obtained"
 	);
 
-	// -- Check: and it can still do real work — a write small enough to fit goes
+	// -- Check: and it can still do real work: a write small enough to fit goes
 	// through, and the tree it lands in is the one from before the refusals.
 	store.write_new_file("/d/after.txt", b"still here", 0o644)?;
 	assert_eq!(store.read_file("/d/after.txt")?, b"still here");
@@ -762,7 +762,7 @@ fn test_a_refused_commit_does_not_brick_the_handle() -> Result<()> {
 	);
 
 	// -- Check: and the damage does not outlive the handle. A remount must see a
-	// volume that is intact *and* writable — the in-memory repair is only worth
+	// volume that is intact *and* writable: the in-memory repair is only worth
 	// anything if the state it repaired to matches what is on the volume. If the
 	// failed transactions had persisted any of their work, this remount is where
 	// it would show up as a lost or duplicated file.
@@ -811,7 +811,7 @@ fn test_filling_a_volume_exhausts_it_predictably_and_still_reads() -> Result<()>
 		}
 	}
 
-	// -- Check: the volume hit a wall, and it was a *space* wall — the signal a
+	// -- Check: the volume hit a wall, and it was a *space* wall: the signal a
 	// caller rotates on, not a silent truncation and not an internal error.
 	let e = wall.expect("a small volume must run out of room");
 	match e {
@@ -826,14 +826,14 @@ fn test_filling_a_volume_exhausts_it_predictably_and_still_reads() -> Result<()>
 	assert_eq!(got, expected, "the log is exactly the lines that were accepted");
 	assert_eq!(store.stat("/log")?.size, expected.len() as u64);
 
-	// -- Check: and the volume is still readable — exhausted is not the same as
+	// -- Check: and the volume is still readable: exhausted is not the same as
 	// broken. A store that could no longer answer a read after filling up would
 	// have thrown away everything a log is for.
 	assert_eq!(store.read_at("/log", 0, 6)?, b"start\n");
 
 	// -- Check: the failed transaction left no trace. It had placed some of its
 	// objects before running out of room, so a store that "remembered" those
-	// placements would report less free space than the volume actually has —
+	// placements would report less free space than the volume actually has,
 	// and the shortfall grows with every failed attempt until the store believes
 	// a volume with room to spare is full. The reading either side of the refusal
 	// must therefore be the same number, not merely both small.
@@ -849,7 +849,7 @@ fn test_filling_a_volume_exhausts_it_predictably_and_still_reads() -> Result<()>
 	// -- Check: and an exhausted volume is a *full* volume, not a dead handle.
 	// Appending again fails, and it fails for the same reason as the first time:
 	// out of space, not "this volume has no allocator". The distinction is the
-	// whole point of the recovery path — see `Store::restore_allocator_from_snapshot`.
+	// whole point of the recovery path; see `Store::restore_allocator_from_snapshot`.
 	let again = expect_err("appending to a full volume", store.append("/log", b"more\n", 0o644));
 	match again {
 		Error::Format(ref e) => assert!(e.to_string().contains("space"), "{e}"),
@@ -914,7 +914,7 @@ impl Model {
 		self.files.remove(path);
 	}
 
-	/// The names a listing of `dir` should contain — immediate children only,
+	/// The names a listing of `dir` should contain: immediate children only,
 	/// so a file under `/d` is not also offered as an entry of `/`.
 	fn names_in(&self, dir: &str) -> Vec<String> {
 		let prefix = if dir == "/" { "/".to_string() } else { format!("{dir}/") };
@@ -968,7 +968,7 @@ fn check_against_model(store: &ledgerfs_host::Store, model: &Model, what: &str) 
 fn test_a_long_random_session_matches_an_in_memory_model() -> Result<()> {
 	// -- Setup & Fixtures: the strongest regression test in this file. A few
 	// hundred pseudo-random verb calls are applied to both the store and a
-	// plain `BTreeMap`, and the two must agree exactly — then again after a
+	// plain `BTreeMap`, and the two must agree exactly, then again after a
 	// remount of the bytes, which is where a hint, an extent tree or a
 	// directory update that was right in memory but wrong on disk would show.
 	let device = mem(BIG_BLOCKS);
@@ -981,7 +981,7 @@ fn test_a_long_random_session_matches_an_in_memory_model() -> Result<()> {
 	// The names the session works with, grouped by directory: `rename` is
 	// same-directory only, so a rename's destination is drawn from the source's
 	// own group. A directory name is never in either pool, which is what makes
-	// every operation here legal by construction — the test is about the read
+	// every operation here legal by construction: the test is about the read
 	// path agreeing with the model, not about the refusals, which have their own
 	// tests.
 	let root_names = ["/a", "/b", "/c"];
@@ -995,7 +995,7 @@ fn test_a_long_random_session_matches_an_in_memory_model() -> Result<()> {
 		}
 	};
 
-	// -- Exec: enough operations to churn a volume without filling it — every
+	// -- Exec: enough operations to churn a volume without filling it: every
 	// commit rewrites the whole directory node, so the cost is super-linear in
 	// the number of steps.
 	for step in 0..150 {

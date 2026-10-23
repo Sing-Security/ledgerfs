@@ -1,4 +1,4 @@
-//! Security tests for the block-device layer — the boundary a volume's own
+//! Security tests for the block-device layer: the boundary a volume's own
 //! bytes cross on their way in and out.
 //!
 //! A `BlockDevice` is the trust boundary of the whole crate. Everything above it
@@ -10,7 +10,7 @@
 //!
 //! - **an out-of-range access is an error, never a panic and never a short
 //!   read**. The LBAs a read asks for come from on-disk metadata, which for a
-//!   volume of unknown provenance is attacker-controlled — a corrupt extent node
+//!   volume of unknown provenance is attacker-controlled. A corrupt extent node
 //!   naming block `u64::MAX` must produce a refusal, because a panic in a
 //!   program that mounts volumes is a denial of service on that program.
 //! - **the geometry checks are arithmetic, not convention**. `offset + len` is
@@ -27,7 +27,7 @@
 //! The tests are written against the public trait surface (`read_block`,
 //! `write_blocks`, `check_bounds`' callers) rather than against either
 //! implementation's internals, because both implementations have to answer the
-//! same questions — that is what makes them substitutable.
+//! same questions: that is what makes them substitutable.
 
 use ledgerfs_host::{BlockDevice, Error, FileBlockDevice, MemBlockDevice, Result};
 
@@ -91,7 +91,7 @@ fn test_a_read_that_ends_exactly_at_the_end_is_allowed() -> Result<()> {
 fn test_a_read_that_straddles_the_end_is_refused_in_full() -> Result<()> {
 	// -- Setup & Fixtures: two blocks of buffer starting one block before the
 	// end. Half of this read is legal, and half is not. The device must refuse
-	// the whole request rather than fill the legal half — a caller that gets a
+	// the whole request rather than fill the legal half: a caller that gets a
 	// short read back has no way to tell it apart from a legitimate one.
 	let device = MemBlockDevice::new(4);
 	device.write_block(3, b"at the end")?;
@@ -134,7 +134,7 @@ fn test_a_write_that_starts_past_the_end_is_refused_and_changes_nothing() -> Res
 fn test_offset_plus_length_that_overflows_u64_is_refused_not_wrapped() -> Result<()> {
 	// -- Setup & Fixtures: the exact shape of the classic integer-overflow
 	// bounds-check bug. `u64::MAX + 16` wraps to 15, and 15 is inside a 4-block
-	// volume — so a check done in `u64` would *approve* this read and then index
+	// volume, so a check done in `u64` would *approve* this read and then index
 	// 16 bytes of nothing. The check is done in `u128` for this reason, and this
 	// test is the reason it has to stay that way.
 	let device = MemBlockDevice::new(4);
@@ -167,7 +167,7 @@ fn test_a_write_whose_end_overflows_u64_is_refused_not_wrapped() -> Result<()> {
 #[test]
 fn test_an_empty_range_at_the_very_end_is_a_no_op_and_past_it_is_not() -> Result<()> {
 	// -- Setup & Fixtures: `offset == size` with `len == 0` is the empty range,
-	// which is legal — a zero-length write at the end is what an append loop
+	// which is legal: a zero-length write at the end is what an append loop
 	// issues when it has nothing left to append. The boundary is worth pinning
 	// because the two ways to get it wrong both look reasonable: refusing the
 	// empty range breaks append loops, and accepting it *anywhere* lets a
@@ -245,7 +245,7 @@ fn test_an_lba_whose_byte_offset_would_overflow_is_refused_rather_than_panicking
 	// -- Setup & Fixtures: `read_block` computes `lba * BLOCK_SIZE` before it
 	// checks anything. At this LBA that product does not fit in a `u64`, so a
 	// device that multiplies first and checks second turns a corrupt on-disk
-	// reference into a panic — a mount of a hostile volume killing the process
+	// reference into a panic: a mount of a hostile volume killing the process
 	// that mounted it.
 	//
 	// The property under test is "an error, not a panic". Which error is not
@@ -296,7 +296,7 @@ fn test_a_misaligned_block_write_is_refused() -> Result<()> {
 	let device = MemBlockDevice::new(4);
 
 	// -- Exec: `write_blocks` is the "these are whole blocks" API. A partial
-	// final block would be unaddressable, so it is refused rather than padded —
+	// final block would be unaddressable, so it is refused rather than padded;
 	// padding would look like success to the commit engine and lose the tail.
 	let e = device.write_blocks(0, &[0u8; 100]).expect_err("not a block multiple");
 
@@ -361,7 +361,7 @@ fn test_a_write_pads_a_short_block_past_its_data() -> Result<()> {
 #[test]
 fn test_an_over_long_block_write_writes_exactly_one_block() -> Result<()> {
 	// -- Setup & Fixtures: `write_block` takes one block's worth. Handed more,
-	// it must not spill into the next block — a spill would be a silent write
+	// it must not spill into the next block: a spill would be a silent write
 	// outside the extent the caller allocated.
 	let device = MemBlockDevice::new(4);
 	device.write_block(2, &[0xAAu8; BS as usize])?;
@@ -424,7 +424,7 @@ fn test_the_device_reports_its_own_geometry_consistently() -> Result<()> {
 #[test]
 fn test_a_read_only_device_refuses_a_write_with_a_named_error() -> Result<()> {
 	// -- Setup & Fixtures: a read-only `MemBlockDevice` is not constructible
-	// directly, so this uses the file device — which is the case that matters
+	// directly, so this uses the file device, which is the case that matters
 	// anyway, since it is how `lfs-read` and other read-only inspectors open a
 	// volume a writer still holds.
 	let image = common::TempImage::new("ro-device");
@@ -551,7 +551,7 @@ fn test_the_write_lock_is_a_lock_not_a_read_only_marker() -> Result<()> {
 fn test_a_region_that_runs_off_the_end_of_the_file_is_refused_at_open() -> Result<()> {
 	// -- Setup & Fixtures: a partition table on a truncated image is the
 	// ordinary case for a corrupt download, and it must be refused where the
-	// message can name the file — not on the first read, where it cannot.
+	// message can name the file, not on the first read, where it cannot.
 	let image = common::TempImage::new("short-file");
 	image.write(&vec![0u8; 8 * BS as usize])?;
 
@@ -576,7 +576,7 @@ fn test_a_region_that_runs_off_the_end_of_the_file_is_refused_at_open() -> Resul
 
 #[test]
 fn test_an_offset_plus_size_that_overflows_u64_is_refused_at_open() -> Result<()> {
-	// -- Setup & Fixtures: the same overflow as the read path, one layer up — a
+	// -- Setup & Fixtures: the same overflow as the read path, one layer up: a
 	// partition entry is a `u64` start plus a `u64` size, and hostile values can
 	// sum past the end of the type.
 	let image = common::TempImage::new("geometry-overflow");
@@ -600,7 +600,7 @@ fn test_an_offset_plus_size_that_overflows_u64_is_refused_at_open() -> Result<()
 fn test_a_volume_inside_a_file_cannot_address_bytes_outside_itself() -> Result<()> {
 	// -- Setup & Fixtures: a 32-block image with a 4-block region in the middle.
 	// The region's offsets are bounded by the region, so "write past the end of
-	// the volume" must mean "past the end of *this* volume" — an off-by-one here
+	// the volume" must mean "past the end of *this* volume"; an off-by-one here
 	// writes over the neighbouring partition, which is the whole reason a
 	// partition table exists.
 	let image = common::TempImage::new("region");
@@ -651,7 +651,7 @@ fn test_a_volume_inside_a_file_cannot_address_bytes_outside_itself() -> Result<(
 #[test]
 fn test_a_region_at_a_misaligned_offset_is_allowed_but_still_bounded() -> Result<()> {
 	// -- Setup & Fixtures: `FileBlockDevice` deliberately does not require
-	// block-aligned geometry — a partition table is in 512-byte sectors, and a
+	// block-aligned geometry: a partition table is in 512-byte sectors, and a
 	// volume need not begin on a 4 KiB boundary. The addressability rule is
 	// about the volume's own size, not about the file's.
 	let image = common::TempImage::new("misaligned-region");
@@ -700,7 +700,7 @@ fn test_creating_a_device_does_not_erase_what_the_file_held() -> Result<()> {
 	// -- Setup & Fixtures: `create` is documented to size a file, not wipe it,
 	// and the distinction is load-bearing: erasing belongs to `Store::format`,
 	// which does it for *every* device kind. If `create` also erased, a
-	// partition formatted in place would still hold its old blocks — the one
+	// partition formatted in place would still hold its old blocks, the one
 	// case that has no `create` call at all.
 	let image = common::TempImage::new("create-keeps");
 	{
@@ -717,7 +717,7 @@ fn test_creating_a_device_does_not_erase_what_the_file_held() -> Result<()> {
 	assert_eq!(&buf[..12], b"old contents", "create must size, not erase");
 
 	// -- Exec: but a *shrink* truncates, and whatever the removed blocks held is
-	// gone — which is exactly why the erase cannot live here.
+	// gone, which is exactly why the erase cannot live here.
 	drop(device);
 	let shrunk = FileBlockDevice::create(&image.path, 4 * BS)?;
 	assert_eq!(shrunk.block_count(), 4);
@@ -777,8 +777,8 @@ fn test_adopting_a_buffer_whose_length_is_not_a_whole_number_of_blocks_is_refuse
 
 #[test]
 fn test_an_empty_buffer_is_a_zero_block_volume_not_an_error() -> Result<()> {
-	// -- Setup & Fixtures: zero is a multiple of 4096. It is a useless volume —
-	// nothing can be mounted from it — but it is not a *malformed* one, and
+	// -- Setup & Fixtures: zero is a multiple of 4096. It is a useless volume;
+	// nothing can be mounted from it, but it is not a *malformed* one, and
 	// refusing it here would mean the interesting failure ("this is not a
 	// filesystem") never gets to be the one reported.
 	let device = MemBlockDevice::from_bytes(Vec::new())?;
@@ -816,8 +816,8 @@ fn test_clones_of_a_device_share_one_buffer() -> Result<()> {
 
 #[test]
 fn test_a_snapshot_is_detached_from_later_writes() -> Result<()> {
-	// -- Setup & Fixtures: `bytes_snapshot` is how a test — or an application
-	// taking a backup — captures a volume. It must be a copy: a `Vec` that
+	// -- Setup & Fixtures: `bytes_snapshot` is how a test (or an application
+	// taking a backup) captures a volume. It must be a copy: a `Vec` that
 	// tracked the device would make "the bytes before the crash" mean "the bytes
 	// after it".
 	let device = MemBlockDevice::new(4);

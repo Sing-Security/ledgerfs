@@ -37,12 +37,12 @@ pub struct SecurityFlags {
 /// Inode metadata structure
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Inode {
-	/// Content-addressed ID of this inode — `blake3` of this struct's own
+	/// Content-addressed ID of this inode: `blake3` of this struct's own
 	/// canonical encoding, deliberately **excluded** from that encoding
 	/// (`#[serde(skip)]`, matching `AllocNode`'s convention): a field can't
 	/// serialize its own final value into the bytes being hashed to
 	/// produce that value without becoming self-referentially inconsistent
-	/// (found live, the hard way — see `update_object_id`/`decode_canonical`).
+	/// (found live, the hard way; see `update_object_id`/`decode_canonical`).
 	#[serde(skip)]
 	pub object_id: ObjectId,
 
@@ -144,7 +144,7 @@ impl Inode {
 	/// Update object ID based on current content.
 	///
 	/// Safe to call at any point, in any order relative to setting other
-	/// fields, precisely because `object_id` is `#[serde(skip)]` — the
+	/// fields, precisely because `object_id` is `#[serde(skip)]`: the
 	/// encoding this hashes never includes `object_id` itself, so there's
 	/// no "encode with a placeholder, hash, then re-encode with the real
 	/// value and get different bytes" trap.
@@ -165,7 +165,7 @@ impl Inode {
 	}
 
 	/// Encode inode to canonical bytes. `object_id` itself is never part
-	/// of the output (`#[serde(skip)]`) — see `update_object_id`.
+	/// of the output (`#[serde(skip)]`); see `update_object_id`.
 	pub fn encode_canonical(&self) -> Result<Vec<u8>> {
 		postcard::to_allocvec(self).map_err(Error::from)
 	}
@@ -173,7 +173,7 @@ impl Inode {
 	/// Decode inode from canonical bytes.
 	///
 	/// `object_id` is `#[serde(skip)]`, so `postcard::from_bytes` leaves it
-	/// as `ObjectId::default()` (zero) — recompute it directly from
+	/// as `ObjectId::default()` (zero): recompute it directly from
 	/// `bytes` (which *is* the canonical encoding, by definition) rather
 	/// than re-encoding the freshly-decoded struct, which is both cheaper
 	/// and exactly what a caller verifying `blake3(bytes) ==
@@ -256,13 +256,13 @@ mod tests {
 	#[test]
 	fn test_inode_object_id_matches_blake3_of_its_own_stored_bytes() -> TestResult<()> {
 		// -- Setup & Fixtures: regression test for a real, previously-
-		// undiscovered bug — `object_id` used to be a normal serialized
+		// undiscovered bug: `object_id` used to be a normal serialized
 		// field, so `update_object_id()`'s "encode with id=0, hash, set
 		// id=hash" trick produced an id that did NOT match
 		// `blake3(encode_canonical())` afterward (the second encode call
 		// embeds the *real* id, producing different bytes than what was
 		// hashed). This is exactly the invariant `ObjectRecordReader::read`
-		// checks on real disk (`blake3(payload) == header.object_id`) —
+		// checks on real disk (`blake3(payload) == header.object_id`):
 		// existing round-trip tests never caught it because
 		// `decode(encode(x)) == x` holds trivially either way (decode just
 		// deserializes whatever bytes were given verbatim). Found live: a
@@ -282,7 +282,7 @@ mod tests {
 
 		// -- Check: decode_canonical must recompute the same id from the
 		// bytes, not just deserialize whatever's embedded (there's nothing
-		// embedded — object_id is #[serde(skip)]).
+		// embedded; object_id is #[serde(skip)]).
 		let decoded = Inode::decode_canonical(&canonical)?;
 		assert_eq!(decoded.object_id, inode.object_id);
 		assert_eq!(decoded, inode);

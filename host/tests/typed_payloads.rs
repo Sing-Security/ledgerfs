@@ -2,7 +2,7 @@
 //! workload's first question is whether its own type survives it.
 //!
 //! A volume has no schema, no column types and no parser on the write or read
-//! path — an `f32` is four bytes the caller chose an encoding for, exactly like
+//! path: an `f32` is four bytes the caller chose an encoding for, exactly like
 //! a JSON line is bytes. These tests pin the consequence an application needs
 //! to be able to rely on: every bit comes back, including the bit patterns no
 //! numeric library would round-trip through text (`-0.0`, a NaN with a payload,
@@ -39,7 +39,7 @@ fn edge_samples() -> Vec<f32> {
 
 /// The on-volume form the application chose: little-endian, four bytes each.
 ///
-/// The store never sees this as numbers — this is what makes the encoding a
+/// The store never sees this as numbers: this is what makes the encoding a
 /// caller decision rather than a format one.
 fn encode_le(samples: &[f32]) -> Vec<u8> {
 	let mut out = Vec::with_capacity(samples.len() * 4);

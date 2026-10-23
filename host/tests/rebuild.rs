@@ -1,14 +1,14 @@
 //! The rebuild path: `Store::walk` and `rebuild_into`.
 //!
 //! CoW frees nothing, so a volume that has been written for a while is mostly
-//! unreachable garbage — the live tree may be a thousandth of the device. The
+//! unreachable garbage: the live tree may be a thousandth of the device. The
 //! only way to get that space back is to write the live tree into an empty
 //! volume and swap, which is what this pair of functions is for. That makes
 //! three things load-bearing and worth pinning hard:
 //!
 //! 1. **`walk` is a faithful, deterministic description of the live tree.**
 //!    `rebuild_into` is only as good as its input, and a compaction pass uses a
-//!    second `walk` as its verification — so a walk that quietly dropped an
+//!    second `walk` as its verification, so a walk that quietly dropped an
 //!    entry, or produced the same entry twice, or reordered between runs, would
 //!    both lose data and make the verification a lie.
 //! 2. **A rebuilt volume is a real volume.** Not "the bytes went somewhere" but
@@ -16,8 +16,8 @@
 //!    same tree. That is the property the swap depends on.
 //! 3. **Rebuild reclaims space.** If it does not, the whole module is pointless.
 //!
-//! The functional half lives here. What a rebuild *refuses* — following a
-//! symlink, and the depth of a hostile tree — is pinned at the end, and the
+//! The functional half lives here. What a rebuild *refuses* (following a
+//! symlink, and the depth of a hostile tree) is pinned at the end, and the
 //! crafted-metadata half lives in `security_crafted.rs`.
 
 mod common;
@@ -47,7 +47,7 @@ fn noisy(len: usize, seed: u64) -> Vec<u8> {
 	out
 }
 
-/// The path of `entry`'s parent — `/` for a top-level entry.
+/// The path of `entry`'s parent: `/` for a top-level entry.
 fn parent_of(path: &str) -> &str {
 	match path.rfind('/') {
 		Some(0) => "/",
@@ -84,7 +84,7 @@ fn test_every_walked_path_is_absolute_and_normal() -> Result<()> {
 	let entries = store.walk()?;
 
 	// -- Check: every path is volume-absolute, has no trailing slash, and no
-	// doubled separator — a rebuild replays these into `mkdir`/`write_file`, and
+	// doubled separator: a rebuild replays these into `mkdir`/`write_file`, and
 	// a path that is not in that shape would create a different tree.
 	assert!(!entries.is_empty());
 	for e in &entries {
@@ -99,7 +99,7 @@ fn test_every_walked_path_is_absolute_and_normal() -> Result<()> {
 #[test]
 fn test_a_parent_is_always_listed_before_its_children() -> Result<()> {
 	// -- Setup & Fixtures: pre-order is the contract that makes the walk
-	// replayable in one pass — each entry can be created as it arrives because
+	// replayable in one pass: each entry can be created as it arrives because
 	// its parent already exists.
 	let mut store = store(BLOCKS)?;
 	store.mkdir("/d1", 0o755)?;
@@ -167,7 +167,7 @@ fn test_the_walk_is_sorted_and_repeats_itself() -> Result<()> {
 	// -- Check: identical twice over
 	assert_eq!(first, second, "two walks of one volume differ");
 
-	// -- Check: and the order is the lexicographic order of the paths — DFS
+	// -- Check: and the order is the lexicographic order of the paths: DFS
 	// pre-order with per-directory sorting, which is what makes it deterministic.
 	let mut sorted = first.clone();
 	sorted.sort_by(|a, b| a.path.cmp(&b.path));
@@ -315,7 +315,7 @@ fn test_a_rebuild_reproduces_the_source_tree_exactly() -> Result<()> {
 	rebuild_into(&src, &mut dst)?;
 
 	// -- Check: the walk of the destination is the walk of the source, entry for
-	// entry — the property a compaction pass verifies with
+	// entry: the property a compaction pass verifies with
 	assert_eq!(dst.walk()?, src.walk()?, "the rebuilt tree is not the source tree");
 
 	// -- Check: and the bytes match on a spot check
@@ -365,7 +365,7 @@ fn test_a_rebuild_preserves_modes_and_empty_directories() -> Result<()> {
 #[test]
 fn test_a_rebuilt_volume_is_a_valid_volume_when_mounted_from_bytes() -> Result<()> {
 	// -- Setup & Fixtures: the swap replaces the old image with the new one, so
-	// the destination must be a real volume file — not just a tree the writing
+	// the destination must be a real volume file, not just a tree the writing
 	// process can still see because it holds the allocator in memory.
 	let (src, _, _, _) = populated(BLOCKS)?;
 	let (mut dst, watch) = watched(BLOCKS)?;
@@ -384,7 +384,7 @@ fn test_a_rebuilt_volume_is_a_valid_volume_when_mounted_from_bytes() -> Result<(
 fn test_two_rebuilds_of_one_source_are_byte_identical() -> Result<()> {
 	// -- Setup & Fixtures: the same source into two freshly formatted volumes of
 	// the same size. Nothing about a rebuild should depend on wall-clock time,
-	// on iteration order of a hash map, or on the target's arbitrary state — a
+	// on iteration order of a hash map, or on the target's arbitrary state: a
 	// rebuilt image should be reproducible, so two hosts compacting the same
 	// volume produce the same file.
 	let (src, _, _, _) = populated(BLOCKS)?;
@@ -405,7 +405,7 @@ fn test_rebuilding_over_the_same_target_twice_is_well_defined() -> Result<()> {
 	// -- Setup & Fixtures: a compaction pass may resume a rebuild that was
 	// interrupted, so replaying a tree into a volume that already carries it
 	// must be a no-op rather than an `AlreadyExists` error. `rebuild_into` uses
-	// `write_file` (create-or-replace) and creates a directory only if absent —
+	// `write_file` (create-or-replace) and creates a directory only if absent;
 	// this pins that.
 	let (src, dirs, files, content) = populated(BLOCKS)?;
 	let mut dst = store(BLOCKS)?;
@@ -445,7 +445,7 @@ fn test_rebuilding_an_app_volume_keeps_the_app_identity() -> Result<()> {
 	// -- Setup & Fixtures: an application store carries its identity in
 	// `/.ledgerfs/*`, and that identity is what `Store::app` reads back. A
 	// rebuild into such a volume (the app compacting itself) must not clobber
-	// it — `rebuild_into` only touches paths the source has.
+	// it: `rebuild_into` only touches paths the source has.
 	let (src, _, _, _) = populated(BLOCKS)?;
 	let mut dst = app_store(BLOCKS, "demo")?;
 	let identity_before: Vec<String> = dst
@@ -558,14 +558,14 @@ fn test_a_rebuild_reclaims_space_a_churned_volume_has_leaked() -> Result<()> {
 	rebuild_into(&src, &mut dst)?;
 	let dst_free = dst.free_bytes().expect("the destination has an allocator snapshot");
 
-	// -- Check: the destination is emptier than the source — the leaked versions
+	// -- Check: the destination is emptier than the source: the leaked versions
 	// are gone.
 	assert!(
 		dst_free > src_free,
 		"the rebuild did not reclaim space: src free {src_free}, dst free {dst_free}"
 	);
 
-	// -- Check: and it is emptier by roughly the churn, not by losing the file —
+	// -- Check: and it is emptier by roughly the churn, not by losing the file;
 	// the content is intact.
 	assert_eq!(dst.read_file("/log")?, live);
 	assert_eq!(dst.walk()?, src.walk()?);
@@ -579,8 +579,8 @@ fn test_a_rebuild_reclaims_space_a_churned_volume_has_leaked() -> Result<()> {
 /// Hand-assemble a volume whose root directory holds exactly one entry: a
 /// symlink named `link`.
 ///
-/// There is no symlink *writer* in this crate — the host path has no verb that
-/// creates one — so the only way a symlink can appear in a volume this reader
+/// There is no symlink *writer* in this crate: the host path has no verb that
+/// creates one, so the only way a symlink can appear in a volume this reader
 /// is handed is a volume assembled elsewhere. That is exactly the case the
 /// refusal exists for, and it is built here through the format's own public
 /// API so every record on the volume is valid: the test proves the reader
@@ -605,7 +605,7 @@ fn symlink_volume() -> Result<Vec<u8>> {
 	};
 
 	// -- The symlink inode. Its `content_ref` is its target; pointing it at a
-	// ref that need not exist is fine — the refusal happens before it is
+	// ref that need not exist is fine: the refusal happens before it is
 	// followed.
 	let mut link = Inode::new_symlink(0, 0, ObjectRef::new(ObjectId::from_content(b"/target"), StorageHint(9)));
 	link.update_object_id();
@@ -644,7 +644,7 @@ fn symlink_volume() -> Result<Vec<u8>> {
 #[test]
 fn test_a_walk_reports_a_symlink_as_a_symlink() -> Result<()> {
 	// -- Setup & Fixtures: before pinning that a rebuild refuses it, pin that
-	// the walk *sees* it correctly — a symlink reported as a regular file would
+	// the walk *sees* it correctly: a symlink reported as a regular file would
 	// be copied as one, which is the silent corruption the refusal prevents.
 	let bytes = symlink_volume()?;
 
@@ -666,7 +666,7 @@ fn test_rebuild_refuses_to_follow_a_symlink() -> Result<()> {
 	// -- Setup & Fixtures: rebuild copies files by reading their bytes and
 	// writing them to the same name in the destination. Following a symlink
 	// would copy its *target's* bytes under the link's name and turn a link into
-	// a file — a quiet change to what the tree means. There is no symlink writer
+	// a file: a quiet change to what the tree means. There is no symlink writer
 	// here, so the volume is crafted; the refusal must be by name.
 	let bytes = symlink_volume()?;
 	let src = Store::open(Box::new(MemBlockDevice::from_bytes(bytes)?))?;
@@ -684,7 +684,7 @@ fn test_rebuild_refuses_to_follow_a_symlink() -> Result<()> {
 		other => panic!("a symlink must be refused as Unsupported, not {other:?}"),
 	}
 
-	// -- Check: and nothing was copied — the destination is still empty, so a
+	// -- Check: and nothing was copied: the destination is still empty, so a
 	// caller who ignores the error has not been handed a half-tree that looks
 	// complete. (The source holds only the symlink, so a refusal on it happens
 	// before any write; this asserts the ordering holds.)

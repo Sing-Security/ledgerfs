@@ -1,21 +1,317 @@
 # LedgerFS
 
-**An embedded filesystem you can use as your application's storage layer.**
+**Sing Security Research Laboratory**
 
-LedgerFS is a library that owns a volume — a flat array of 4 KiB blocks — and
-gives your process a small set of file verbs over it. Every write is
-copy-on-write and content-addressed, and a write becomes durable at exactly one
-point: the superblock write that ends a **commit**. Before it, the old tree is
-the filesystem; after it, the new one. There is no interval a crash can leave
-half-applied, and nothing to replay on mount.
+A copy-on-write, content-addressed storage layer. An application links it and
+uses a volume as its storage; an operating system adopts it as its filesystem.
+The on-disk format is specified byte by byte, and the implementation is
+published as two Rust crates.
 
-You can use it as your application's database. It holds your records and gives
-them back, and for a great many applications that is the whole job — logs,
-samples, telemetry batches, application state, snapshots. What it is not is a
-database **engine**: no schema, no query language, no index, no in-place update.
-It is a different solution to the same problem, and the difference is what you
-get for it — see [what a filesystem buys](#what-a-filesystem-buys-you) and
-[what it costs](#what-it-costs).
+---
+
+## Abstract
+
+LedgerFS stores a hierarchical file tree in a single volume: a flat array of
+4 KiB blocks. Every object is immutable and named by the BLAKE3 hash of its
+canonical encoding, and every modification produces new generations of the
+objects on the affected path. Durability is obtained without a write-ahead log.
+A commit writes the new objects and the allocator snapshot, issues a barrier,
+writes the four superblock copies that name the new root, and issues a second
+barrier. The superblock write is the commit point. A crash leaves the previous
+root or the new one, never a blend, and mount has no log to replay.
+
+The library is deployed in two forms. CrucibleOS uses it as the filesystem
+behind its file-descriptor service. Applications link `ledgerfs-host` and use a
+volume as their storage layer. The format crate performs no I/O; it reads and
+writes through an `ObjectStore` trait, so the same format code runs in a kernel
+and in a userspace process.
+
+The design assumes a capture workload: records are written once, read back whole
+or by byte range, and not rewritten. For that workload the system provides
+atomic publication, content verification on read, and a volume that is one
+portable artifact with no server beside it. It does not provide a schema,
+indexes, or a query language, and it does not reclaim space. Section 7
+quantifies the cost of the guarantee.
+
+## Contributions
+
+1. A normative on-disk format covering object framing, the metadata model, the
+   allocator, the superblock, feature negotiation and compatibility rules
+   (`FORMAT.md`).
+2. A commit protocol whose crash argument rests on ordering rather than on
+   logging, implemented once and shared by the host library and the kernel path.
+3. A staging tier that separates accepted writes from durable writes and lets
+   each read select the tier that answers it, with the seal defined as an
+   ordinary commit.
+4. An evaluation harness that measures the implementation against SQLite in WAL
+   mode, redb and a raw `fsync` control on the same device, with each engine's
+   durability setting stated (Section 7).
+
+## 1. Introduction
+
+Most storage systems make a write durable by writing it twice: once to a log,
+once to the location it occupies, with a replay step to reconcile the two after
+a crash. The log is a second source of truth, and its format, its recovery path
+and the window in which the two disagree are part of the system's correctness
+argument.
+
+LedgerFS orders the write instead. Objects and the allocator snapshot reach the
+medium and are flushed; the superblock copies that name the new root are then
+written and flushed. Before the superblock write the old root is the volume;
+after it, the new root is. Because nothing is modified in place, the objects
+the old root names remain valid for the duration of the change, and the medium
+holds either the previous state or the next one. There is no log format, no
+replay path, and no interval in which two structures claim to be authoritative.
+
+Three properties follow from the same design. Objects are named by the hash of
+their content and verified against that name before they are returned, so a
+read produces the recorded bytes or an error. A volume is a byte string, so a
+snapshot is a copy and an archive is the volume itself. And the format code
+performs no I/O, so a kernel and a userspace process can execute the same
+implementation over different devices.
+
+Section 2 defines the data model, Section 3 the write path, and Section 4 the
+staging tier. Section 5 describes the implementation, Section 6 the deployment
+in CrucibleOS, Section 7 the measurements, Section 8 the limitations and
+Section 9 the workloads for which the design is and is not intended.
+
+## 2. System model
+
+A **volume** is a flat array of 4 KiB blocks with a superblock at a fixed
+location, a root object, and a tree of objects reachable from that root. The
+file or partition that holds a volume is not the volume; it is one way of
+supplying the block array.
+
+**Objects.** The format has five object kinds: `Chunk`, which holds file
+content; `Inode`, which holds file metadata; `DirNode`, which holds one
+directory's sorted entries; `ExtentNode`, which holds a file's extent list; and
+`Root`, which names the tree. An object is addressed by the 32-byte BLAKE3 hash
+of its canonical encoding. Two objects with equal content have the same id, and
+a reader recomputes the id before accepting the bytes. A record additionally
+carries a checksum, so framing damage is detected before decoding.
+
+**Roots and generations.** Exactly one root is live at a time, and the
+superblock names it together with a monotonic `commit_seq`. A modification
+produces new generations of every object on the path from the root to the
+changed node; the previous generations remain on the medium and remain valid
+for readers that already adopted them.
+
+**Allocation.** A block allocator tracks free, allocated and reserved blocks.
+Its serialized snapshot is written as part of each commit at a fixed reserved
+block index. It cannot be stored as an ordinary object, because placing it would
+consume a block and change the state being recorded.
+
+**Superblock redundancy.** Four superblock copies exist per volume, two at the
+head of the volume and two at the end. Mount selects the highest verifying
+`commit_seq` among them. A Root Locator Ring inside the superblock allows the
+root to be recovered when the newest copy is damaged. The host library reports
+disagreement among copies rather than repairing it silently.
+
+## 3. Write path and crash consistency
+
+A file operation builds its entire result in memory before any block is
+allocated. A 256-byte write produces a chunk, an extent node, an inode, a
+directory entry, and the ancestors whose identifiers changed. A write larger
+than the 256 KiB object ceiling is split across several chunks and folded into
+one transaction.
+
+The commit then proceeds in a fixed order:
+
+1. Place the new objects in free blocks and write them, together with the
+   allocator snapshot.
+2. Issue a barrier, so that all of the above is on stable media.
+3. Write the four superblock copies naming the new root.
+4. Issue a second barrier. The commit is complete when step 4 returns.
+
+A crash before step 3 completes leaves the previous root live. The objects the
+new root would have named are unreachable and occupy their blocks until the
+volume is replaced; nothing frees space. A crash during step 3 leaves at least
+one copy of either the old or the new superblock, and mount selects the highest
+verifying sequence number. There is no state in which a root names objects that
+were never written, because step 2 precedes step 3.
+
+The first barrier is what permits mount to adopt a superblock without
+consulting a log: by the time the new root is named, the objects it names are
+already durable. The second barrier is the commit point. Removing the first
+would move the cost of an interrupted commit into the mount path and change the
+recovery story; `FORMAT.md` §18 records the argument, and the implementation
+does not take that trade.
+
+The intent log defined by the format is not written on the live path. The
+format reserves a bounded ring for commit-intent records so that a future
+implementation can describe an in-flight commit, but neither the host library
+nor CrucibleOS uses it, and no recovery decision depends on it (`FORMAT.md`
+§11, §18.5).
+
+## 4. Staging tier
+
+A commit costs two barriers, which dominates the cost of a small durable write.
+For a stream of records, paying that cost per record is unnecessary: the
+application can decide when the point of truth moves.
+
+`begin_staging` opens a session. `staged_append` extends an in-memory draft of
+the target file: it hashes the appended bytes into a chunk, pushes an extent
+descriptor onto the draft, and touches no device block, no allocator state and
+no barrier. `seal_staged` builds the objects those appends imply, commits them
+as one transaction of the ordinary shape, and returns. The commit sequence
+advances by one, and the objects the intermediate generations produced are
+pruned at the seal, so N staged appends carry N chunks plus one generation of
+each metadata object to the medium.
+
+`seal_staged_deferred` performs the same work except the superblock write, so
+several seals can share one `sync`. The group is published whole or lost whole.
+
+Two read tiers exist while a session is open. The handle that owns the session
+resolves its own staged writes from memory, with no device read; every other
+handle sees the committed generation. `read_file_committed` on the owning handle
+also answers from the committed generation. The choice is per read, and there is
+no ambient default.
+
+A crash before the seal loses the staged work and nothing else. A crash after
+the seal returns is the ordinary commit case. No format change is involved, and
+a mount that never observed a session cannot distinguish a volume written with
+one.
+
+## 5. Implementation
+
+Two crates are published.
+
+| crate | runtime | contents |
+|---|---|---|
+| [`ledgerfs`](https://crates.io/crates/ledgerfs) | `no_std` + `alloc` | the format: record framing, encoding, the object model, the allocator, placement, the commit engine, and the copy-on-write operations. No I/O. |
+| [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host) | `std` | an `ObjectStore` over a `BlockDevice`, mount and path handling, `Store` (format, open, mutation verbs, staging), and the `lfs-read` and `lfs-write` tools. |
+
+The kernel crate defines [`ObjectStore`](kernel/src/cow/object_store.rs) as the
+seam between the format and the medium. The host crate supplies a disk-backed
+implementation; the kernel path inside CrucibleOS supplies one over an ATA disk;
+tests supply one over a `Vec<u8>`. The same format code executes in all three.
+
+Public API documentation is built with `all-features`, and both crates deny
+`missing_docs`. Every public item is documented. The feature sets, including
+the ring-0 `reader` path and the optional `data-encryption` and `temper_sealing`
+features, are described in [`kernel/README.md`](kernel/README.md).
+
+## 6. Deployment
+
+CrucibleOS uses LedgerFS as the filesystem beneath its file-descriptor service.
+The kernel crate is compiled into a Tier 2 IPC service that maintains a handle
+table, answers each operation against the root current at the time of the call,
+and performs access checks; the volume is a disk the kernel owns rather than a
+file it opens. That service is the OS-side layer the format leaves to its
+adopter: LedgerFS supplies the format and the commit protocol, and the operating
+system supplies the policy above them. A database engine would occupy the same
+position one level higher.
+
+## 7. Evaluation
+
+All figures below were produced by the harness in [`benchmarks/`](benchmarks/),
+on one device, with each engine's durability setting stated in
+[`BENCHMARKS.md`](BENCHMARKS.md). The comparison engines are SQLite 3 in WAL
+mode with `synchronous=FULL`, `redb` with `Durability::Immediate`, and a control
+that writes one file per key and synchronizes both the file and its directory.
+The control is the relevant baseline for durability cost: it issues the same
+kind of operation a commit issues, with no filesystem on top.
+
+| workload | LedgerFS | SQLite WAL | redb | raw `fsync` |
+|---|---:|---:|---:|---:|
+| Durable insert, 256 B | 9.18 ms | 3.79 ms | 4.13 ms | 7.10 ms |
+| Verified point read, 256 B | 25.5 µs | 4.2 µs | 949 ns | 2.1 µs |
+| Batched append, 960 B per batch | 16.87 ms | 9.25 ms | 9.87 ms | 9.09 ms |
+| Staged append, seal every 10 batches | 2.05 ms | 1.25 ms | 981 µs | 869 µs |
+| Deferred seal, one group sync | 1.07 ms | 397 µs | 161 µs | 126 µs |
+
+The staged and deferred rows report per-batch cost with the seal included, since
+their durability point is the seal rather than the batch. The engines do not
+perform identical work at the seal; `BENCHMARKS.md` states the difference for
+each of them, and no row should be compared across engines without that
+statement.
+
+Three observations account for the differences.
+
+**Barriers dominate small durable writes.** A barrier that follows new data
+costs 3 to 5 ms on this device, and the single-insert row moves between runs by
+more than a factor of two. Against the control, which pays the same two
+synchronizations, LedgerFS costs 1.29 times as much; the remainder is the commit
+itself: a fresh allocator snapshot, four superblock copies, and a copy-on-write
+replacement of every object on the path.
+
+**Reads verify their own result.** The 25.5 µs point read includes a BLAKE3
+computation over the returned object. SQLite and redb trust their pages. On the
+960-byte read-back workload the verified figure is within about 1.8 times
+SQLite's unverified read, which is the price of the check. The read row is also
+warm: it is measured in the process that wrote the data, so the block map is
+resident. A process that opens a volume it did not write pays a linear scan for
+the first lookup of each object, because storage hints are not persisted
+(`KNOWN_ISSUES.md` §4).
+
+**Volume consumption is a function of commits, not payload.** A 256-byte insert
+consumes 36.3 KiB of volume and a batch of twenty 48-byte records consumes
+35.9 KiB; the cost is the allocator snapshot, the superblock copies and the
+rewritten path. Capacity planning therefore follows commits: roughly 36 KiB per
+commit, whatever the records contain.
+
+Staging changes the order of magnitude of the per-record cost. At a seal every
+ten batches a staged append costs 2.05 ms per batch against 16.87 ms for a
+committed batch of the same bytes. With all 512 batches under a single seal it
+costs 37.9 µs per batch, which measures the in-memory append with the seal's
+share set aside. The deferred-seal row removes one of the two barriers per
+group, at the cost of a weaker crash promise: the group since the last `sync`
+is lost whole, and blocks may be marked allocated without a live root naming
+them, which leaks space on a recovery and never produces a wrong answer.
+
+## 8. Limitations
+
+- **Space is not reclaimed.** No shipping path frees a block. A volume fills
+  monotonically and should be treated as append-only with a planned lifetime.
+  Snapshots, a garbage collector and a scrubber are implemented and tested in
+  the unpublished `pending/` crate; none is driven by the shipping path.
+- **Appending to one growing file is quadratic in device bytes.** Every commit
+  rewrites the file's extent node, whose encoding grows with the file. Bounded
+  chunk files, or a staging session with periodic seals, restore linear cost.
+- **Fixed ceilings.** Objects are at most 256 KiB, directories 400 entries,
+  extent nodes 1500 entries and names 256 bytes. Exceeding a ceiling is an
+  error, not a slowdown.
+- **No in-place update.** `write_at` may append past the end of a file but
+  cannot rewrite stored bytes. A file is replaced whole or extended.
+- **One writer per volume.** A writable file device takes an advisory exclusive
+  lock. Readers take none and read the root they opened.
+- **No VFS integration.** Nothing registers with the host operating system, so
+  no path on the host resolves into a volume. An OS adopts the library by
+  writing the service layer above it, as CrucibleOS does.
+- **Tier B subsystems are not available.** Garbage collection, snapshots,
+  deduplication at write time, replication, the scrubber, the audit chain,
+  quotas and ACLs have encodings and tests but no caller in the shipping path.
+  Four of them return success without performing the work; `KNOWN_ISSUES.md`
+  §11 lists which.
+
+## 9. Applicability
+
+The design is intended for records that are written once, retained for a
+bounded period, and read back whole or by byte range: logs, capture streams,
+archives, appliance state, and the file tree of a system that owns its disk.
+
+Within that class, a volume can occupy the position a database would: it
+stores an application's records and returns them, and for a capture workload
+that is the complete requirement. What it does not provide is a database
+engine, meaning a schema, secondary indexes, a query planner and an executor.
+
+It is not intended for data edited in place, for workloads that require
+cross-record queries, or for volumes that must run indefinitely without
+attention.
+
+| suitable | unsuitable |
+|---|---|
+| append-only capture and logging | a query engine: no schema, no indexes, no joins |
+| portable archives and snapshots | data rewritten in place |
+| an operating system's own file tree | a shared volume with many writers |
+| an application store with atomic publication | a volume that runs forever without attention |
+
+The absence of a query layer is a scope boundary, not a claim about the floor
+of the design. A catalog, secondary indexes, a query planner and an executor
+are a layer above this one, and the format does not obstruct them. That layer is
+not part of this release.
+
+## 10. Availability and reproducibility
 
 ```sh
 cargo add ledgerfs-host
@@ -25,26 +321,17 @@ cargo add ledgerfs-host
 use ledgerfs_host::{MemBlockDevice, Result, Store};
 
 fn main() -> Result<()> {
-	// 8 MiB of volume living in this process's heap. The clone is how we get
-	// the bytes back after `Store` takes ownership of the device.
 	let device = MemBlockDevice::new(2048);
 	let mirror = device.clone();
 
-	// mkfs, and stamp the volume with the name of the app that owns it.
 	let mut store = Store::format_app(Box::new(device), "example")?;
-
-	// Create-and-write. Refuses if the path is taken.
 	store.write_new_file("/log.jsonl", b"{\"turn\":1}\n", 0o644)?;
 
-	// High-frequency traffic: many writes, one commit — and a per-read choice
-	// of how true the answer has to be.
 	store.begin_staging(4 * 1024 * 1024)?;
 	store.staged_append("/log.jsonl", b"{\"turn\":2}\n", 0o644)?;
 	assert_eq!(store.read_file_committed("/log.jsonl")?, b"{\"turn\":1}\n");
-	assert_eq!(store.read_file("/log.jsonl")?, b"{\"turn\":1}\n{\"turn\":2}\n");
-	let _seal = store.seal_staged()?; // one transaction, one durability point
+	let _seal = store.seal_staged()?;
 
-	// A volume is a byte string. Ship it, archive it, or reopen it here.
 	let bytes = mirror.bytes_snapshot();
 	let reopened = Store::open(Box::new(MemBlockDevice::from_bytes(bytes)?))?;
 	assert_eq!(reopened.read_file("/log.jsonl")?, b"{\"turn\":1}\n{\"turn\":2}\n");
@@ -52,208 +339,62 @@ fn main() -> Result<()> {
 }
 ```
 
-Swap `MemBlockDevice` for `FileBlockDevice` and the same calls drive a bare file
-or a disk partition. Runnable versions, one per way to hold a volume, are listed
-under [Examples](#examples).
+`FileBlockDevice` in place of `MemBlockDevice` drives a file or a partition with
+the same calls.
 
-## What this is
-
-- **An embedded filesystem.** The crate is the filesystem. An application links
-  it, hands it a `BlockDevice`, and calls verbs. Nothing mounts into a path
-  namespace, there is no VFS, no page cache, no daemon and no root privilege —
-  it runs in your process, on your buffer, on your partition.
-- **A commit is the point of truth.** A mutation is one transaction: place the
-  objects and write the allocator snapshot, one device barrier, then the
-  superblock copies, then the barrier that commits them. The order is
-  load-bearing and the format's crash argument is made of it (`FORMAT.md` §15).
-- **Content-addressed and verified.** Every object is named `BLAKE3(payload)`,
-  and every record carries a magic, a length and a truncated-BLAKE3 checksum.
-  What comes back out of the device is verified against all of them, so a read
-  either returns exactly the bytes that were written or an error. Nothing is
-  silently corrupt.
-- **A volume is bytes.** One file, one partition, or one `Vec<u8>` in your heap
-  — the block device is the only difference. A volume can be snapshotted to
-  bytes and reopened anywhere.
-- **Built for a stream.** A staging session gathers appends in memory and seals
-  them as one ordinary commit, so a capture loop pays one durability point per
-  seal, not per record. The seal is still the point of truth; you choose how
-  often it moves.
-
-## What a filesystem buys you
-
-LedgerFS is a different solution to the problem a database solves, and the
-difference is the shape of the thing you end up operating. Using a whole
-filesystem as your storage layer buys:
-
-| | |
-|---|---|
-| **Your whole store is one file.** | A volume is a flat array of blocks, so it copies, archives, ships and diffs as one artifact. There is no dump and restore, no WAL directory, no sidecar config — the storage *is* the file, and `Store::open` is the import. |
-| **Nothing to run.** | No server, no daemon, no port, no socket, no service to monitor or upgrade. The storage layer is linked into your binary and dies with your process. |
-| **Paths, not tables.** | You name your data and the filesystem does the rest. Any tool that reads a volume can read it: `lfs-read <IMAGE> ls /` needs no library and no schema. |
-| **The format outlives the library.** | The bytes are specified in [`FORMAT.md`](FORMAT.md), normatively and by section. If this crate stopped being maintained, the format would not stop being readable. |
-| **Integrity is the format's job, not yours.** | Every object is named by the hash of its content and every record is checksummed, so a read returns the bytes that were written or an error. You do not write a verifier. |
-| **A write is atomic by construction.** | One transaction per verb, one commit as the durability point, the old root or the new one after a crash. You do not write a recovery path. |
-| **Your data is bytes.** | No schema, no type coercion, no migration. What you wrote is what you read back — `f32` payloads bit for bit, including the ones a database would canonicalize. |
-| **The same code everywhere.** | One format, one crate: a process, a boot loader, a device with no OS. A volume written under one is read under the other. |
-
-## What it costs
-
-Speed, on some paths, and it is worth saying which:
-
-- **Small durable writes.** A 256-byte insert costs 9.18 ms against SQLite's
-  3.79 ms — 2.42×, and 1.29× a raw file doing its own two `fsync`s. Most of the
-  gap is the second barrier, and the two-barrier order is the format's
-  crash-consistency argument ([`FORMAT.md`](FORMAT.md) §15), not a tuning miss.
-- **Reads.** A verified point read of 256 bytes is 25.5 µs against `redb`'s
-  949 ns. The gap is the BLAKE3 check. A database trusts its pages; this proves
-  them.
-- **What pays it back.** A **staging session** moves the commit off the
-  per-record path: appends land in memory and one seal commits them all, so a
-  capture loop pays one durability point per seal rather than per record, and
-  the commit is amortized across the whole stream. Those rows are marked
-  non-comparable in [`BENCHMARKS.md`](BENCHMARKS.md) for the honest reason —
-  only the seal carries the durability point — and the read back is still
-  verified.
-
-If raw throughput is the only thing you are choosing on, a database engine wins
-those rows and you should use one. If you would rather have a storage layer that
-is a single file, that nothing has to run, and that proves what it returns, this
-is what that costs. [`BENCHMARKS.md`](BENCHMARKS.md) states the comparison in
-full, including the durability setting and the non-comparable rows for every
-engine.
-
-## Where it does not fit
-
-| | |
-|---|---|
-| **Not a query engine.** | No schema, no indexes, no joins, no SQL, no filter or aggregation across records. Reading a record means knowing its path. |
-| **Not a POSIX filesystem.** | No mount point, no `mmap`, no POSIX conformance claim, no root filesystem. It is a library over a block device, not a filesystem your OS mounts. |
-| **Not free of caveats.** | [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) is the honest list: free space falls monotonically (nothing collects yet), `write_at` cannot rewrite stored bytes, a directory is capped at 400 entries. Read it before adopting this. |
-
-None of the three is on the path of the data this was built for. Where they do
-bite, a database engine is the better tool:
-
-| Choose LedgerFS when | Choose a database engine when |
-|---|---|
-| Records land once and are read back whole or by byte range | Records are queried, filtered, joined or updated in place |
-| One writer owns the volume | Several processes write concurrently |
-| You want the storage to be a byte string you can ship, snapshot or embed | You want SQL, indexes and a server to operate |
-| A crash must leave the old state or the new one, never a blend | You need multi-statement transactions across many records and tables |
-| You want reads that prove they are correct | Approximate or best-effort reads are acceptable |
-| You are on a device that must work offline, with no daemon | You have an operations team and a database already |
-
-## How it works
-
-1. **Objects.** Everything on a volume is an immutable blob named by its BLAKE3
-   hash: `Chunk` for content, `Inode` for a file's metadata, `DirNode` for a
-   directory, `ExtentNode` for a file's extent list, `Root` for the tree.
-2. **Copy-on-write.** A mutation never edits an object. It writes new
-   generations of everything on the path and re-points the parents at them.
-3. **One transaction per verb.** A write of any length — split into as many
-   256 KiB objects as it needs — is folded into a single `TxnPlan`: chunks,
-   extent node, inode, directory entry, ancestors.
-4. **One commit per transaction.** Placement assigns blocks, the objects and
-   the allocator snapshot are written and flushed, the superblock copies that
-   name the new root are written and flushed. Crash yields the old root or the
-   new one.
-5. **Staging, when one commit per write is too many.** `begin_staging` opens a
-   session; `staged_append` extends in-memory drafts and touches no device;
-   `seal_staged` folds everything into one commit. `seal_staged_deferred` +
-   `sync` moves the second barrier off the seal when a group can share it.
-6. **Two read tiers, chosen per read.** Inside a session, `read_file`,
-   `read_at`, `stat` and `read_dir` answer from the staged view at memory
-   speed; `read_file_committed` answers from the superblock's generation. Any
-   other handle sees only committed state, by construction.
-
-The normative bytes are in [`FORMAT.md`](FORMAT.md); the application contract —
-one writer, replace rather than overwrite, the `/.ledgerfs` identity convention,
-which verb means what — is [`EMBEDDING.md`](EMBEDDING.md). The words are fixed
-in [`TERMINOLOGY.md`](TERMINOLOGY.md), so *seal*, *commit* and *draft* mean the
-same thing in all three.
-
-## Crates
-
-| crate | | owns |
-|---|---|---|
-| [`ledgerfs`](https://crates.io/crates/ledgerfs) | `no_std` + `alloc` | the on-disk format — superblock, `ObjectRecord` framing, object model, allocator, commit engine — and the copy-on-write operations, generic over an `ObjectStore`. No I/O of its own. |
-| [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host) | `std` | one `ObjectStore` over a `BlockDevice`, mount and path plumbing, `Store` (`mkfs`, open, and the verbs), and `lfs-read`/`lfs-write`. This is what an application links. |
-
-The kernel crate is the only place an on-disk offset or checksum is defined;
-the host crate re-derives neither. The kernel also carries an ATA PIO reader and
-writer behind the `reader` feature for the ring-0 case where the crate is the
-only route to its own partition; a userspace consumer takes the crate without
-it.
-
-Two workspace directories are **not** published. `benchmarks/` is the
-comparison harness behind `BENCHMARKS.md`. `pending/` holds subsystems that are
-implemented and tested but that nothing in the shipping path calls — the dedupe
-index, snapshots, the scrubber, GC safety rules and content-defined chunking.
-`FORMAT.md` §44 calls those Tier B and tells a reader to treat them as "not
-available", so they build and test here and are shipped to nobody.
-
-## Examples
-
-- [`examples/embed`](host/examples/embed.rs) — in-memory, relocatable volumes
-  (`MemBlockDevice`)
-- [`examples/disk_volume`](host/examples/disk_volume.rs) — a hosted volume: a
-  real file, the one-writer lock, a read-only open beside a live writer
-- [`examples/app_store`](host/examples/app_store.rs) — the application-store
-  contract from [`EMBEDDING.md`](EMBEDDING.md) as code
-- [`examples/staging_capture`](host/examples/staging_capture.rs) — the staging
-  tier: stage, read both tiers mid-session, seal, reopen from the volume's bytes
-- [`examples/custom_device`](host/examples/custom_device.rs) — your own storage:
-  implement the four required `BlockDevice` methods and the whole filesystem
-  works on top of it unchanged
-
-```sh
-cargo run --example app_store -p ledgerfs-host
-```
-
-## Guarantees
-
-- **Atomic commit.** A mutation is one transaction, and the commit sequence is
-  the format's crash-consistency argument: old tree or new tree, never a blend.
-- **Durability is explicit.** Nothing is "eventually" durable. A commit is
-  durable when it returns; a seal is durable when it returns; a deferred seal
-  is durable at `sync()`. Before any of those, the data is in the process's
-  memory and a crash loses exactly that.
-- **Integrity on read.** Every object's id is its content hash and every record
-  is checksummed; a read verifies before it answers.
-- **Isolation.** One writer per volume, enforced by an advisory exclusive lock
-  on a file device and by ownership on any other. A volume is a closed tree
-  with no cross-volume state.
-
-## Documents
-
-| | |
-|---|---|
-| [`TERMINOLOGY.md`](TERMINOLOGY.md) | the vocabulary, normative — read first if a word seems to mean two things |
-| [`FORMAT.md`](FORMAT.md) | the on-disk format, normative, cited by section from the source |
-| [`EMBEDDING.md`](EMBEDDING.md) | the contract for an application embedding a volume |
-| [`BENCHMARKS.md`](BENCHMARKS.md) | what was measured, on what, and against what |
-| [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | limitations, deliberate and otherwise |
-| [`SECURITY.md`](SECURITY.md) | what a useful vulnerability report looks like |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | the feature matrix and the format-change rules |
-| [`RELEASING.md`](RELEASING.md) | publish order, the gates, and what a version number means |
-| [`CHANGELOG.md`](CHANGELOG.md) | release history |
-
-## Building
+Both published crates build on stable Rust 1.89, edition 2024. The benchmark
+harness is not published and requires 1.90, because `redb` does.
 
 ```sh
 cargo test -p ledgerfs --all-features
 cargo test -p ledgerfs-host
+cargo run --release -p ledgerfs-benchmarks -- run
+cargo run --release -p ledgerfs-benchmarks -- render
 ```
 
-The kernel is `no_std` and has a feature matrix; see
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the full list. Both published crates
-build on stable Rust 1.89, edition 2024. The benchmark harness is not published
-and needs 1.90, because `redb` does.
+The harness records each run as a JSON file under `benchmarks/results/`; the
+tables in `BENCHMARKS.md` are regenerated from the newest file and therefore
+cannot drift from a recorded run. The machine identification in those records is
+redacted.
 
-[`rust-toolchain.toml`](rust-toolchain.toml) pins development to current stable
-with rustfmt and clippy, and says why it is not pinned to the floor.
+### Documents
 
-## License
+| document | role |
+|---|---|
+| [`FORMAT.md`](FORMAT.md) | the on-disk format, normative, cited by section from the source |
+| [`TERMINOLOGY.md`](TERMINOLOGY.md) | the project vocabulary, normative for prose and naming |
+| [`EMBEDDING.md`](EMBEDDING.md) | the contract for an application embedding a volume |
+| [`BENCHMARKS.md`](BENCHMARKS.md) | measurement method, provenance and results |
+| [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | limitations, with their causes |
+| [`SECURITY.md`](SECURITY.md) | vulnerability reporting |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | feature matrix and format-change rules |
+| [`RELEASING.md`](RELEASING.md) | publish order, gates and version semantics |
+| [`CHANGELOG.md`](CHANGELOG.md) | release history |
+
+### Examples
+
+| example | subject |
+|---|---|
+| [`embed`](host/examples/embed.rs) | in-memory volumes, snapshotted and reopened |
+| [`disk_volume`](host/examples/disk_volume.rs) | a file-backed volume, the writer lock, a concurrent reader |
+| [`app_store`](host/examples/app_store.rs) | the application-store contract from `EMBEDDING.md` |
+| [`staging_capture`](host/examples/staging_capture.rs) | both read tiers during a session, then a seal |
+| [`custom_device`](host/examples/custom_device.rs) | the four-method `BlockDevice` contract |
+
+## 11. Guarantees
+
+- **Atomic publication.** One transaction per verb, one commit as the durability
+  point. A crash leaves the previous root or the new one, never a blend.
+- **Explicit durability.** A commit is durable when it returns. A seal is
+  durable when it returns. A deferred seal is durable at `sync()`. Before either,
+  the data exists only in the writing process and a crash loses exactly that.
+- **Content verification.** Every object is named by its hash and every record
+  is checksummed. A read verifies before it answers.
+- **Single writer.** Enforced by an advisory exclusive lock on a writable file
+  device.
+
+## 12. License
 
 Dual-licensed: Apache-2.0 or MIT, at your option. See
-[`LICENSE-APACHE`](LICENSE-APACHE), [`LICENSE-MIT`](LICENSE-MIT), and
+[`LICENSE-APACHE`](LICENSE-APACHE), [`LICENSE-MIT`](LICENSE-MIT) and
 [`NOTICE`](NOTICE).

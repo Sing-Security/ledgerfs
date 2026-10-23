@@ -3,7 +3,7 @@
 //! # Why this is not optional
 //!
 //! A durability benchmark measures what a barrier costs. On a filesystem whose
-//! `fsync` returns without touching a device — tmpfs, ramfs, overlayfs — that
+//! `fsync` returns without touching a device (tmpfs, ramfs, overlayfs), that
 //! cost is zero, and every engine being compared becomes indistinguishable while
 //! the numbers stay plausible. The mistake is invisible in the output: a table
 //! of fast numbers reads exactly like a table of correct ones.
@@ -43,7 +43,7 @@ impl fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// A refusal is the caller's problem to fix — point `--dir` somewhere else —
+/// A refusal is the caller's problem to fix (point `--dir` somewhere else),
 /// so it surfaces as a usage error rather than as an environment failure.
 impl From<Refused> for crate::error::Error {
 	fn from(r: Refused) -> Self {
@@ -91,7 +91,7 @@ pub struct Medium {
 	pub fs_name: String,
 	/// True if this filesystem's writes are not durable by construction.
 	pub volatile: bool,
-	/// The mount source — a device path, or a pseudo-name for a virtual fs.
+	/// The mount source: a device path, or a pseudo-name for a virtual fs.
 	pub source: Option<String>,
 	/// The device model behind the mount point, following one dm layer.
 	pub device_model: Option<String>,
@@ -147,7 +147,7 @@ pub fn require_durable(dir: &Path, need_bytes: u64) -> Result<Medium, Refused> {
 
 	if medium.volatile {
 		return Err(Refused(format!(
-			"refusing to measure on {} — its writes do not reach a device, so every barrier is free \
+			"refusing to measure on {}: its writes do not reach a device, so every barrier is free \
 			 and the comparison would be fiction. Point --dir at a real filesystem.",
 			medium.fs_name
 		)));
@@ -219,13 +219,13 @@ pub fn probe(path: &Path) -> io::Result<Medium> {
 	})
 }
 
-/// The mount source as it is recorded — and it is not always recorded as-is.
+/// The mount source as it is recorded: it is not always recorded as-is.
 ///
 /// A device-mapper source names the volume's UUID (`/dev/mapper/luks-<uuid>`),
 /// which identifies the machine the run happened on rather than anything about
 /// the measurement. The record keeps the shape and drops the identifier, the
 /// same rule the hostname follows: reproducible on the machine it ran on,
-/// anonymous everywhere else. Encryption is still reported — that fact comes
+/// anonymous everywhere else. Encryption is still reported: that fact comes
 /// from the dm UUID's `CRYPT-` prefix in `describe_device`, which sees the
 /// unredacted string before this runs.
 fn redact_source(source: &str) -> String {
@@ -307,7 +307,7 @@ struct MountEntry {
 /// fourth: `ID parent major:minor ROOT MOUNT-POINT options ... - fstype source
 /// super-options`. The root and the mount point are different fields with the
 /// same shape, and reading the root as the mount point makes every btrfs
-/// subvolume mount — whose root is usually `/` or `/@` — look like it covers
+/// subvolume mount (whose root is usually `/` or `/@`) look like it covers
 /// the whole tree, so the wrong device gets reported for every path under it.
 ///
 /// Mount points are octal-escaped (`\040` for a space), which is why the field
@@ -366,7 +366,7 @@ fn unescape(s: &str) -> String {
 ///
 /// The source wins when it names a device node. `mountinfo`'s `major:minor` is
 /// the *filesystem's* device numbering, and a btrfs subvolume reports the
-/// filesystem's own anonymous device — `0:30`, say — which names nothing under
+/// filesystem's own anonymous device (`0:30`, say), which names nothing under
 /// `/sys/dev/block`. On exactly the machine this matters for, a LUKS root, that
 /// silently turns "dm-crypt" into "no encryption reported", which is worse than
 /// reporting nothing.
@@ -427,7 +427,7 @@ pub fn describe(machine: &Machine, medium: &Medium) -> String {
 		.memory_bytes
 		.map(|b| format!("{:.1} GiB", b as f64 / (1024.0 * 1024.0 * 1024.0)))
 		.unwrap_or_else(|| "unknown memory".into());
-	format!("{cpu} ({mem}) — {medium}")
+	format!("{cpu} ({mem}), {medium}")
 }
 
 // region:    --- Tests
@@ -500,7 +500,7 @@ mod tests {
 	#[test]
 	fn test_unescape_leaves_a_lone_backslash_alone() {
 		// Not an octal escape, and not one of the four escapes the kernel
-		// writes — passing it through is the only safe reading.
+		// writes; passing it through is the only safe reading.
 		assert_eq!(unescape(r"a\b"), r"a\b");
 		assert_eq!(unescape(r"a\040b"), "a b");
 	}

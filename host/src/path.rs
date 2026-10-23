@@ -10,7 +10,7 @@
 //!
 //! [`Root`] is the in-memory descriptor the CoW transaction model carries
 //! (commit_seq, alloc/dedupe/deadlist roots); it is not a stored object. The
-//! query half of `cow::operations` reflects that — `read_dir` goes through
+//! query half of `cow::operations` reflects that: `read_dir` goes through
 //! `readdir`, which takes a `&Root` but reads no field of it.
 //! [`HostFs::query_root`] builds the minimal one that signature needs.
 //!
@@ -53,7 +53,7 @@ pub struct HostFs {
 	/// The disk-backed object store every path lookup resolves through.
 	pub store: DiskObjectStore,
 
-	/// The active root directory's `Inode` — where the superblock points.
+	/// The active root directory's `Inode`, where the superblock points.
 	pub root_inode_ref: ObjectRef,
 }
 
@@ -82,7 +82,7 @@ impl HostFs {
 	/// [`Store::open`](crate::Store::open) is that caller, and it is the one
 	/// place that decides what a rootless volume means.
 	///
-	/// A volume that has never been committed to does not reach here at all —
+	/// A volume that has never been committed to does not reach here at all:
 	/// `Volume::mount` refuses it with [`Error::VolumeUncommitted`], since
 	/// `mount_select` needs at least one copy with a committed sequence. So
 	/// [`active_root`](Self::active_root) answering `None` covers only the
@@ -127,7 +127,7 @@ impl HostFs {
 	/// resolve.
 	pub fn require_root(&self) -> Result<()> {
 		let root_inode_ref = self.active_root().ok_or_else(|| Error::RootUnreadable {
-			detail: "the volume has no root — nothing has ever been committed to it".into(),
+			detail: "the volume has no root: nothing has ever been committed to it".into(),
 		})?;
 
 		let inode = self
@@ -171,7 +171,7 @@ impl HostFs {
 	/// finding it would make every create a resolve-then-create with a gap in
 	/// between.
 	///
-	/// The shape is the one the ancestor cascade consumes — walking the chain in
+	/// The shape is the one the ancestor cascade consumes: walking the chain in
 	/// reverse and re-pointing each parent's entry at its CoW-copied child is
 	/// how a nested mutation reaches the volume root. See the `mutate` module for
 	/// why that has to happen at all.
@@ -204,8 +204,8 @@ impl HostFs {
 /// decodes, and exists because the two differ at exactly the place a caller
 /// notices: `ObjectStore` answers in the kernel's error, which loses the
 /// `ObjectNotFound { object_id }` this crate reports for a reference that
-/// names nothing. Both implementations — the volume, and the volume plus a
-/// fold's staged objects — can say which id was missing.
+/// names nothing. Both implementations (the volume, and the volume plus a
+/// fold's staged objects) can say which id was missing.
 pub(crate) trait NodeStore {
 	fn inode_of(&self, obj_ref: ObjectRef) -> Result<Inode>;
 	fn dir_node_of(&self, obj_ref: ObjectRef) -> Result<DirNode>;
@@ -228,7 +228,7 @@ impl NodeStore for DiskObjectStore {
 /// Resolve `/`-separated `path` to an object reference, starting the walk at
 /// `root_inode_ref` and reading every object through `store`.
 ///
-/// The store-generic form of [`HostFs::resolve`] — the same walk over any
+/// The store-generic form of [`HostFs::resolve`]: the same walk over any
 /// [`ObjectStore`], which is what lets the multi-write fold resolve paths
 /// through objects a previous step only *staged*, not yet committed. An empty
 /// path or `/` is the root itself.
@@ -276,7 +276,7 @@ pub(crate) fn resolve_chain_in<S: NodeStore>(
 		// Name the component that is actually missing. A create of
 		// `relay/transcript.jsonl` with no `relay/` is a missing
 		// *directory*, and a `NoSuchFile` naming the tail sends the caller
-		// hunting for the wrong thing — the failure mode that once left a
+		// hunting for the wrong thing: the failure mode that once left a
 		// whole fleet of writers recording nothing.
 		current = lookup_child_in(store, path, current, component)?
 			.ok_or_else(|| Error::NoSuchFile { path: prefix.clone() })?;
@@ -350,7 +350,7 @@ impl HostFs {
 
 // region:    --- Query (free functions)
 
-/// The store-generic form of [`HostFs::read_dir`] — the listing as seen from
+/// The store-generic form of [`HostFs::read_dir`]: the listing as seen from
 /// `root_inode_ref`, read through any [`ObjectStore`].
 ///
 /// `commit_seq` is only there to build the `Root` descriptor `readdir`'s
@@ -447,7 +447,7 @@ pub(crate) fn stat_in<S: NodeStore>(store: &S, root_inode_ref: ObjectRef, path: 
 ///
 /// `..` is **refused**, not resolved. The store resolves paths downward from a
 /// root object and keeps no parent pointers, so `a/../b` could only be honoured
-/// by re-walking `a` — and a component that is silently dropped is worse than
+/// by re-walking `a`, and a component that is silently dropped is worse than
 /// one that is refused: `../etc/passwd` would name `etc/passwd` *inside* the
 /// volume, which is a surprising answer to a path that asked to leave it.
 pub fn components_of(path: &str) -> Result<Vec<&str>> {
@@ -455,7 +455,7 @@ pub fn components_of(path: &str) -> Result<Vec<&str>> {
 	for c in path.split('/').filter(|c| !c.is_empty() && *c != ".") {
 		if c == ".." {
 			return Err(Error::Usage(format!(
-				"{path} contains `..`, which LedgerFS does not resolve — build paths from \
+				"{path} contains `..`, which LedgerFS does not resolve; build paths from \
 				 the volume root instead"
 			)));
 		}
@@ -476,7 +476,7 @@ pub fn components_of(path: &str) -> Result<Vec<&str>> {
 /// `DirNode` references a long chain of further nodes is a returned error
 /// rather than unbounded recursion. The chain is finite and content-addressed
 /// (`blake3(payload) == object_id` holds for a hostile volume too, so a node
-/// cannot name itself), but its *length* is bounded only by the volume size —
+/// cannot name itself), but its *length* is bounded only by the volume size,
 /// which is why the walk needs a bound of its own rather than relying on one.
 fn lookup<S: NodeStore>(store: &S, node: &DirNode, name: &str, depth: usize) -> Result<Option<ObjectRef>> {
 	if let Some(entry) = node.lookup(name) {
@@ -509,17 +509,17 @@ fn lookup<S: NodeStore>(store: &S, node: &DirNode, name: &str, depth: usize) -> 
 ///
 /// `read_dir` gathers a directory's entries through `cow::operations`'
 /// `readdir`, whose `collect_dir_entries` recurses down `DirNode::children`
-/// with no depth bound of its own — the same shape as [`lookup`], on the
+/// with no depth bound of its own, the same shape as [`lookup`], on the
 /// listing side. That recursion lives in the kernel crate, so it cannot be
 /// bounded here directly; this walks the same structure *iteratively* (an
 /// explicit stack, so measuring the depth cannot itself overflow) and refuses
 /// before `readdir` is ever entered. The extra pass costs one read per node on
-/// a well-formed directory — a single leaf — and only ever runs on the way to
+/// a well-formed directory (a single leaf) and only ever runs on the way to
 /// a listing.
 fn check_dir_depth<S: NodeStore>(store: &S, root: ObjectRef) -> Result<()> {
 	let mut stack = vec![(root, 0usize)];
 	// A node's own depth is the same however it is reached, so a node named by
-	// two parents (which content-addressed storage makes ordinary — identical
+	// two parents (which content-addressed storage makes ordinary: identical
 	// nodes dedup to one id) is measured once. Without this a crafted volume
 	// whose nodes each name the next twice would make this probe itself blow up
 	// exponentially, turning the safety check into the denial of service.
@@ -544,23 +544,23 @@ fn check_dir_depth<S: NodeStore>(store: &S, root: ObjectRef) -> Result<()> {
 	Ok(())
 }
 
-/// How many levels of nested `DirNode` children — or nested directories — a
+/// How many levels of nested `DirNode` children (or nested directories) a
 /// walk in this module will follow before refusing the volume.
 ///
 /// LedgerFS's `DirNode` is a B-tree in the format, but B-tree splitting is not
 /// implemented: `DirNode::MAX_ENTRIES` is a hard ceiling and
-/// `cow_insert_dir_entry` refuses the insert that would cross it — so an
+/// `cow_insert_dir_entry` refuses the insert that would cross it, so an
 /// internal node is, today, exactly one level deep and a real directory is a
 /// single leaf. 64 is therefore far more headroom than the format can produce,
 /// while still being far below the depth at which the recursive walks here
 /// (`lookup`, `read_dir`'s `collect_dir_entries`, and `Store::walk`) would
 /// exhaust a thread's stack on attacker-controlled metadata. The exact number
-/// does not matter; that there *is* one does — without it a crafted volume is a
+/// does not matter; that there *is* one does: without it a crafted volume is a
 /// stack overflow, and hence process abort, on the program that mounted it.
 pub(crate) const MAX_DIR_DEPTH: usize = 64;
 
 /// The refusal for metadata that asks the reader to recurse deeper than any
-/// well-formed volume can — see [`MAX_DIR_DEPTH`].
+/// well-formed volume can; see [`MAX_DIR_DEPTH`].
 pub(crate) fn too_deep(what: &str, depth: usize) -> Error {
 	Error::Unsupported {
 		detail: format!(

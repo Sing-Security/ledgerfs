@@ -1,4 +1,4 @@
-//! An application embedding LedgerFS as its own store — no volume file, no
+//! An application embedding LedgerFS as its own store: no volume file, no
 //! path, no mount, nothing on disk unless the application puts it there.
 //!
 //! ```text
@@ -8,16 +8,16 @@
 //! The point of this file is the shape of the code, not the output: an
 //! application gets a filesystem by handing [`Store`] a device it owns, and
 //! `MemBlockDevice` is that device. Everything past the first two lines is
-//! ordinary filesystem work — the same calls `lfs-write` makes against a disk.
+//! ordinary filesystem work: the same calls `lfs-write` makes against a disk.
 //!
 //! The other half of the same idea is the last section: the volume is a plain
 //! byte string, so an application can snapshot it, store it wherever it keeps
-//! things, and restore it later. That is what "embeddable" buys — a real
+//! things, and restore it later. That is what "embeddable" buys: a real
 //! filesystem with a commit protocol, in a buffer.
 
 use ledgerfs_host::{Error, MemBlockDevice, Result, Store};
 
-/// 4 MiB — enough for the reserved regions plus real object space.
+/// 4 MiB: enough for the reserved regions plus real object space.
 const BLOCKS: u64 = 1024;
 
 /// Something an application might actually keep in a store like this.
@@ -41,7 +41,7 @@ fn run() -> Result<()> {
 	let device = MemBlockDevice::new(BLOCKS);
 	let mirror = device.clone();
 
-	// -- 2. Format it. This is the same `mkfs` the CLI runs against a drive —
+	// -- 2. Format it. This is the same `mkfs` the CLI runs against a drive:
 	// same superblock copies, same genesis commit, same on-disk format.
 	let mut store = Store::format_device(Box::new(device))?;
 	println!(

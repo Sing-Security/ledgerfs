@@ -12,7 +12,7 @@
 //! `seek_read`/`seek_write` on Windows both take `&self`, and a `Mutex` gives
 //! the same for a buffer. Keeping
 //! `&self` throughout means a device can be shared behind an `&`, which is
-//! what `ObjectStore`'s `&self` methods require — and it keeps the read and
+//! what `ObjectStore`'s `&self` methods require, and it keeps the read and
 //! write halves on one handle instead of the two parallel ones the kernel
 //! crate needs (`commit::BlockDevice` is write-only; `reader.rs` reads
 //! separately).
@@ -46,7 +46,7 @@ fn positioned_read(file: &File, at: u64, buf: &mut [u8]) -> io::Result<usize> {
 /// Windows' `seek_read` carries its offset as an argument (an `OVERLAPPED`
 /// under the hood). The docs warn that it also moves the handle's file
 /// pointer; that is irrelevant here, because nothing in this crate ever reads
-/// the cursor — every byte moves through `positioned_read` and
+/// the cursor, every byte moves through `positioned_read` and
 /// `positioned_write`, both of which carry their offset explicitly.
 #[cfg(windows)]
 fn positioned_read(file: &File, at: u64, buf: &mut [u8]) -> io::Result<usize> {
@@ -76,7 +76,7 @@ fn positioned_write(file: &File, at: u64, data: &[u8]) -> io::Result<usize> {
 ///
 /// The size alone is not enough: a `compact` writes a rebuilt file that is
 /// usually smaller but can be the same size, and a re-format in place is the
-/// same size by definition. The `(device, inode)` pair settles both — a
+/// same size by definition. The `(device, inode)` pair settles both: a
 /// `rename` into place produces a new inode, and a truncating re-format in
 /// place is handled at the source (`Store::format` removes the sidecar).
 ///
@@ -101,7 +101,7 @@ impl VolumeIdentity {
 		// The platform's best *stable* identity pair: `(device, inode)` on
 		// Unix, the file's creation time on Windows (`file_index`, the closer
 		// analogue of an inode, is still unstable `windows_by_handle`). Unix's
-		// inode is the stronger of the two — a rebuilt-and-renamed volume can
+		// inode is the stronger of the two: a rebuilt-and-renamed volume can
 		// keep its creation time on NTFS, so there the check can miss a
 		// `compact` that lands on the same size. It is an efficiency measure
 		// either way: every hint is re-verified against the block it names
@@ -133,7 +133,7 @@ impl VolumeIdentity {
 /// Where a device keeps its persistent hint cache, if it keeps one.
 ///
 /// A name a caller could derive for itself, but returning it from the device
-/// keeps the knowledge where the file path already is — and lets a device with
+/// keeps the knowledge where the file path already is, and lets a device with
 /// no file behind it answer `None` and opt out of the cache entirely.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HintCache {
@@ -148,7 +148,7 @@ pub struct HintCache {
 /// The read/write pair plus [`barrier`](BlockDevice::barrier) is the whole
 /// contract; `read_block`/`write_blocks` and friends are provided in terms of
 /// them. `barrier` is the host equivalent of the kernel's
-/// `storage_barrier` — without it a "committed" transaction can still be
+/// `storage_barrier`: without it a "committed" transaction can still be
 /// sitting in a page cache, which is exactly the window the commit protocol
 /// exists to close.
 pub trait BlockDevice: Send + Sync {
@@ -168,7 +168,7 @@ pub trait BlockDevice: Send + Sync {
 	///
 	/// Not decoration. A handle opened read-only does not fail where it is
 	/// opened; it fails several layers down, as `EBADF` from the first
-	/// `write_at`, naming neither the device nor the reason — and for a volume
+	/// `write_at`, naming neither the device nor the reason, and for a volume
 	/// being modified that is a confusing way to learn a file was opened with
 	/// the wrong flags. Answering the question here lets the store refuse up
 	/// front, with something the caller can act on.
@@ -180,7 +180,7 @@ pub trait BlockDevice: Send + Sync {
 	/// there is nowhere to put one.
 	///
 	/// The default is `None`: a buffer in the caller's heap has no name, and
-	/// needs none — its id→block map lives exactly as long as the handle that
+	/// needs none: its id→block map lives exactly as long as the handle that
 	/// built it, so there is no cold start to pay for. A file-backed device
 	/// returns a sidecar beside the volume, which is what turns the ~0.8 s
 	/// whole-volume scan of a first open into a file read. See `hints.rs`.
@@ -202,12 +202,12 @@ pub trait BlockDevice: Send + Sync {
 	/// `u64::MAX` and *why* it must not is the whole point of this method:
 	///
 	/// - with overflow checks on, the multiply panics. The LBA a read asks for
-	///   comes from the volume — an object reference, an extent node, a hint —
+	///   comes from the volume (an object reference, an extent node, a hint),
 	///   so for a volume of unknown provenance it is attacker-chosen, and a
 	///   panic is the process that mounted the volume going down. A read must
 	///   be able to say "no";
 	/// - with them off, the product wraps, and the wrapped value can land
-	///   *inside* the volume — so the bounds check that follows would approve a
+	///   *inside* the volume, so the bounds check that follows would approve a
 	///   read of a block the caller never named. A silent wrong answer is worse
 	///   than either.
 	///
@@ -256,7 +256,7 @@ pub trait BlockDevice: Send + Sync {
 		self.write_bytes_at(offset, &padded)
 	}
 
-	/// Write `data` at `lba`. Must be a whole number of blocks — a partial
+	/// Write `data` at `lba`. Must be a whole number of blocks: a partial
 	/// final block would be an unaddressable half-written block, so it is
 	/// refused rather than padded.
 	fn write_blocks(&self, lba: u64, data: &[u8]) -> Result<()> {
@@ -292,7 +292,7 @@ pub trait BlockDevice: Send + Sync {
 
 // region:    --- FileBlockDevice
 
-/// A volume inside an OS file, optionally at an offset — which is what makes
+/// A volume inside an OS file, optionally at an offset: which is what makes
 /// one type serve both a bare volume file and a partition inside a disk image.
 pub struct FileBlockDevice {
 	file: File,
@@ -302,7 +302,7 @@ pub struct FileBlockDevice {
 	base_offset: u64,
 	size_bytes: u64,
 	/// Whether the file was opened with write access. `File` does not expose
-	/// its own open mode, so it is carried here — see
+	/// its own open mode, so it is carried here; see
 	/// [`BlockDevice::is_writable`].
 	writable: bool,
 }
@@ -339,7 +339,7 @@ impl FileBlockDevice {
 	///
 	/// **This sizes the file; it does not erase it.** The erase belongs to
 	/// [`Store::format`](crate::Store::format), which owns it for every kind of
-	/// device — a partition formatted in place had no `create` call at all, so a
+	/// device: a partition formatted in place had no `create` call at all, so a
 	/// guarantee made here would hold for bare volume files and silently not for
 	/// partitions. Nor would `set_len` do it anyway: shrinking an 8-block file to
 	/// 4 keeps block 3 and whatever it held.
@@ -389,8 +389,8 @@ impl FileBlockDevice {
 		}
 
 		// One writer per volume. A writable open takes an advisory exclusive
-		// lock on the file; a second writable handle — another process, or a
-		// second open in this one — is refused with `Error::Locked` rather than
+		// lock on the file; a second writable handle (another process, or a
+		// second open in this one) is refused with `Error::Locked` rather than
 		// allowed to place objects on blocks the first handle still counts as
 		// free. Read-only opens take no lock and coexist freely, which is what
 		// lets a read-only inspector read a volume a live writer holds.
@@ -472,8 +472,8 @@ impl BlockDevice for FileBlockDevice {
 
 	fn write_bytes_at(&self, offset: u64, data: &[u8]) -> Result<()> {
 		// Refused here rather than left to the OS: a write on a read-only
-		// handle fails deep in the OS — `EBADF` on Unix,
-		// `ERROR_ACCESS_DENIED` on Windows — which is accurate and tells the
+		// handle fails deep in the OS (`EBADF` on Unix,
+		// `ERROR_ACCESS_DENIED` on Windows), which is accurate and tells the
 		// caller nothing.
 		if !self.writable {
 			return Err(Error::ReadOnly {
@@ -519,8 +519,8 @@ impl BlockDevice for FileBlockDevice {
 /// the same commit protocol and the same on-disk format.
 ///
 /// Cloneable, and the clones share one buffer: a [`Store`] takes ownership of
-/// its device, so the way to get the bytes back afterwards — or to snapshot a
-/// volume while a store is still live — is to keep a clone.
+/// its device, so the way to get the bytes back afterwards (or to snapshot a
+/// volume while a store is still live) is to keep a clone.
 ///
 /// [`Store`]: crate::Store
 /// [`bytes_snapshot`]: MemBlockDevice::bytes_snapshot
@@ -558,12 +558,12 @@ impl MemBlockDevice {
 		})
 	}
 
-	/// A copy of the volume's bytes — a valid volume file, writable to disk or
+	/// A copy of the volume's bytes: a valid volume file, writable to disk or
 	/// re-openable with [`from_bytes`](MemBlockDevice::from_bytes).
 	///
 	/// The lock is recovered rather than propagated on poisoning: the buffer is
 	/// a flat `Vec<u8>` whose every mutation is a bounds-checked slice copy, so
-	/// there is no half-updated structure to protect — and turning "some other
+	/// there is no half-updated structure to protect, and turning "some other
 	/// thread panicked once" into a panic *here* would take down a device that
 	/// is still perfectly readable.
 	pub fn bytes_snapshot(&self) -> Vec<u8> {
@@ -703,7 +703,7 @@ mod tests {
 		assert!(matches!(locked, Error::Locked { .. }), "got {locked:?}");
 
 		// -- Exec & Check: releasing the writer releases the lock, and a second
-		// `create` then re-sizes. It is a sizing call and not `mkfs` — erasing
+		// `create` then re-sizes. It is a sizing call and not `mkfs`: erasing
 		// the medium is `Store::format`'s guarantee, so that it holds for a
 		// partition too, and re-fixing the length is all that happens here.
 		drop(device);
@@ -722,12 +722,12 @@ mod tests {
 		let image = FileBlockDevice::create(&path, 8 * BLOCK_SIZE as u64)?;
 		image.write_block(0, b"not the volume")?;
 		// The lock is per file, so the image-wide writer has to be released
-		// before a window on it can be opened for writing — which is the point:
+		// before a window on it can be opened for writing, which is the point:
 		// one writer per volume, and the device cannot see where a volume's
 		// allocator ends and the next partition begins.
 		drop(image);
 
-		// -- Exec: `open_rw`, not `open` — a read-only handle turns the write
+		// -- Exec: `open_rw`, not `open`: a read-only handle turns the write
 		// below into `EBADF` several layers down, from a device that opened
 		// without complaint.
 		let window = FileBlockDevice::open_rw(&path, 2 * BLOCK_SIZE as u64, 4 * BLOCK_SIZE as u64)?;
@@ -749,7 +749,7 @@ mod tests {
 
 	#[test]
 	fn test_device_refuses_a_write_when_opened_read_only() -> Result<()> {
-		// A read-only handle is legal — every reader in this crate uses one —
+		// A read-only handle is legal (every reader in this crate uses one), so
 		// so the failure has to come from the write, and it has to explain
 		// itself. Left to the OS it arrives as `EBADF`, which says neither
 		// which file was opened how nor that opening it differently would work.

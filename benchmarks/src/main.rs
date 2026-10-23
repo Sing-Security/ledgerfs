@@ -22,7 +22,7 @@
 //! One `(workload, engine)` pair at a time, each on a fresh location under
 //! `--dir`, each deleted before the next. LedgerFS frees nothing, so a pair
 //! that reused another pair's volume would run out of space rather than run
-//! slowly — and a full sequential sweep would need several gigabytes resident
+//! slowly, and a full sequential sweep would need several gigabytes resident
 //! instead of one workload's worth.
 
 mod config;
@@ -42,7 +42,7 @@ use crate::error::{Error, Result};
 use crate::report::{Run, Sample};
 
 const USAGE: &str = "\
-ledgerfs-benchmarks — a comparison harness for durable writes
+ledgerfs-benchmarks: a comparison harness for durable writes
 
   run     [OPTIONS]    measure every engine and write a result file
   render  [OPTIONS]    regenerate the tables in BENCHMARKS.md from a result
@@ -153,12 +153,12 @@ fn parse_run_args(argv: &[String]) -> Result<RunArgs> {
 	// run rather than silently measure three engines instead of four.
 	for name in &args.engines {
 		if engine::by_name(name).is_none() {
-			return Err(Error::usage(format!("unknown engine '{name}' — try --list")));
+			return Err(Error::usage(format!("unknown engine '{name}'; try --list")));
 		}
 	}
 	for id in &args.workloads {
 		if workload::by_id(id).is_none() {
-			return Err(Error::usage(format!("unknown workload '{id}' — try --list")));
+			return Err(Error::usage(format!("unknown workload '{id}'; try --list")));
 		}
 	}
 	Ok(args)
@@ -201,7 +201,7 @@ fn cmd_run(argv: &[String]) -> Result<()> {
 	let medium = medium::require_durable(&args.dir, args.cfg.space_needed() + images)?;
 	let mut medium = medium;
 	// The record describes the tree, not the machine's home directory: the
-	// path goes in relative to where the harness ran, when it can be — the
+	// path goes in relative to where the harness ran, when it can be: the
 	// same anonymity rule the hostname and the device identifier follow.
 	medium.path = recorded_path(std::path::Path::new(&medium.path));
 	let machine = medium::machine();
@@ -271,8 +271,8 @@ fn recorded_path(path: &std::path::Path) -> String {
 	path.display().to_string()
 }
 
-/// One pair's outcome, carrying the durability string even when it failed —
-/// a gap row should still say what the engine was being asked for.
+/// One pair's outcome, carrying the durability string even when it failed,
+/// so a gap row still says what the engine was being asked for.
 struct Pair {
 	durability: String,
 	sample: Result<Sample>,
@@ -343,7 +343,7 @@ fn human_duration(ns: f64) -> String {
 
 fn human_count(v: f64) -> String {
 	if !v.is_finite() {
-		return "—".to_string();
+		return "n/a".to_string();
 	}
 	format!("{:.0}", v)
 }

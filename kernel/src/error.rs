@@ -226,7 +226,7 @@ impl From<postcard::Error> for Error {
 	}
 }
 
-// Implement core::error::Error unconditionally — `core::error::Error` is
+// Implement core::error::Error unconditionally; `core::error::Error` is
 // no_std compatible (stable since Rust 1.81) and integration tests import
 // the library in non-test mode where #[cfg(test)] does not apply.
 impl core::error::Error for Error {}

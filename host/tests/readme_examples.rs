@@ -1,7 +1,7 @@
 //! The code in `README.md` and in this crate's `README.md`, compiled and run.
 //!
 //! The repository README is the first thing a reader sees and the one thing no
-//! doc test covers — a doctest lives in the crate root, and these live in
+//! doc test covers: a doctest lives in the crate root, and these live in
 //! Markdown. A README example that stops compiling is a broken front door, so
 //! both are pinned here, assertions and all: `rustdoc` checks the crate docs,
 //! this file checks the two landing pages.

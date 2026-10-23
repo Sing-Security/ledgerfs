@@ -33,9 +33,9 @@ The most useful reports are about the code here:
   reuse, a key that survives unmount, or a plaintext block reaching the device
   are all findings.
 
-Reports about the *design* are welcome as issues, not as vulnerabilities — see
-[`KNOWN_ISSUES.md`](KNOWN_ISSUES.md), which lists the limitations we already
-know about, including the ones that are deliberate.
+Reports about the *design* are welcome as issues, not as vulnerabilities; see
+[`KNOWN_ISSUES.md`](KNOWN_ISSUES.md), which lists the known limitations,
+including the ones that are deliberate.
 
 ## What this is not
 
@@ -46,8 +46,8 @@ unimplemented in [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md).
 There is no threat model in which an attacker who can write to the raw device
 loses: an offline writer can replace any block, and the format's response is to
 detect that and refuse, not to recover the data. Confidentiality of a
-`data-encryption` volume rests on the key, and on the block device underneath it
-— nothing here defends a volume against a device that lies.
+`data-encryption` volume rests on the key, and on the block device underneath it:
+nothing here defends a volume against a device that lies.
 
 ## Supported versions
 

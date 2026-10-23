@@ -2,22 +2,22 @@
 //!
 //! A volume's data is encrypted with a **master key** that is generated
 //! randomly once, at format time, and never derived from anything guessable.
-//! That master key is then stored on disk *wrapped* — encrypted under a
-//! key-encryption key (KEK) — once per keyslot. Unlocking the volume means
+//! That master key is then stored on disk *wrapped*, encrypted under a
+//! key-encryption key (KEK), once per keyslot. Unlocking the volume means
 //! producing a KEK, unwrapping a slot, and checking that what came out is
 //! really the master key.
 //!
 //! Two slot kinds, matching the two ways a volume may be unlocked:
 //!
-//! - [`SlotKind::Passphrase`] — KEK stretched from a user passphrase and a
+//! - [`SlotKind::Passphrase`]: KEK stretched from a user passphrase and a
 //!   per-slot random salt. Resists theft of the whole machine, because the
 //!   secret is not on it.
-//! - [`SlotKind::Hsm`] — KEK held by the HSM co-processor. Allows unattended
+//! - [`SlotKind::Hsm`]: KEK held by the HSM co-processor. Allows unattended
 //!   boot; security then rests on the HSM not being present with the disk.
 //!
 //! Both may be populated at once: either unlocks the volume, and revoking one
 //! does not disturb the other. That is the entire reason for indirection
-//! through a master key — changing a passphrase rewraps 64 bytes rather than
+//! through a master key: changing a passphrase rewraps 64 bytes rather than
 //! re-encrypting the volume.
 //!
 //! # What this deliberately is not
@@ -51,13 +51,13 @@ pub const SLOT_COUNT: usize = 2;
 /// zeros here and decodes as "no slots", needing no format migration.
 pub const KEYSLOTS_OFFSET: usize = 3772;
 
-/// Length of the master key protected by a slot — 64 bytes, matching
+/// Length of the master key protected by a slot: 64 bytes, matching
 /// `data_crypto::DATA_VOLUME_KEY_LEN` (XTS-AES-256 uses two 32-byte keys).
 pub const MASTER_KEY_LEN: usize = 64;
 
 /// Default passphrase stretching rounds.
 ///
-/// Chosen to cost roughly a tenth of a second on the hardware this targets —
+/// Chosen to cost roughly a tenth of a second on the hardware this targets:
 /// slow enough to matter across a guessing campaign, fast enough not to be
 /// noticed once at mount.
 pub const DEFAULT_KDF_ITERATIONS: u32 = 200_000;
@@ -273,7 +273,7 @@ pub fn seal_slot(
 ///
 /// # Errors
 ///
-/// The slot is empty, or the recovered key fails its checksum — which means
+/// The slot is empty, or the recovered key fails its checksum, which means
 /// the KEK was wrong (wrong passphrase, wrong HSM) or the slot was tampered
 /// with. Both are refusals, never a returned key: installing an unverified
 /// 64 bytes as the volume key would turn every subsequent read into silent
@@ -397,7 +397,7 @@ mod tests {
 	}
 
 	/// Sealing and opening a slot is the only thing that consumes a master
-	/// key, and it is behind `data-encryption` — so this helper is too.
+	/// key, and it is behind `data-encryption`, so this helper is too.
 	#[cfg(feature = "data-encryption")]
 	fn master() -> [u8; MASTER_KEY_LEN] {
 		let mut k = [0u8; MASTER_KEY_LEN];
@@ -414,7 +414,7 @@ mod tests {
 		// Different passphrase.
 		assert_ne!(base, derive_kek(b"correct horsf", &params(64))?);
 
-		// Different salt — this is what stops one precomputed table from
+		// Different salt: this is what stops one precomputed table from
 		// applying to every volume that shares a passphrase.
 		let mut other = params(64);
 		other.salt = [0xA5; 16];
@@ -458,7 +458,7 @@ mod tests {
 		Ok(())
 	}
 
-	/// The check that separates "wrong passphrase" from "corrupt slot" — and,
+	/// The check that separates "wrong passphrase" from "corrupt slot" and,
 	/// more importantly, stops 64 bytes of garbage from being installed as
 	/// the volume key, which would make every read return silent noise.
 	#[cfg(feature = "data-encryption")]
@@ -489,7 +489,7 @@ mod tests {
 			"modified ciphertext must fail the checksum"
 		);
 
-		// Flip an IV bit — corrupts only the first block, still detectable.
+		// Flip an IV bit: corrupts only the first block, still detectable.
 		let mut t2 = good;
 		t2.iv[0] ^= 0x01;
 		assert!(open_slot(&t2, &kek).is_err(), "modified IV must fail the checksum");
@@ -518,7 +518,7 @@ mod tests {
 		assert!(open_slot(&slots[1], &pass_kek).is_err());
 		assert!(open_slot(&slots[0], &hsm_kek).is_err());
 
-		// Revoking the passphrase slot must leave the HSM slot working —
+		// Revoking the passphrase slot must leave the HSM slot working;
 		// otherwise changing a credential would strand the volume.
 		slots[0] = KeySlot::empty();
 		assert!(open_slot(&slots[0], &pass_kek).is_err());
@@ -553,7 +553,7 @@ mod tests {
 	}
 
 	/// A volume that predates keyslots reads zeros here and must decode as
-	/// "no slots" rather than failing — otherwise adding this feature would
+	/// "no slots" rather than failing; otherwise adding this feature would
 	/// make every existing volume unmountable.
 	#[test]
 	fn test_zeroed_region_decodes_as_no_slots() -> TestResult<()> {
@@ -570,7 +570,7 @@ mod tests {
 	/// `Superblock::encode` starts with `buf.fill(0)`, so anything it does not
 	/// re-emit is erased. Because a commit rewrites the superblock, keyslots
 	/// that were not a real struct field would be wiped by the first write
-	/// after provisioning — leaving an encrypted volume permanently
+	/// after provisioning, leaving an encrypted volume permanently
 	/// unopenable while every operation reported success.
 	#[cfg(feature = "data-encryption")]
 	#[test]
