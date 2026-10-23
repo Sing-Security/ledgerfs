@@ -82,6 +82,41 @@ than a second filesystem (§3, *Staging: many writes, one commit*):
 A mutating call outside a session and its `staged_` counterpart take the same
 arguments and mean the same thing; the difference is *when* it becomes durable.
 
+### The payload is bytes, whatever your type is
+
+Every verb that moves data takes `&[u8]`; every read returns `Vec<u8>`. The
+store has no schema, no column types and no parser on either path — an `f32`
+sample is four bytes the application chose an encoding for, exactly as a JSON
+line is bytes. Encode on the way in and decode on the way out; a fixed-width
+numeric stream, the workload a database would be asked to hold as `REAL`s, is
+the easiest case:
+
+```rust
+// f32 samples -> bytes. The endianness is the app's choice and part of its
+// format; the store never interprets it.
+let mut batch = Vec::with_capacity(samples.len() * 4);
+for sample in &samples {
+    batch.extend_from_slice(&sample.to_le_bytes());
+}
+store.staged_append("/telemetry/samples.f32", &batch, 0o644)?;
+
+// ... and back, all of it or a byte window of it:
+let all: Vec<f32> = store
+    .read_file("/telemetry/samples.f32")?
+    .chunks_exact(4)
+    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    .collect();
+let one = store.read_at("/telemetry/samples.f32", 40, 4)?; // sample 10
+```
+
+Nothing between the caller and the medium reinterprets the payload: the store
+verifies the bytes it returns, it does not know what they mean. The consequence
+to rely on is bit preservation — `-0.0`, infinities, subnormals and NaN
+payloads included — through every tier, pinned by
+`host/tests/typed_payloads.rs`. If you would rather cast than copy, `bytemuck`
+or `zerocopy` over your sample array is a caller-side choice; the store never
+needs it.
+
 ## 3. Rules
 
 ### One writer per volume

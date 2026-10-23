@@ -58,6 +58,12 @@ again — see [`FORMAT.md`](FORMAT.md).
   re-pointed at it in the same commit — there is no instant at which the path is
   absent or empty. The `remove` + `create` sequence still has that window, and
   `durability.rs` still pins it as the thing `write_file` avoids.
+- `EMBEDDING.md` states the payload rule — every verb takes and returns bytes
+  and the store never interprets them — with the `f32` sample recipe a database
+  would be asked to hold as `REAL`s. `host/tests/typed_payloads.rs` pins that
+  the encoding survives bit for bit (including `-0.0`, infinities, subnormals
+  and NaN payloads) through a plain write, a staged/deferred capture session,
+  and a remount.
 - `STORE_CONTRACT_VERSION` is `"2"`. The bump names a real behavioural change
   for an embedding app (atomic replace, and one commit per verb however many
   objects it spans), not a format change.

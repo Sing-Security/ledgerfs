@@ -133,7 +133,10 @@ all.
   live, which is why the crate carries an ATA PIO reader and writer for the case
   where the crate is the only route to its own partition.
 - **Not a database.** No query engine, no transactions across volumes, no
-  concurrent writers.
+  concurrent writers. It stores bytes and does not interpret them, so an `f32`
+  sample stream is as native as a log line — but nothing indexes it, queries it
+  or updates it in place; it lands once and is read back whole or by byte
+  range.
 - **Not battle-tested at scale.** The format is pre-1.0 and not frozen.
 - **Not free of caveats.** [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) is the honest
   list, including the deliberate limitations: free space falls monotonically
