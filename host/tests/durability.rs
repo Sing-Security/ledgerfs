@@ -320,10 +320,11 @@ fn test_every_prefix_of_a_mutation_session_mounts_to_a_whole_tree() -> Result<()
 /// each, so a large write's durability cost is one barrier pair rather than
 /// one per object — see `host/src/staging.rs`.
 ///
-/// The one verb that still costs more than one commit is `write_file`
-/// *replacing* an existing file, which is a remove followed by a create. That is
-/// a property of replace rather than of writing — see
-/// `test_replacing_a_file_has_a_window_where_it_is_empty`.
+/// `write_file` *replacing* an existing file is one commit as well. It is not a
+/// remove followed by a create: the new content is built whole under no
+/// directory entry, and the entry is re-pointed at it in the same transaction.
+/// The remove-then-create window a caller would get by sequencing the verbs
+/// itself is `test_replacing_a_file_has_a_window_where_it_is_empty`.
 #[test]
 fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	// -- Setup & Fixtures
@@ -358,17 +359,18 @@ fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	store.write_new_file("/f", b"again", 0o644)?;
 	expect(&store, 8, "write_new_file on a now-free name");
 
-	// -- Exec: replacing an existing file is remove, then create-with-content
+	// -- Exec: replacing an existing file is one atomic commit — the new
+	// content and the entry that names it are placed together.
 	store.write_file("/f", b"replaced", 0o644)?;
-	expect(&store, 10, "write_file over an existing file");
+	expect(&store, 9, "write_file over an existing file");
 
 	// -- Exec: creating a fresh one is a single create-with-content
 	store.write_file("/g", b"fresh", 0o644)?;
-	expect(&store, 11, "write_file creating");
+	expect(&store, 10, "write_file creating");
 
 	// -- Exec: an append that has to create the file is the same one commit
 	store.append("/h", b"first", 0o644)?;
-	expect(&store, 12, "append creating the file");
+	expect(&store, 11, "append creating the file");
 
 	// -- Exec: a write that spans several objects is still **one** commit.
 	// Content past `max_object_bytes` is several chunks, and the chunks, the
@@ -376,39 +378,42 @@ fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	// a single transaction — the cost of a large write is its bytes, not one
 	// durability point per object.
 	store.write_new_file("/big", &vec![0u8; 400_000], 0o644)?;
-	expect(&store, 13, "write_new_file spanning two objects");
+	expect(&store, 12, "write_new_file spanning two objects");
 
 	store.append("/big", &vec![1u8; 300_000], 0o644)?;
-	expect(&store, 14, "append spanning two objects");
+	expect(&store, 13, "append spanning two objects");
+
+	// -- Exec: and replacing it is still one, however many objects it spans.
+	store.write_file("/big", &vec![2u8; 400_000], 0o644)?;
+	expect(&store, 14, "write_file spanning two objects");
 	Ok(())
 }
 
 #[test]
 fn test_replacing_a_file_has_a_window_where_it_is_empty() -> Result<()> {
-	// -- Setup & Fixtures: a replace is a remove followed by a create, and this
-	// pins what those two commits mean to a reader that arrives in the middle.
+	// -- Setup & Fixtures: what a *remove-then-create* sequence means to a
+	// reader that arrives in the middle of it. This is no longer the shape of
+	// `write_file`: that verb builds the new content whole and re-points the
+	// entry at it in one transaction, so it has no intermediate state at all.
+	// See `test_each_verb_costs_a_known_number_of_commits`, where a replace is
+	// one commit whatever it spans.
 	//
-	// Note that the window below is now reached only by driving the two verbs by
-	// hand. `write_file` no longer passes through it: its create carries the
-	// content already, so there is no commit at which the file exists and is
-	// empty. The window is still worth pinning, because the hand-driven sequence
-	// is what any caller doing remove-then-create gets, and because a future
-	// change that re-split the create from the write would reintroduce it here.
+	// The window is still worth pinning, because it is exactly what a caller
+	// gets if it does the two steps itself — which is the obvious way to write
+	// a replace, and the reason the store provides one verb that does not.
 	//
-	// A replace is not atomic. A crash — or in the embedding case, any other
-	// reader of a snapshot — between the remove and the create sees the file
-	// gone; between the create and the write sees it present and *empty*. The
-	// second is the dangerous one, because "no such file" is a state a caller
-	// handles and "a zero-byte file" is a state it is likely to treat as
-	// *content*. A store that reads its own state file and finds it empty will
-	// decide the state is empty; one that finds it missing will use the default.
+	// Between the remove and the create a reader sees the file gone; between
+	// the create and the write it sees the file present and *empty*. The second
+	// is the dangerous one, because "no such file" is a state a caller handles
+	// and "a zero-byte file" is a state it is likely to treat as *content*. A
+	// store that reads its own state file and finds it empty will decide the
+	// state is empty; one that finds it missing will use the default.
 	//
 	// This test drives the same three states through public verbs, one commit at
 	// a time, so the window is demonstrated deterministically rather than raced
 	// for. `rename` onto an existing name is a single commit and does not have
 	// the window — see `test_a_rename_onto_an_existing_file_...` in
-	// `security_paths.rs` — which is the shape a caller who needs an atomic
-	// replace should use (write a new file, then rename it over the old one).
+	// `security_paths.rs` — and neither does `write_file` now.
 	let (mut store, watch) = watched(1024)?;
 	store.write_new_file("/state", b"{\"n\": 1}", 0o644)?;
 	let committed = bytes(&watch);

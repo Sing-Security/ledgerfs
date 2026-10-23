@@ -82,9 +82,10 @@ bounded chunk files instead of one endless file — `EMBEDDING.md` makes the cas
 at length — and see entry 1 for why that is not a temporary limitation.
 
 **Also worth knowing.** `Store::write_file` — the verb that replaces an existing
-path — is a remove followed by the above, so it is two commits when the path
-exists and one when it does not. It is not an atomic replace; write a scratch
-name and `rename` it if you need one.
+path — is one commit too, and is atomic: it builds the new content under no
+directory entry and re-points the existing entry at it, so a reader never sees
+the path absent or the file empty. `remove` followed by `create_file` (which is
+what a caller writing the sequence itself does) still has that window.
 
 ---
 

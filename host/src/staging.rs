@@ -48,11 +48,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ledgerfs::Result as LedgerFsResult;
-use ledgerfs::cow::{NewObject, ObjectStore, TxnPlan};
+use ledgerfs::cow::{NewObject, ObjectStore, TxnPlan, write};
 use ledgerfs::object::{Chunk, DirNode, ExtentNode, Inode, InodeKind, ObjectId, ObjectRef, Root};
 
 use crate::error::{Error, Result};
-use crate::mutate::{build_create_with_data_txn, build_write_txn};
+use crate::mutate::{
+	build_create_txn, build_create_with_data_txn, build_replace_txn, build_write_txn, written_inode_ref,
+};
 use crate::objstore::DiskObjectStore;
 use crate::path::{NodeStore, lookup_child_in, resolve_chain_in};
 
@@ -211,6 +213,66 @@ impl<'a> StagedFold<'a> {
 	pub(crate) fn create_with_data(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
 		let chain = self.resolve_chain(path)?;
 		let txn = build_create_with_data_txn(&self.overlay(), &self.root, &chain, data, 0, 0, mode)?;
+		self.absorb(txn);
+		Ok(())
+	}
+
+	/// Stage `data` as the **replacement content** for the file at `path`,
+	/// which must exist.
+	///
+	/// Two phases in one plan, which is what makes the replace atomic:
+	///
+	/// 1. the new file is built whole — inode, chunks, extent tree — with no
+	///    directory entry naming it (`create_file`/`write` take a zero parent
+	///    reference for exactly this), so nothing reachable from the volume
+	///    root has changed yet;
+	/// 2. the entry the path names is re-pointed at the new inode and the
+	///    ancestors are cascaded.
+	///
+	/// Committed together, the old inode stops being reachable in the same
+	/// instant the new one becomes reachable. The old content is not freed —
+	/// nothing is, see `KNOWN_ISSUES.md` §1 — it simply stops being named.
+	pub(crate) fn replace_with_data(&mut self, path: &str, data: &[u8], mode: u32, chunk: usize) -> Result<()> {
+		let chain = self.resolve_chain(path)?;
+		let name = chain
+			.last()
+			.map(|(_, name)| name.clone())
+			.ok_or_else(|| Error::Usage("a mutation needs at least one path component".into()))?;
+
+		// The single-entry chain whose parent is the zero reference: the kernel
+		// builders take that to mean "build the file, name it nowhere". Only
+		// the create uses it — a content `write` needs no chain at all, and
+		// the entry is re-pointed in phase 2 with the real one.
+		let unnamed = [(ObjectRef::zero(), name)];
+
+		// Phase 1: the content, under no entry. `file_ref` follows each
+		// generation: an empty payload is a bare file inode, otherwise the
+		// first chunk's create and then one write per further chunk.
+		let file_ref = if data.is_empty() {
+			let txn = build_create_txn(&self.overlay(), &self.root, &unnamed, 0, 0, mode, false)?;
+			let file_ref = txn.new_root.file_tree_root;
+			self.staged.absorb(&txn);
+			file_ref
+		} else {
+			let chunk = chunk.max(1);
+			let head = data.len().min(chunk);
+			let txn = build_create_with_data_txn(&self.overlay(), &self.root, &unnamed, &data[..head], 0, 0, mode)?;
+			let mut file_ref = txn.new_root.file_tree_root;
+			self.staged.absorb(&txn);
+
+			for (i, piece) in data[head..].chunks(chunk).enumerate() {
+				// The kernel `write` directly, not `build_write_txn`: that one
+				// re-points the file's entry in its parent, and there is no
+				// parent yet — the entry is phase 2's job.
+				let txn = write(&self.overlay(), &self.root, file_ref, (head + i * chunk) as u64, piece)?;
+				file_ref = written_inode_ref(&txn)?;
+				self.staged.absorb(&txn);
+			}
+			file_ref
+		};
+
+		// Phase 2: put the entry where the path says it is.
+		let txn = build_replace_txn(&self.overlay(), &self.root, &chain, file_ref)?;
 		self.absorb(txn);
 		Ok(())
 	}

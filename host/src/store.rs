@@ -612,22 +612,33 @@ impl Store {
 
 	/// Write `data` to `path`, replacing whatever was there.
 	///
-	/// Two commits: an existing file is removed first, then the new content is
-	/// created and written. Deliberately not atomic — a crash between the two
-	/// leaves `path` absent — which is stated here because a caller that needs
-	/// the replace to be atomic (a `state.json` rewrite, say) should instead
-	/// build the new content under a scratch name and [`rename`](Self::rename)
-	/// it into place.
+	/// **One commit, atomic.** An existing file is not removed first: the new
+	/// content is built whole — inode, chunks, extent tree — under no
+	/// directory entry, and the one entry the path names is re-pointed at it
+	/// in the same transaction. A crash at any point before that commit lands
+	/// leaves the old file exactly as it was, and afterwards leaves the new
+	/// one; there is no interval in which `path` is absent or empty.
+	///
+	/// That matters for the case the verb exists for: a caller rewriting a
+	/// state file is the caller most likely to have another reader, and the
+	/// dangerous intermediate state is "present and zero bytes", which a reader
+	/// treats as content. A scratch-name-plus-[`rename`](Self::rename) sequence
+	/// survives the *caller* failing between those two steps, but it has no
+	/// advantage over a single `write_file`, which has no such interval.
 	pub fn write_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
 		match self.stat(path) {
-			Ok(inode) if inode.kind == InodeKind::Directory => {
-				return Err(Error::IsADirectory { path: path.to_string() });
+			Ok(inode) if inode.kind == InodeKind::Directory => Err(Error::IsADirectory { path: path.to_string() }),
+			Ok(_) => {
+				let chunk = self.max_object_bytes.max(1);
+				let mut fold = StagedFold::new(&self.fs.store, &self.root);
+				fold.replace_with_data(path, data, mode, chunk)?;
+				let txn = fold.into_plan(self.root.commit_seq)?;
+				self.commit(txn)?;
+				Ok(())
 			}
-			Ok(_) => self.remove(path)?,
-			Err(Error::NoSuchFile { .. }) => {}
-			Err(e) => return Err(e),
+			Err(Error::NoSuchFile { .. }) => self.write_new_file(path, data, mode),
+			Err(e) => Err(e),
 		}
-		self.write_new_file(path, data, mode)
 	}
 
 	/// Append `data` to the file at `path`, creating the file if it is absent.

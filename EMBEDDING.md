@@ -130,12 +130,13 @@ exists so this number can be re-derived rather than believed.
 
 The corollaries are the ones an app plans around: fewer, larger commits beat
 many small ones; a deep path costs more per write than a shallow one; and
-`write_new_file` is **one** commit — the create and the write are a single
-transaction, and a payload spanning several objects is folded into that same
-transaction rather than committed one piece at a time. The one verb that costs
-two is `write_file` replacing an existing path, which is a remove followed by a
-create; `create_file` plus `append` is the same cost, and `rename` over the
-target is one commit if you need an atomic replace.
+**every** mutating verb is one commit, whatever it spans. `write_new_file`'s
+create and write are a single transaction, a payload spanning several objects
+is folded into that same transaction rather than committed one piece at a time,
+and `write_file` over an existing path builds the new content whole and
+re-points the entry at it in one transaction — there is no instant at which the
+path is absent or empty. `create_file` followed by `append` is the one shape
+that still costs two, because it is two calls.
 
 **Ordering rule, do not invert:** within `commit`, the allocator snapshot is
 persisted before the superblock. The other order can brick a volume — a
@@ -184,14 +185,18 @@ past the end. Writing *inside* a file's existing bytes is refused
 up with two overlapping ranges — a corrupt file, not an updated one. To change a
 file's content:
 
-- **replace** it — `write_file(path, data, mode)` — for a plain rewrite; or
-- **atomically replace** it — write a scratch name, then `rename` it over the
-  target — when a crash must never expose a half-written file.
+- **replace** it — `write_file(path, data, mode)`.
 
-The scratch-then-rename form is the one to reach for when the file is something
-another process (or another turn) reads. `rename` is a single transaction and a
-same-directory rename is a single CoW chain, so it is the one atomic-replace
-primitive the store offers.
+`write_file` is atomic: the new content is built as objects under no directory
+entry, then the entry the path names is re-pointed at it, and both halves are
+placed in **one** commit. A reader — or a crash recovery — sees the whole old
+version or the whole new one, never an absent path and never an empty file.
+(Sequencing `remove` then `create_file` yourself reintroduces exactly that
+window; see `durability.rs` for the three states a reader can catch.)
+
+`rename` over the target is also a single transaction, and remains the way to
+make *two* files' replacement atomic together — but for rewriting one file's
+content, `write_file` alone is enough.
 
 ## 4. Identity — recognising your own volume
 

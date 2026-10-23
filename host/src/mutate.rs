@@ -134,15 +134,8 @@ pub(crate) fn build_write_txn<S: ObjectStore>(
 	let mut txn = write(store, current_root, target_ref, offset, data)?;
 
 	// `write` hands back the new file inode nowhere else, and it has to be
-	// named to re-point the parent's entry at it. It is the last object in
-	// dependency order because nothing in this transaction depends on the
-	// updated inode — the chain runs chunk, then extent node, then inode.
-	let new_inode_id = txn
-		.objects_in_dependency_order()?
-		.last()
-		.ok_or_else(|| Error::Format(LedgerFsError::custom("write produced an empty TxnPlan")))?
-		.object_id;
-	let new_inode_ref = ObjectRef::from_id(new_inode_id);
+	// named to re-point the parent's entry at it.
+	let new_inode_ref = written_inode_ref(&txn)?;
 
 	let (parent_ref, name) = last_of(chain)?;
 
@@ -156,6 +149,53 @@ pub(crate) fn build_write_txn<S: ObjectStore>(
 	cascade_dir_entry_update(store, &mut txn, parent_chain(chain)?, new_parent_ref)?;
 
 	Ok(txn)
+}
+
+/// The transaction that points `chain.last()`'s existing entry at
+/// `new_file_ref`, cascaded to a fully consistent new root.
+///
+/// The other half of an atomic replace: [`Store::write_file`](crate::Store::write_file)
+/// builds the new content first — objects, inode and all, under no directory
+/// entry — and this re-points the one entry the path names at it. The old
+/// inode becomes unreachable in the same commit that makes the new one live,
+/// so there is no instant at which the path is absent or empty.
+///
+/// `cow_update_dir_entry` is the kernel's own "existing entry, new child"
+/// operation, so the only thing this adds is the cascade every builder here
+/// adds: the parent's ancestors still have to be re-pointed at their CoW
+/// copies or the new entry is invisible from the volume root.
+pub(crate) fn build_replace_txn<S: ObjectStore>(
+	store: &S,
+	current_root: &Root,
+	chain: &Chain,
+	new_file_ref: ObjectRef,
+) -> Result<TxnPlan> {
+	let (parent_ref, name) = last_of(chain)?;
+
+	let mut txn = TxnPlan::new(ObjectRef::from_id(current_root.object_id), current_root.next_commit());
+	let (dir_node, parent_inode) = cow_update_dir_entry(store, parent_ref, &name, new_file_ref)?;
+	add_dir_pair(&mut txn, &dir_node, &parent_inode)?;
+
+	let new_parent_ref = ObjectRef::from_id(parent_inode.object_id);
+	cascade_dir_entry_update(store, &mut txn, parent_chain(chain)?, new_parent_ref)?;
+
+	Ok(txn)
+}
+
+/// The file inode a kernel `write` plan produced.
+///
+/// `write` may not name the new inode anywhere in its root — it has no parent
+/// reference, so `new_root.file_tree_root` is untouched — and the inode is the
+/// last object in the plan's dependency order (chunk, then extent node, then
+/// inode). This is the same read [`build_write_txn`] makes for the same
+/// reason.
+pub(crate) fn written_inode_ref(txn: &TxnPlan) -> Result<ObjectRef> {
+	let id = txn
+		.objects_in_dependency_order()?
+		.last()
+		.ok_or_else(|| Error::Format(LedgerFsError::custom("write produced an empty TxnPlan")))?
+		.object_id;
+	Ok(ObjectRef::from_id(id))
 }
 
 /// The transaction that removes `chain.last()` — a file — cascaded to a fully
