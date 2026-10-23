@@ -57,7 +57,8 @@ run options
   --log-appends N      appends per repetition (default 64)
   --append-batches N   durable batches per repetition in the batched-append
                        workloads (default 512)
-  --staged-seal-every N  batches per seal in staged_append_960b (default 10)
+  --staged-seal-every N  batches per seal in the staged workloads (default 10)
+  --staged-sync-every N  batches per sync in deferred_append_960b (default 100)
   --repeats N          repetitions per workload (default 3)
   --list               print the engines and workloads and exit
 
@@ -129,6 +130,7 @@ fn parse_run_args(argv: &[String]) -> Result<RunArgs> {
 			"--log-appends" => args.cfg.log_appends = parse_count(value()?, arg)?,
 			"--append-batches" => args.cfg.append_batches = parse_count(value()?, arg)?,
 			"--staged-seal-every" => args.cfg.staged_seal_every = parse_count(value()?, arg)?,
+			"--staged-sync-every" => args.cfg.staged_sync_every = parse_count(value()?, arg)?,
 			"--repeats" => args.cfg.repeats = parse_count(value()?, arg)?,
 			"--list" => {
 				print_listing();
@@ -143,6 +145,9 @@ fn parse_run_args(argv: &[String]) -> Result<RunArgs> {
 	}
 	if args.cfg.staged_seal_every == 0 {
 		return Err(Error::usage("--staged-seal-every must be at least 1"));
+	}
+	if args.cfg.staged_sync_every == 0 {
+		return Err(Error::usage("--staged-sync-every must be at least 1"));
 	}
 	// Everything an engine offers is named in the roster; a typo should stop the
 	// run rather than silently measure three engines instead of four.

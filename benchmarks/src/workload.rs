@@ -112,6 +112,11 @@ pub const WORKLOADS: &[Workload] = &[
 		run: append_staged,
 	},
 	Workload {
+		id: "deferred_append_960b",
+		blocks: 131072,
+		run: append_deferred,
+	},
+	Workload {
 		id: "read_back_960b",
 		blocks: 65536,
 		run: read_back,
@@ -486,17 +491,7 @@ fn append_staged(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	let batches = cfg.append_batches;
 	let seal_every = cfg.staged_seal_every.max(1);
 	let streams: Vec<String> = (0..cfg.repeats).map(|r| format!("t{r}")).collect();
-	let mut per_rep: Vec<Vec<Vec<u8>>> = Vec::with_capacity(cfg.repeats);
-	for stream in &streams {
-		let rep: Vec<Vec<u8>> = (0..batches)
-			.map(|b| {
-				(0..ROWS_PER_BATCH)
-					.flat_map(|j| record(stream, b * ROWS_PER_BATCH + j))
-					.collect()
-			})
-			.collect();
-		per_rep.push(rep);
-	}
+	let per_rep = staged_fixtures(cfg, &streams, batches);
 	let before = engine.space_used();
 	let mut sample = measure(
 		name,
@@ -528,6 +523,98 @@ fn append_staged(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	sample.note = Some(format!(
 		"{batches} batches of {ROWS_PER_BATCH} × {RECORD_BYTES} B records, sealed every {seal_every}; \
 		 the durability point is the seal, so the per-batch figure is 1/{seal_every} of a commit"
+	));
+	record_space(&mut sample, engine, before, batches as u64);
+	Ok(sample)
+}
+
+/// The payload of every repetition, generated before anything is timed.
+///
+/// One repetition's stream is its own log (`t0`, `t1`, …), so a repetition
+/// starts on an empty log without the previous one's bytes in it, and the
+/// per-repetition operation counts are identical by construction.
+fn staged_fixtures(cfg: &Config, streams: &[String], batches: usize) -> Vec<Vec<Vec<u8>>> {
+	let mut per_rep: Vec<Vec<Vec<u8>>> = Vec::with_capacity(cfg.repeats);
+	for stream in streams {
+		let rep: Vec<Vec<u8>> = (0..batches)
+			.map(|b| {
+				(0..ROWS_PER_BATCH)
+					.flat_map(|j| record(stream, b * ROWS_PER_BATCH + j))
+					.collect()
+			})
+			.collect();
+		per_rep.push(rep);
+	}
+	per_rep
+}
+
+/// The same records as [`append_staged`], with the seal's publish step moved to
+/// a group sync: `staged_sync_every` batches are made durable by one `sync`,
+/// and the seals in between are [`Engine::seal_staged_deferred`].
+///
+/// This is the row for the tier the LedgerFS host calls deferred durability.
+/// The promise is the one the row above gives — "a sealed group survives, an
+/// unsealed tail need not" — except that "durable" attaches to the sync rather
+/// than to every seal. It is marked non-comparable for the same reason the row
+/// above is, and it is not a claim that the seals are free: each engine's seal
+/// still does the work its architecture requires (LedgerFS flushes its objects,
+/// SQLite writes the WAL, redb commits its pages, the raw control writes the
+/// file), and only the publish step — the one that makes the group the
+/// current state — is shared.
+fn append_deferred(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	if !engine.supports(Op::Deferred) {
+		return Ok(unsupported(name, "deferred_append_960b", "no deferred seal tier"));
+	}
+	let batches = cfg.append_batches;
+	let seal_every = cfg.staged_seal_every.max(1);
+	let sync_every = cfg.staged_sync_every.max(1);
+	let streams: Vec<String> = (0..cfg.repeats).map(|r| format!("t{r}")).collect();
+	// Outside the timed section: this is how the run is configured, not what it
+	// pays. Engines whose mode is per-commit ignore it.
+	engine.begin_deferred()?;
+	let per_rep = staged_fixtures(cfg, &streams, batches);
+	let before = engine.space_used();
+	let mut sample = measure(
+		name,
+		"deferred_append_960b",
+		batches as u64,
+		(batches * BATCH_BYTES) as u64,
+		cfg.repeats,
+		|r| {
+			let mut since_seal = 0;
+			let mut since_sync = 0;
+			for batch in &per_rep[r] {
+				let rows: Vec<&[u8]> = batch.chunks(RECORD_BYTES).collect();
+				engine.staged_append(&streams[r], &rows)?;
+				since_seal += 1;
+				since_sync += 1;
+				if since_seal == seal_every {
+					engine.seal_staged_deferred()?;
+					since_seal = 0;
+				}
+				if since_sync == sync_every {
+					engine.sync_staged()?;
+					since_sync = 0;
+				}
+			}
+			// Whatever the tail had not sealed or synced is finished now, so it
+			// is sealed and published: leaving it would be data the engine
+			// promises to nobody.
+			if since_seal > 0 {
+				engine.seal_staged_deferred()?;
+			}
+			if since_sync > 0 {
+				engine.sync_staged()?;
+			}
+			Ok(())
+		},
+	)?;
+	sample.comparable = false;
+	sample.note = Some(format!(
+		"{batches} batches of {ROWS_PER_BATCH} × {RECORD_BYTES} B records, sealed every {seal_every} \
+		 and synced every {sync_every}; each seal writes its group, one sync publishes \
+		 every group since the last one"
 	));
 	record_space(&mut sample, engine, before, batches as u64);
 	Ok(sample)

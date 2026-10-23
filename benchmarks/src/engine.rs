@@ -60,6 +60,19 @@
 //! exactly that reason. It is not a way to make LedgerFS look fast: the same
 //! relaxation is granted to all four engines.
 //!
+//! [`Engine::seal_staged_deferred`] moves one more step: the seal writes and
+//! flushes its data but does not publish the new state, and
+//! [`Engine::sync_staged`] pays for that once per group of seals. The idioms
+//! are, in the same order: LedgerFS `seal_staged_deferred` + `sync`; SQLite a
+//! commit under `synchronous=NORMAL` with the group ended by a
+//! `wal_checkpoint(FULL)`; redb a `Durability::None` commit with an empty
+//! `Durability::Immediate` transaction as the sync; the raw control writes
+//! without `sync_all` and syncs the held file at the group end. The promises
+//! differ in how much work the seal itself does — LedgerFS flushes its
+//! objects, SQLite leaves them in the WAL, redb leaves them mapped, raw leaves
+//! them in the page cache — so the row is reported with that difference named
+//! rather than summarised away.
+//!
 //! # Per deployment
 //!
 //! The workloads see only [`Engine`] — no workload names an engine — and each
@@ -89,6 +102,9 @@ pub enum Op {
 	Append,
 	/// Accumulate rows with no durability point, then seal them in one.
 	Staged,
+	/// As `Staged`, with the seal's publish step moved to a group
+	/// [`sync_staged`](Engine::sync_staged): one sync covers several seals.
+	Deferred,
 	/// Close and reopen, as a restart would.
 	Reopen,
 }
@@ -152,6 +168,31 @@ pub trait Engine {
 
 	/// Make everything staged since the last seal durable, in one step.
 	fn seal_staged(&mut self) -> Result<()>;
+
+	/// Prepare for a run on the deferred tier, before the first staged append.
+	///
+	/// An engine whose durability mode is chosen per connection rather than per
+	/// commit — SQLite — sets it here, because the mode cannot be changed inside
+	/// the transaction a staged append opens. A no-op elsewhere, and never
+	/// timed: it is what the run is configured with, not what it pays.
+	fn begin_deferred(&mut self) -> Result<()> {
+		Ok(())
+	}
+
+	/// Seal as [`seal_staged`](Engine::seal_staged) does, but stop short of the
+	/// step that publishes the new state to the rest of the world, leaving it
+	/// to the group's [`sync_staged`](Engine::sync_staged).
+	///
+	/// The tier is "the seal's data is written and pushed to the medium, the
+	/// pointer that makes it the volume's current state waits". It is the
+	/// durability relaxation an application makes when it can afford a seal
+	/// often but not the full price of one; every engine has an honest idiom
+	/// for it, documented on its implementation.
+	fn seal_staged_deferred(&mut self) -> Result<()>;
+
+	/// Complete the publish step of every [`seal_staged_deferred`] since the
+	/// last sync, in one step.
+	fn sync_staged(&mut self) -> Result<()>;
 
 	/// The whole log named `name`, first byte written first.
 	fn read_log(&self, name: &str) -> Result<Vec<u8>>;
@@ -282,7 +323,7 @@ impl Engine for LedgerFs {
 		// Every operation, now that `put_batch` is a staging session: there is
 		// no recovery step separable from a mount (`reopen` below re-mounts,
 		// which is the thing a restart pays for).
-		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Reopen)
+		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Deferred | Op::Reopen)
 	}
 
 	fn prepare(&mut self, prefixes: &[String]) -> Result<()> {
@@ -401,6 +442,22 @@ impl Engine for LedgerFs {
 		Ok(())
 	}
 
+	/// The volume's deferred tier: the seal commits, writes and flushes its
+	/// objects, and withholds the superblock that would publish the new root.
+	fn seal_staged_deferred(&mut self) -> Result<()> {
+		let store = self.store()?;
+		if store.staging_is_open() {
+			store.seal_staged_deferred().map_err(Self::err)?;
+		}
+		Ok(())
+	}
+
+	/// One superblock write and one barrier, covering every seal deferred since
+	/// the last sync.
+	fn sync_staged(&mut self) -> Result<()> {
+		self.store()?.sync().map_err(Self::err)
+	}
+
 	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
 		let store = self
 			.store
@@ -503,7 +560,7 @@ impl Engine for Sqlite {
 	}
 
 	fn supports(&self, op: Op) -> bool {
-		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Reopen)
+		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Deferred | Op::Reopen)
 	}
 
 	fn put(&mut self, key: &str, value: &[u8]) -> Result<()> {
@@ -597,6 +654,32 @@ impl Engine for Sqlite {
 		if !self.conn.is_autocommit() {
 			self.conn.execute_batch("COMMIT").map_err(sq)?;
 		}
+		Ok(())
+	}
+
+	/// WAL mode's own group-durability setting: commits append to the WAL and do
+	/// not fsync it, and the WAL is synced when the group is checkpointed. It
+	/// has to be set between transactions, which is why it is here and not in
+	/// [`seal_staged_deferred`](Self::seal_staged_deferred) — a staged append
+	/// has already opened one.
+	fn begin_deferred(&mut self) -> Result<()> {
+		self.conn.execute_batch("PRAGMA synchronous=NORMAL;").map_err(sq)
+	}
+
+	/// A commit that writes the WAL and leaves the fsync to the group's
+	/// checkpoint.
+	fn seal_staged_deferred(&mut self) -> Result<()> {
+		if !self.conn.is_autocommit() {
+			self.conn.execute_batch("COMMIT").map_err(sq)?;
+		}
+		Ok(())
+	}
+
+	/// A FULL checkpoint copies the WAL back into the database and syncs both,
+	/// which is the point at which every commit since the last sync becomes
+	/// durable.
+	fn sync_staged(&mut self) -> Result<()> {
+		self.conn.execute_batch("PRAGMA wal_checkpoint(FULL);").map_err(sq)?;
 		Ok(())
 	}
 
@@ -711,7 +794,7 @@ impl Engine for Redb {
 	}
 
 	fn supports(&self, op: Op) -> bool {
-		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Reopen)
+		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Deferred | Op::Reopen)
 	}
 
 	fn put(&mut self, key: &str, value: &[u8]) -> Result<()> {
@@ -819,6 +902,27 @@ impl Engine for Redb {
 		Ok(())
 	}
 
+	/// The transaction still commits, so its pages are written and the root it
+	/// publishes is visible to later transactions; only the fsync is skipped
+	/// (`Durability::None`), which is redb's own separation of the two.
+	fn seal_staged_deferred(&mut self) -> Result<()> {
+		if let Some(mut write) = self.staged.take() {
+			write.set_durability(redb::Durability::None).map_err(rd)?;
+			write.commit().map_err(rd)?;
+		}
+		Ok(())
+	}
+
+	/// An empty `Immediate` transaction is redb's way to say "sync what is
+	/// already written": its commit fsyncs the database file, which is where
+	/// the `None` commits put their pages.
+	fn sync_staged(&mut self) -> Result<()> {
+		let mut write = self.db()?.begin_write().map_err(rd)?;
+		write.set_durability(redb::Durability::Immediate).map_err(rd)?;
+		write.commit().map_err(rd)?;
+		Ok(())
+	}
+
 	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
 		let read = self.db()?.begin_read().map_err(rd)?;
 		let table = read.open_table(REDB_LOG).map_err(rd)?;
@@ -914,7 +1018,7 @@ impl Engine for RawFile {
 	fn supports(&self, op: Op) -> bool {
 		// There is nothing to recover: a directory full of fsync'd files has no
 		// journal to replay and no root to select.
-		matches!(op, Op::Batch | Op::Append | Op::Staged)
+		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Deferred)
 	}
 
 	fn prepare(&mut self, prefixes: &[String]) -> Result<()> {
@@ -1014,6 +1118,22 @@ impl Engine for RawFile {
 
 	fn seal_staged(&mut self) -> Result<()> {
 		if let Some((_, file)) = self.staged.take() {
+			file.sync_all()?;
+		}
+		Ok(())
+	}
+
+	/// The file *is* the record here: its bytes are the data, so a seal has
+	/// nothing to publish beyond writing them, and they are already in the
+	/// page cache. Nothing is done, and the held handle stays open so the next
+	/// batch continues the same stream.
+	fn seal_staged_deferred(&mut self) -> Result<()> {
+		Ok(())
+	}
+
+	/// The `sync_all` a whole group of deferred seals was waiting for.
+	fn sync_staged(&mut self) -> Result<()> {
+		if let Some((_, file)) = &self.staged {
 			file.sync_all()?;
 		}
 		Ok(())

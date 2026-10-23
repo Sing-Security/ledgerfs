@@ -76,6 +76,16 @@ again — see [`FORMAT.md`](FORMAT.md).
   `Config::repeats`, because the free-space delta spans the whole run while the
   divisor was one repetition's operation count. `BENCHMARKS.md` gains *The
   staging tier* and re-rendered tables.
+- **`benchmarks/` measures the deferred tier.** `deferred_append_960b` seals
+  every `--staged-seal-every` batches and publishes the group every
+  `--staged-sync-every` (default 100), each engine in its own idiom: LedgerFS
+  `seal_staged_deferred` + `sync`, SQLite a commit under `synchronous=NORMAL`
+  ended by `wal_checkpoint(FULL)`, redb a `Durability::None` commit ended by an
+  empty `Durability::Immediate` one, the raw control a held file written
+  without `sync_all`. The row is marked non-comparable, as the staged row is,
+  because only the group carries the durability point; the note says what each
+  engine's seal still does. `BENCHMARKS.md` gains *One step further: the
+  deferred seal*.
 - **An append encodes its extent node once, not three times.** `write` and
   `create_file_with_data` let `insert_extent` rehash the node, called
   `update_object_id` on it again, then encoded it a third time for the
