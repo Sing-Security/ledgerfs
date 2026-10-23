@@ -95,9 +95,10 @@ is in
 
 ## 5. Example
 
-This crate has no device of its own, so an example must supply one. The shortest
-running example is `examples/basic.rs`, over the `commit` and `cow` modules
-directly. For a volume that accepts files, use the host crate:
+`examples/basic.rs` exercises the parts that need no device: record framing,
+superblock encoding and mount selection. An example that commits objects has to
+supply an object store of its own. For a volume that accepts files, use the
+host crate:
 
 ```sh
 cargo run --example app_store -p ledgerfs-host

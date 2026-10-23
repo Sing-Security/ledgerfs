@@ -9,8 +9,9 @@ calling process.
 
 This crate supplies the parts of the system that the format crate leaves
 abstract. It implements `ObjectStore` over a `BlockDevice`, provides device
-implementations for a file region and for memory, and exposes `Store`, whose
-methods are `mkfs`, open, the file operations and the staging tier. It works
+implementations for a file region and for memory, and exposes `Store`, which
+formats and opens a volume and whose methods are the file operations and the
+staging tier. It works
 over any byte-addressed device: a partition, a disk image, a bare file, or a
 buffer in memory.
 

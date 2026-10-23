@@ -134,8 +134,8 @@ The first barrier is what permits mount to adopt a superblock without
 consulting a log: by the time the new root is named, the objects it names are
 already durable. The second barrier is the commit point. Removing the first
 would move the cost of an interrupted commit into the mount path and change the
-recovery story; `FORMAT.md` §18 records the argument, and the implementation
-does not take that trade.
+recovery story; `FORMAT.md` §15.1 states the ordering argument, and the
+implementation does not take that trade.
 
 The intent log defined by the format is not written on the live path. The
 format reserves a bounded ring for commit-intent records so that a future
@@ -237,25 +237,29 @@ replacement of every object on the path.
 
 **Reads verify their own result.** The 25.5 µs point read includes a BLAKE3
 computation over the returned object. SQLite and redb trust their pages. On the
-960-byte read-back workload the verified figure is within about 1.8 times
+960-byte read-back workload the verified figure is within about 1.2 times
 SQLite's unverified read, which is the price of the check. The read row is also
 warm: it is measured in the process that wrote the data, so the block map is
 resident. A process that opens a volume it did not write pays a linear scan for
 the first lookup of each object, because storage hints are not persisted
 (`KNOWN_ISSUES.md` §4).
 
-**Volume consumption is a function of commits, not payload.** A 256-byte insert
-consumes 36.3 KiB of volume and a batch of twenty 48-byte records consumes
-35.9 KiB; the cost is the allocator snapshot, the superblock copies and the
-rewritten path. Capacity planning therefore follows commits: roughly 36 KiB per
-commit, whatever the records contain.
+**Volume consumption follows commits, and a commit pays for what it
+allocates.** A 256-byte insert consumes 36.3 KiB of volume and a batch of twenty
+48-byte records consumes 35.9 KiB, most of it the allocator snapshot, the four
+superblock copies and the rewritten path rather than the payload. A commit that
+carries more pays for more: a 64 KiB append consumes 93.9 KiB, and a commit that
+creates two hundred files consumes 12.2 KiB per insert because each file
+allocates a chunk, an inode and an extent node. Capacity planning therefore
+follows the number of commits and the number of objects they allocate.
 
 Staging changes the order of magnitude of the per-record cost. At a seal every
 ten batches a staged append costs 2.05 ms per batch against 16.87 ms for a
-committed batch of the same bytes. With all 512 batches under a single seal it
-costs 37.9 µs per batch, which measures the in-memory append with the seal's
-share set aside. The deferred-seal row removes one of the two barriers per
-group, at the cost of a weaker crash promise: the group since the last `sync`
+committed batch of the same bytes. At a seal every 512 batches the harness
+reports 37.9 µs per batch, which measures the in-memory append with the seal's
+share set aside; that interval is not the one recorded in Appendix A. The
+deferred-seal row removes one of the two barriers per group, at the cost of a
+weaker crash promise: the group since the last `sync`
 is lost whole, and blocks may be marked allocated without a live root naming
 them, which leaks space on a recovery and never produces a wrong answer.
 
@@ -279,10 +283,12 @@ them, which leaks space on a recovery and never produces a wrong answer.
   no path on the host resolves into a volume. An OS adopts the library by
   writing the service layer above it, as CrucibleOS does.
 - **Tier B subsystems are not available.** Garbage collection, snapshots,
-  deduplication at write time, replication, the scrubber, the audit chain,
-  quotas and ACLs have encodings and tests but no caller in the shipping path.
-  Four of them return success without performing the work; `KNOWN_ISSUES.md`
-  §11 lists which.
+  deduplication at write time, the scrubber and content-defined chunking are
+  implemented and tested in the unpublished `pending/` crate; replication and
+  the audit chain are present in the format crate with no caller. Four
+  subsystems return success without performing the work; `KNOWN_ISSUES.md` §11
+  lists which. Quotas, ACLs, disaster recovery, capability enforcement and
+  keyslot lifecycle have no implementation at all.
 
 ## 9. Applicability
 

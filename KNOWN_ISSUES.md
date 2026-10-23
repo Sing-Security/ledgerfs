@@ -20,9 +20,10 @@ volume that is written to continuously will fill, and the failure is an
 out-of-space error on a write that had plenty of room when it started.
 
 **How much.** The benchmark harness in `benchmarks/` measures this and reports
-it as the `volume KiB/op` column; see `BENCHMARKS.md`. The number to carry
-around is that it is on the order of 100 KiB of volume per small file, not per
-*byte written*: see entries 2 and 3 for why.
+it as the `volume KiB/op` column; see `BENCHMARKS.md`. A 256-byte insert in one
+commit consumes 36.3 KiB of volume, and the figure is not the payload's: a
+64 KiB append consumes 93.9 KiB, and a commit that creates two hundred files
+consumes 12.2 KiB per insert. See entries 2 and 3 for why.
 
 **Workaround.** Treat a LedgerFS volume as append-only with a known lifetime,
 and reformat rather than reuse. Do not make it the primary store for anything
@@ -254,24 +255,28 @@ on-disk encode path, and this release is a documents-and-harness release.
 
 ---
 
-## 11. Implemented in the format, not wired into the library
+## 11. Tier B: implemented, not wired, or not built
 
-These have types, encodings, and tests in `kernel/`, and nothing calls them from
-the host `Store`. `FORMAT.md` §44.1 calls this Tier B, and a reader deciding
-whether to depend on one of them should read Tier B as "not available":
+`FORMAT.md` §44.1 calls these subsystems Tier B, and a reader deciding whether
+to depend on one of them should read Tier B as "not available". They fall into
+three groups.
 
-garbage-collection *execution* (§22), snapshots (§30), deduplication at write
-time (§21), replication (§31), the background scrubber (§40), the audit chain
-(§37), disaster recovery (§26), quotas (§33), ACLs (§34.1), capability-flag
-*enforcement* (§34.3), and keyslot lifecycle: adding, revoking, rekeying
-(§36.4).
+Implemented and tested in the unpublished `ledgerfs-pending` crate in this
+repository, with no caller on a live volume: garbage-collection *execution*
+(§22), snapshots (§30), deduplication at write time (§21), the background
+scrubber (§40), and content-defined chunking (§29).
 
-And these have no implementation at all: reflink clones (§32), RAID (§42), IPC
-(§38: LedgerFS is a library, not a daemon), and in-place format upgrades
-(§43.3).
+Present in the kernel crate with no caller: replication (§31) and the audit
+chain, including record sealing (§37).
 
-**Four of them return success without doing the work**, which is the part worth
-knowing before calling one. Each is annotated where it lives:
+No implementation at all: disaster recovery (§26), quotas (§33), ACLs (§34.1),
+capability-flag *enforcement* (§34.3; the flags are stored, and no decision is
+made from them), keyslot lifecycle: adding, revoking, rekeying (§36.4), reflink
+clones (§32), RAID (§42), IPC (§38: LedgerFS is a library, not a daemon), and
+in-place format upgrades (§43.3).
+
+**Four subsystems return success without doing the work**, which is the part
+worth knowing before calling one. Each is annotated where it lives:
 
 - `Scrubber::scrub_batch` advances a cursor and counts entries without issuing a
   read, so its returned count is entries walked, not objects verified; and

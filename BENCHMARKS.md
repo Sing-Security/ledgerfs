@@ -91,9 +91,14 @@ not know them will draw an incorrect conclusion from at least two rows.
 2. **A commit does not modify an existing object.** It writes a new allocator
    snapshot and four superblock copies, and the copy-on-write path replaces
    every object on the affected path. The consequence is the `volume KiB/op`
-   column: 36.3 KiB per 256-byte insert, independent of the payload size. That
-   figure governs capacity planning, and it is the basis of the guidance in
-   `KNOWN_ISSUES.md` §1 that a volume be treated as append-only.
+   column: 36.3 KiB per 256-byte insert, most of it the fixed overhead of a
+   commit. The figure is not independent of the workload: a 64 KiB append costs
+   93.9 KiB (`append_log_64k`), and a commit that creates two hundred files
+   costs 12.2 KiB per insert (`insert_batched_256b`), with the fixed overhead
+   shared and each file contributing its own objects. Capacity planning follows
+   the number of commits and the objects they allocate, and it is the basis of
+   the guidance in `KNOWN_ISSUES.md` §1 that a volume be treated as
+   append-only.
    *Correction:* every `volume KiB/op` recorded before 2026-10-23 was inflated
    by the repetition count (three times, for every recorded run) because the
    free-space delta spanned all repetitions but was divided by the operation
@@ -134,12 +139,14 @@ log to consult: the objects are on the medium before the superblock that names
 them. The second is the commit point. Removing the first is not a local
 optimization; it transfers the cost of an interrupted commit into the mount
 path, which is a different recovery argument and a different format
-specification (`FORMAT.md` §18). It is not part of this release.
+specification (`FORMAT.md` §15.1). It is not part of this release.
 
 **The read rows price the verification.** `read_point_256b` costs 25.5 µs
-against redb's 949 ns. A lookup performs five block reads, a count fixed by a
-test (`host/tests/readpath.rs`), and the remainder is the BLAKE3 computation
-over the returned object, performed before the bytes are returned. The other
+against redb's 949 ns. A lookup performs one block read per object on the path:
+seven for the two-level path fixed by a test (`host/tests/readpath.rs`), and two
+more for the three-level `/kv/<dir>/f<key>` path this workload reads. The
+remainder is the BLAKE3 computation over the returned object, performed before
+the bytes are returned. The other
 engines trust their pages without checking them. What the check is worth on the
 intended workload is the subject of Section 4.
 
@@ -182,22 +189,27 @@ is the durability point, every engine pays approximately one synchronization
 and the remaining difference is bookkeeping; the bookkeeping of LedgerFS is a
 complete filesystem commit, and this row prices it.
 
-**Volume consumption is a property of the commit, not of the payload.** A batch
-consumes 35.9 KiB of backing store and a 256-byte insert consumes 36.3 KiB. The
-commit rewrites the allocator snapshot and the path it touched, so its cost is
-fixed whether the payload contains twenty records or one. Capacity planning for
-a capture volume therefore follows commits: approximately `batches x 36 KiB`,
-independent of record size. This figure underlies the guidance in
-`KNOWN_ISSUES.md` §1 that a volume be treated as append-only with a known
-lifetime.
+**Volume consumption follows commits, and a commit pays for what it
+allocates.** A batch consumes 35.9 KiB of backing store and a 256-byte insert
+consumes 36.3 KiB: the commit rewrites the allocator snapshot, the four
+superblock copies and every object on the path it touched, and that overhead
+dominates a payload this small. The fixed part is not the whole cost. A 64 KiB
+append consumes 93.9 KiB, its payload plus the same overhead, and
+`insert_batched_256b`, which creates two hundred files under one seal, consumes
+12.2 KiB per insert, about 2.4 MiB for the commit, because the fixed overhead is
+shared and each file contributes its own chunk, inode and extent node. Capacity
+planning for a capture volume therefore follows commits (`batches x 36 KiB` for
+small records) and then the objects each commit allocates. This figure
+underlies the guidance in `KNOWN_ISSUES.md` §1 that a volume be treated as
+append-only with a known lifetime.
 
 ### 4.3 Read-back verification
 
-Per batch read, the control costs 232 ns (the page cache returning resident
-bytes), redb 1.6 µs, sqlite-wal 3.0 µs and ledgerfs 5.3 µs. The LedgerFS figure
+Per batch read, the control costs 150 ns (the page cache returning resident
+bytes), redb 1.4 µs, sqlite-wal 2.7 µs and ledgerfs 3.2 µs. The LedgerFS figure
 includes BLAKE3 verification of every object returned; on the other engines that
 check remains outstanding work for the caller. Over the full 480 KiB stream the
-verified read-back is within approximately 1.8 times SQLite's unverified read,
+verified read-back is within approximately 1.2 times SQLite's unverified read,
 which is the cost of establishing that the recording is intact rather than
 presuming it.
 
@@ -282,9 +294,11 @@ work per batch grew with the stream although nothing reached the device. A
 session now retains the decoded extent list, appends to it, and constructs the
 node once at the seal. The effect is concealed at the default interval, where
 the seal dominates the row. At `--staged-seal-every 512`, with all 512 batches
-under one seal, the cost is 37.9 µs per batch against 78.7 µs before the draft.
-What remains of the 37.9 µs after the seal's share is the append, and it no
-longer grows with the file. The session's memory footprint changed in the same
+under one seal, the harness reports 37.9 µs per batch. That interval is not the
+one recorded in Appendix A, which uses the default; the figure comes from
+rerunning the staged workload with the interval stated here. What remains of
+the 37.9 µs after the seal's share is the append, and it no longer grows with
+the file. The session's memory footprint changed in the same
 way, from every generation of the node to the payload plus one descriptor per
 piece (`EMBEDDING.md` §3).
 

@@ -45,7 +45,7 @@ a volume provisioned onto a real disk from one embedded in a process.
 | `read_file(path)` | whole file back |
 | `read_at(path, offset, len)` | a byte range, clamped to the file (see §5) |
 | `read_dir(path)` | one `Entry` per child: name, kind, size, mode |
-| `stat(path)` | the inode: kind, size, mode, refs |
+| `stat(path)` | the inode: kind, mode, size, uid/gid, timestamps, xattrs, content reference |
 | `mkdir(path, mode)` | create a directory |
 | `create_file(path, mode)` | create an empty regular file |
 | `write_new_file(path, data, mode)` | create **and** write; refuses if the name is taken |
@@ -289,7 +289,8 @@ volume cannot write the snapshot that would fix it.
 ### Space only falls
 
 CoW rewrites a new copy of every object a transaction touches and **frees
-nothing**; GC exists in the kernel crate but is not wired into this path. So
+nothing**; GC exists in the unpublished `ledgerfs-pending` crate but is not
+wired into this path. So
 `free_bytes()` is monotonically non-increasing. An always-on store fills up and
 stays full. An app that runs indefinitely must watch `free_bytes()` and rotate or
 archive, or it will eventually fail a write with out-of-space. This is the one
@@ -302,7 +303,7 @@ and nothing in this path can reach them. `BENCHMARKS.md` measures what a volume
 costs per small file; multiply by the write rate and the lifetime to get the
 number an app has to plan against.
 
-The way back is [`rebuild_into`](crate::rebuild_into): write the live tree into
+The way back is `rebuild_into` (`host/src/rebuild.rs`): write the live tree into
 a fresh volume and swap it in. It is deliberately not an in-place operation: a
 volume has one writer, and the source has to survive until the copy is checked.
 The shape of a correct compaction:
