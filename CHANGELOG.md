@@ -65,6 +65,17 @@ again — see [`FORMAT.md`](FORMAT.md).
   `Config::repeats`, because the free-space delta spans the whole run while the
   divisor was one repetition's operation count. `BENCHMARKS.md` gains *The
   staging tier* and re-rendered tables.
+- **An append encodes its extent node once, not three times.** `write` and
+  `create_file_with_data` let `insert_extent` rehash the node, called
+  `update_object_id` on it again, then encoded it a third time for the
+  transaction. The extent node is the one object whose canonical encoding grows
+  with a file's history, so that redundancy was O(history) per append.
+  `ExtentNode::insert_extent_deferred` plus `seal_canonical` make it one pass;
+  `Inode` and `DirNode` gain the same one-pass `seal_canonical` for the objects
+  every builder writes beside it. Object ids are unchanged — a test pins the
+  eager and deferred routes to identical bytes and hashes. On the staged path,
+  which rebuilds the node on every operation, an isolated measurement put a
+  staged append at p50 76 → 50 µs and the 512-batch tail at 132 → 80 µs.
 
 ## [0.7.0] / [0.1.0] - 2026-10-14
 

@@ -191,21 +191,19 @@ pub fn write<S: ObjectStore>(
 	} else {
 		store.get_extent_node(inode.content_ref)?
 	};
-	extent_node.insert_extent(extent)?;
-	extent_node.update_object_id();
+	extent_node.insert_extent_deferred(extent)?;
+	let extent_bytes = extent_node.seal_canonical()?;
 
 	// Update inode metadata.
 	let new_end = offset + data.len() as u64;
 	inode.size = inode.size.max(new_end);
 	inode.content_ref = ObjectRef::from_id(extent_node.object_id);
-	inode.update_object_id();
+	let inode_bytes = inode.seal_canonical()?;
 
 	let mut txn = TxnPlan::new(ObjectRef::from_id(root.object_id), root.next_commit());
 	txn.add_object(NewObject::new(chunk_stored_id, chunk_canonical));
-	txn.add_object(
-		NewObject::new(extent_node.object_id, extent_node.encode_canonical()?).with_dependency(chunk_stored_id),
-	);
-	txn.add_object(NewObject::new(inode.object_id, inode.encode_canonical()?).with_dependency(extent_node.object_id));
+	txn.add_object(NewObject::new(extent_node.object_id, extent_bytes).with_dependency(chunk_stored_id));
+	txn.add_object(NewObject::new(inode.object_id, inode_bytes).with_dependency(extent_node.object_id));
 
 	Ok(txn)
 }
@@ -266,23 +264,19 @@ pub fn create_file_with_data<S: ObjectStore>(
 	};
 
 	let mut extent_node = ExtentNode::new_leaf();
-	extent_node.insert_extent(extent)?;
-	extent_node.update_object_id();
+	extent_node.insert_extent_deferred(extent)?;
+	let extent_bytes = extent_node.seal_canonical()?;
 
 	// The caller's inode, taken straight to its written state rather than
 	// created empty and rewritten.
 	file_inode.size = data.len() as u64;
 	file_inode.content_ref = ObjectRef::from_id(extent_node.object_id);
-	file_inode.update_object_id();
+	let file_inode_bytes = file_inode.seal_canonical()?;
 
 	let mut txn = TxnPlan::new(ObjectRef::from_id(root.object_id), root.next_commit());
 	txn.add_object(NewObject::new(chunk_stored_id, chunk_canonical));
-	txn.add_object(
-		NewObject::new(extent_node.object_id, extent_node.encode_canonical()?).with_dependency(chunk_stored_id),
-	);
-	txn.add_object(
-		NewObject::new(file_inode.object_id, file_inode.encode_canonical()?).with_dependency(extent_node.object_id),
-	);
+	txn.add_object(NewObject::new(extent_node.object_id, extent_bytes).with_dependency(chunk_stored_id));
+	txn.add_object(NewObject::new(file_inode.object_id, file_inode_bytes).with_dependency(extent_node.object_id));
 
 	if !parent_dir_ref.is_zero() {
 		let (parent_dir_node, parent_inode) =

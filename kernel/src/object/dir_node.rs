@@ -181,6 +181,14 @@ impl DirNode {
 		self.object_id = ObjectId::from_content(&canonical);
 	}
 
+	/// Encode, adopt the object id those bytes hash to, and hand the bytes
+	/// back — the one-pass form of `update_object_id` + `encode_canonical`.
+	pub fn seal_canonical(&mut self) -> Result<Vec<u8>> {
+		let canonical = self.encode_canonical()?;
+		self.object_id = ObjectId::from_content(&canonical);
+		Ok(canonical)
+	}
+
 	/// Encode node to canonical bytes. `object_id` itself is never part of
 	/// the output (`#[serde(skip)]`).
 	pub fn encode_canonical(&self) -> Result<Vec<u8>> {
@@ -248,6 +256,31 @@ mod tests {
 		assert!(node.entries.is_empty());
 		assert!(node.children.is_empty());
 		assert!(!node.object_id.is_zero());
+
+		Ok(())
+	}
+
+	/// One pass, not two: the id must be the hash of exactly the bytes the
+	/// caller will store.
+	#[test]
+	fn test_seal_canonical_matches_update_then_encode() -> TestResult<()> {
+		// -- Setup & Fixtures
+		let mut eager = DirNode::new_leaf();
+		let entry = DirEntry::new(
+			"sealed",
+			ObjectRef::new(ObjectId::from_content(b"child"), StorageHint::zero()),
+		)?;
+		eager.insert_entry(entry)?;
+		let mut sealed = eager.clone();
+
+		// -- Exec
+		eager.update_object_id();
+		let eager_bytes = eager.encode_canonical()?;
+		let sealed_bytes = sealed.seal_canonical()?;
+
+		// -- Check
+		assert_eq!(sealed.object_id, eager.object_id);
+		assert_eq!(sealed_bytes, eager_bytes);
 
 		Ok(())
 	}

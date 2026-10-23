@@ -102,6 +102,23 @@ impl ExtentNode {
 	/// won reads, not the newer one. See this crate's
 	/// `test_insert_extent_overwrite_replaces_not_appends`.
 	pub fn insert_extent(&mut self, extent: ExtentDescriptor) -> Result<()> {
+		self.insert_extent_deferred(extent)?;
+		self.update_object_id();
+		Ok(())
+	}
+
+	/// [`insert_extent`](Self::insert_extent) without recomputing
+	/// `object_id`.
+	///
+	/// This node is the one object whose canonical encoding grows with a
+	/// file's history, and the builders that append to it are about to
+	/// encode it anyway — it is the object they are writing. Hashing here
+	/// and again at the call site encoded an O(history) node twice per
+	/// append, which is what made a long staged stream quadratic in
+	/// practice as well as in name. `object_id` is stale after this call;
+	/// [`seal_canonical`](Self::seal_canonical) is the one-step way for a
+	/// caller that needs both the id and the bytes.
+	pub fn insert_extent_deferred(&mut self, extent: ExtentDescriptor) -> Result<()> {
 		if !self.is_leaf {
 			return Err(Error::invalid_operation("Cannot insert into internal node"));
 		}
@@ -147,7 +164,6 @@ impl ExtentNode {
 		let pos = kept.partition_point(|e| e.logical_offset < new_start);
 		kept.insert(pos, extent);
 		self.extents = kept;
-		self.update_object_id();
 
 		Ok(())
 	}
@@ -195,6 +211,18 @@ impl ExtentNode {
 	pub fn update_object_id(&mut self) {
 		let canonical = self.encode_canonical().unwrap();
 		self.object_id = ObjectId::from_content(&canonical);
+	}
+
+	/// Encode, adopt the object id those bytes hash to, and hand the bytes
+	/// back.
+	///
+	/// The pair every builder needs: `update_object_id` followed by
+	/// `encode_canonical` encodes the node twice. On the extent node that is
+	/// O(history) work per append.
+	pub fn seal_canonical(&mut self) -> Result<Vec<u8>> {
+		let canonical = self.encode_canonical()?;
+		self.object_id = ObjectId::from_content(&canonical);
+		Ok(canonical)
 	}
 
 	/// Encode node to canonical bytes. `object_id` itself is never part of
@@ -253,6 +281,41 @@ mod tests {
 		let decoded = ExtentNode::decode_canonical(&canonical)?;
 		assert_eq!(decoded.object_id, node.object_id);
 		assert_eq!(decoded, node);
+
+		Ok(())
+	}
+
+	/// The builders use [`ExtentNode::insert_extent_deferred`] and
+	/// [`ExtentNode::seal_canonical`] instead of the rehashing pair, because
+	/// encoding a node that grows with a file's history twice per append is
+	/// the quadratic half of a staged append. The two routes must agree
+	/// **byte for byte**: the object id is a hash of those bytes, so a
+	/// divergence would rewrite every extent node the volume ever stored.
+	#[test]
+	fn test_deferred_insert_seals_identically() -> TestResult<()> {
+		// -- Setup & Fixtures
+		let extent = |i: u64| ExtentDescriptor {
+			logical_offset: i * 64,
+			length: 64,
+			chunk_id: ObjectId::from_content(&i.to_le_bytes()),
+			chunk_hint: StorageHint::zero(),
+			chunk_offset: 0,
+		};
+		let mut eager = ExtentNode::new_leaf();
+		let mut deferred = ExtentNode::new_leaf();
+
+		// -- Exec
+		for i in 0..8 {
+			eager.insert_extent(extent(i))?;
+			deferred.insert_extent_deferred(extent(i))?;
+		}
+		let eager_bytes = eager.encode_canonical()?;
+		let sealed_bytes = deferred.seal_canonical()?;
+
+		// -- Check
+		assert_eq!(deferred.object_id, eager.object_id);
+		assert_eq!(sealed_bytes, eager_bytes);
+		assert_eq!(deferred, eager);
 
 		Ok(())
 	}

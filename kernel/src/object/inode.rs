@@ -150,6 +150,17 @@ impl Inode {
 		self.object_id = ObjectId::from_content(&canonical);
 	}
 
+	/// Encode, adopt the object id those bytes hash to, and hand the bytes
+	/// back.
+	///
+	/// `update_object_id` followed by `encode_canonical` encodes twice; the
+	/// builders want the id *and* the bytes, and this is the one-pass form.
+	pub fn seal_canonical(&mut self) -> Result<Vec<u8>> {
+		let canonical = self.encode_canonical()?;
+		self.object_id = ObjectId::from_content(&canonical);
+		Ok(canonical)
+	}
+
 	/// Encode inode to canonical bytes. `object_id` itself is never part
 	/// of the output (`#[serde(skip)]`) — see `update_object_id`.
 	pub fn encode_canonical(&self) -> Result<Vec<u8>> {
@@ -215,6 +226,26 @@ mod tests {
 		assert_eq!(inode.gid, gid);
 		assert_eq!(inode.mode, mode);
 		assert!(!inode.object_id.is_zero());
+
+		Ok(())
+	}
+
+	/// One pass, not two: the id must be the hash of exactly the bytes the
+	/// caller will store.
+	#[test]
+	fn test_seal_canonical_matches_update_then_encode() -> TestResult<()> {
+		// -- Setup & Fixtures
+		let mut eager = Inode::new_file(1000, 1000, 0o644);
+		let mut sealed = eager.clone();
+
+		// -- Exec
+		eager.update_object_id();
+		let eager_bytes = eager.encode_canonical()?;
+		let sealed_bytes = sealed.seal_canonical()?;
+
+		// -- Check
+		assert_eq!(sealed.object_id, eager.object_id);
+		assert_eq!(sealed_bytes, eager_bytes);
 
 		Ok(())
 	}
