@@ -70,9 +70,13 @@ impl PartitionKind {
 /// One MBR partition entry, with the kind it was inferred to be.
 #[derive(Debug, Clone, Copy)]
 pub struct Partition {
+	/// Which of the image's three partitions this entry is.
 	pub kind: PartitionKind,
+	/// The MBR type byte, as found in the table.
 	pub part_type: u8,
+	/// First sector of the partition, in 512-byte sectors.
 	pub start_lba: u64,
+	/// Length of the partition, in 512-byte sectors.
 	pub sectors: u64,
 }
 

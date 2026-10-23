@@ -861,23 +861,39 @@ fn collect_dir_entries<S: ObjectStore>(store: &S, node: &DirNode) -> Result<Vec<
 /// A filesystem mutation that can be batched via [`apply_ops_to_root`].
 #[derive(Debug, Clone)]
 pub enum Operation {
+	/// Create a directory (see [`mkdir`]).
 	Mkdir {
+		/// Reference to the parent directory's inode.
 		parent_dir_ref: ObjectRef,
+		/// Name of the new directory entry.
 		name: String,
+		/// Owner user ID.
 		uid: u32,
+		/// Owner group ID.
 		gid: u32,
+		/// Unix permission bits.
 		mode: u32,
 	},
+	/// Create a regular file (see [`create_file`]).
 	CreateFile {
+		/// Reference to the parent directory's inode.
 		parent_dir_ref: ObjectRef,
+		/// Name of the new file entry.
 		name: String,
+		/// Owner user ID.
 		uid: u32,
+		/// Owner group ID.
 		gid: u32,
+		/// Unix permission bits.
 		mode: u32,
 	},
+	/// Write bytes into an existing file (see [`write()`]).
 	Write {
+		/// Reference to the file inode to write to.
 		file_inode_ref: ObjectRef,
+		/// Byte offset in the file's logical address space.
 		offset: u64,
+		/// Bytes to write at `offset`.
 		data: Vec<u8>,
 	},
 }

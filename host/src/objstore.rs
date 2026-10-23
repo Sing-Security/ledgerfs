@@ -42,6 +42,8 @@ use ledgerfs::{Error as LedgerFsError, Result as LedgerFsResult};
 use crate::device::{BlockDevice, HintCache};
 use crate::error::{Error, Result};
 
+/// A [`ObjectStore`] over a volume's on-disk records, with a hint cache that
+/// turns repeated lookups into one verified read.
 pub struct DiskObjectStore {
 	/// The volume's backing storage. A trait object rather than a type
 	/// parameter: `HostFs`, `Volume` and every commit-path signature stay
@@ -87,6 +89,8 @@ pub struct DiskObjectStore {
 // region:    --- Construction
 
 impl DiskObjectStore {
+	/// Build a store over `device`, bounded by the volume's `total_blocks` and
+	/// the superblock's `max_scan_blocks` scan limit.
 	pub fn new(device: Box<dyn BlockDevice>, total_blocks: u64, max_scan_blocks: u64) -> Self {
 		// Ask the device where a sidecar would go before it is boxed away.
 		let hint_cache = device.hint_cache();
@@ -107,6 +111,7 @@ impl DiskObjectStore {
 		self.device.as_ref()
 	}
 
+	/// The volume's total block count, from the superblock.
 	pub fn total_blocks(&self) -> u64 {
 		self.total_blocks
 	}

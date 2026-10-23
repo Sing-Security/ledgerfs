@@ -12,8 +12,11 @@ use crate::error::{Error, Result};
 /// Inode kind (file type)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum InodeKind {
+	/// A file holding content.
 	RegularFile,
+	/// A directory holding named entries.
 	Directory,
+	/// A symbolic link whose target is held in `content_ref`.
 	Symlink,
 	// Reserved for future: BlockDevice, CharDevice, Fifo, Socket
 }

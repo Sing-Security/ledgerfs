@@ -4,6 +4,7 @@
 
 use core::fmt;
 
+/// Result type for LedgerFS operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// LedgerFS error types
@@ -11,17 +12,33 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub enum Error {
 	// -- Encoding Errors
 	/// Invalid magic number
-	InvalidMagic { expected: u64, found: u64 },
+	InvalidMagic {
+		/// Magic value the decoder expected.
+		expected: u64,
+		/// Magic value actually read from the buffer.
+		found: u64,
+	},
 	/// Checksum verification failed
 	ChecksumMismatch,
 	/// Record length out of bounds
-	InvalidRecordLength { len: u32 },
+	InvalidRecordLength {
+		/// Length value that was rejected as out of range.
+		len: u32,
+	},
 	/// Buffer too small
-	BufferTooSmall { required: usize, available: usize },
+	BufferTooSmall {
+		/// Number of bytes the operation needed.
+		required: usize,
+		/// Number of bytes the provided buffer actually holds.
+		available: usize,
+	},
 
 	// -- Record Errors
 	/// Invalid object type
-	InvalidObjectType { type_id: u16 },
+	InvalidObjectType {
+		/// Discriminator that is not a known object type (§7.2).
+		type_id: u16,
+	},
 	/// Stored hash does not match computed hash
 	StoredHashMismatch,
 	/// Object ID verification failed
@@ -33,25 +50,52 @@ pub enum Error {
 	/// No valid superblock found
 	NoValidSuperblock,
 	/// RLR entry checksum invalid
-	RlrEntryChecksumInvalid { index: usize },
+	RlrEntryChecksumInvalid {
+		/// Index of the ring entry whose checksum failed.
+		index: usize,
+	},
 	/// Invalid RLR head/tail pointers
-	InvalidRlrPointers { head: u32, tail: u32 },
+	InvalidRlrPointers {
+		/// Ring head pointer that was read.
+		head: u32,
+		/// Ring tail pointer that was read.
+		tail: u32,
+	},
 
 	// -- Intent Log Errors
 	/// Intent log sequence collision detected
-	IntentLogSeqCollision { seq: u64 },
+	IntentLogSeqCollision {
+		/// Sequence number carried by the conflicting records.
+		seq: u64,
+	},
 	/// Intent log unreliable
 	IntentLogUnreliable,
 	/// Invalid intent record type
-	InvalidIntentRecordType { type_id: u16 },
+	InvalidIntentRecordType {
+		/// Discriminator that is not a known intent record type (§16.2).
+		type_id: u16,
+	},
 	/// Transaction ID mismatch
-	TxIdMismatch { expected: u64, found: u64 },
+	TxIdMismatch {
+		/// Transaction ID the operation expected.
+		expected: u64,
+		/// Transaction ID actually found in the record.
+		found: u64,
+	},
 
 	// -- Mount Errors
 	/// Commit sequence continuity violated
-	CommitSeqContinuityViolated { expected: u64, found: u64 },
+	CommitSeqContinuityViolated {
+		/// Commit sequence the continuity check expected.
+		expected: u64,
+		/// Commit sequence actually found.
+		found: u64,
+	},
 	/// Split-brain detected (same seq, different roots)
-	SplitBrainDetected { seq: u64 },
+	SplitBrainDetected {
+		/// Commit sequence at which two differing roots were found.
+		seq: u64,
+	},
 	/// Root verification failed
 	RootVerificationFailed,
 	/// Replay precondition failed

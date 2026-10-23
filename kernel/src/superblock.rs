@@ -38,17 +38,28 @@ pub const FEATURE_INCOMPAT_DATA_ENCRYPTED: u64 = 0x0000_0000_0000_0001;
 /// Root slot identifier (A or B)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootSlot {
+	/// The first of the two root slots (A).
 	SlotA,
+	/// The second of the two root slots (B).
 	SlotB,
 }
 
 /// RLR Entry (Root Locator Ring entry) (§10.1)
 #[derive(Debug, Clone)]
 pub struct RlrEntry {
+	/// Content-addressed id of the root this entry names (§10.1).
 	pub root_id: [u8; BLAKE3_HASH_SIZE],
+	/// Commit sequence that produced that root; entries are monotonic in it
+	/// going back from the head (§18.3).
 	pub commit_seq: u64,
+	/// Wall-clock timestamp recorded when the entry was written; not
+	/// consulted by mount selection (§10.1).
 	pub timestamp: u64,
+	/// Entry flags; `RLR_FLAG_NON_MONOTONIC` marks a break in the sequence
+	/// monotonicity invariant (§18.3).
 	pub flags: u32,
+	/// Truncated BLAKE3 over the entry's preceding fields, checked before the
+	/// entry is accepted as a mount candidate (§18.2).
 	pub entry_checksum: u64,
 }
 
@@ -291,24 +302,43 @@ impl LedgerFsLimits {
 /// have those bytes as zero will decode correctly with no migration needed.
 #[derive(Debug, Clone)]
 pub struct Superblock {
+	/// Block magic, `SUPERBLOCK_MAGIC` (§10.1).
 	pub magic: u64,
+	/// Superblock format version (§10.1).
 	pub version: u32,
+	/// Block size in bytes; must equal `BLOCK_SIZE` (§10.1).
 	pub block_size: u32,
+	/// Volume size in blocks (§10.1).
 	pub total_blocks: u64,
 
 	// Active root pointer
+	/// Content-addressed id of the root this copy names (§10.1).
 	pub active_root_id: [u8; BLAKE3_HASH_SIZE],
+	/// Commit sequence of the active root; monotonic across commits (§10.1,
+	/// §13.1).
 	pub active_commit_seq: u64,
+	/// Truncated BLAKE3 over `active_root_id` and `active_commit_seq`, so a
+	/// torn active reference is rejected on decode (§10.1).
 	pub active_checksum: u64,
 
 	// Root Locator Ring
+	/// Index in the embedded ring where the next entry is written (§10.1).
 	pub rlr_head: u32,
+	/// Trailing index of the embedded ring, range-checked on decode; which
+	/// entries matter is decided by content, not position (§18.2).
 	pub rlr_tail: u32,
+	/// Entries of the embedded Root Locator Ring (§10.1).
 	pub rlr_entries: Vec<RlrEntry>,
 
 	// Feature flags
+	/// Feature bits an older reader may ignore while still using the volume
+	/// (§43.2).
 	pub features_compat: u64,
+	/// Feature bits that require a read-only mount by a reader that does not
+	/// understand them (§43.2).
 	pub features_ro_compat: u64,
+	/// Feature bits a reader must understand to mount at all; see
+	/// `FEATURE_INCOMPAT_DATA_ENCRYPTED` (§43.2).
 	pub features_incompat: u64,
 
 	// Extended RLR fields — fixed at bytes 3464 and 3472 of the block.
@@ -346,6 +376,8 @@ pub struct Superblock {
 	pub keyslots: [crate::keyslot::KeySlot; crate::keyslot::SLOT_COUNT],
 
 	// Superblock checksum
+	/// Truncated BLAKE3 over the whole block except this final field; a copy
+	/// that fails it is discarded rather than treated as a copy (§10.2).
 	pub superblock_checksum: u64,
 }
 
@@ -726,22 +758,42 @@ impl Superblock {
 /// Root candidate for mount selection
 #[derive(Debug, Clone)]
 pub struct RootCandidate {
+	/// Content-addressed id of the candidate root.
 	pub root_id: [u8; BLAKE3_HASH_SIZE],
+	/// Commit sequence that produced the candidate; selection takes the
+	/// highest and uses it for continuity checks (§18.1).
 	pub commit_seq: u64,
+	/// Where the candidate was found, used for deterministic tie-breaking.
 	pub source: CandidateSource,
 }
 
+/// Where a root candidate was discovered (§18.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateSource {
-	ActiveSlot { copy: usize },
-	RlrEntry { copy: usize, index: usize },
+	/// The copy's active root pointer.
+	ActiveSlot {
+		/// Index of the superblock copy that contributed the candidate.
+		copy: usize,
+	},
+	/// An entry in one copy's embedded Root Locator Ring.
+	RlrEntry {
+		/// Index of the superblock copy that contributed the candidate.
+		copy: usize,
+		/// Index of the entry within that copy's ring.
+		index: usize,
+	},
 }
 
 /// Mount selection result
 #[derive(Debug)]
 pub struct MountSelection {
+	/// The root mount should adopt.
 	pub selected_root: RootCandidate,
+	/// Read-write unless a split brain or a commit-sequence gap forces
+	/// `ReadOnlySafe` (§18.3, §18.7).
 	pub mode: FsMode,
+	/// What the intent log says about a commit that may have been in flight
+	/// (§18.5).
 	pub replay_decision: ReplayDecision,
 }
 

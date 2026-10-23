@@ -117,7 +117,10 @@ pub struct KdfParams {
 /// One keyslot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeySlot {
+	/// Which credential unlocks this slot.
 	pub kind: SlotKind,
+	/// Key-derivation parameters recorded for this slot; ignored for
+	/// [`SlotKind::Hsm`].
 	pub kdf: KdfParams,
 	/// Master key encrypted under this slot's KEK (AES-256-CBC).
 	pub wrapped_key: [u8; MASTER_KEY_LEN],
@@ -148,6 +151,7 @@ impl KeySlot {
 		}
 	}
 
+	/// Whether this slot holds no credential.
 	pub fn is_empty(&self) -> bool {
 		self.kind == SlotKind::Empty
 	}

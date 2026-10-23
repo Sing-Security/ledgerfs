@@ -21,16 +21,25 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ObjectType {
+	/// File content chunk.
 	Data = 0x01,
+	/// File, directory, or symlink metadata.
 	Inode = 0x02,
+	/// Internal B-tree node.
 	BTreeNode = 0x03,
+	/// B-tree leaf.
 	BTreeLeaf = 0x04,
+	/// Logical-offset to chunk mapping (§19.2).
 	ExtentMap = 0x05,
+	/// Deduplication index entry (§21.1).
 	DedupeEntry = 0x06,
+	/// The commit root.
 	Root = 0x07,
 }
 
 impl ObjectType {
+	/// Decode a discriminator, refusing values outside the set defined in
+	/// §7.2.
 	pub fn from_u16(val: u16) -> Result<Self> {
 		match val {
 			0x01 => Ok(Self::Data),
@@ -44,6 +53,7 @@ impl ObjectType {
 		}
 	}
 
+	/// The on-disk discriminant for this object type.
 	pub fn to_u16(self) -> u16 {
 		self as u16
 	}
@@ -52,13 +62,24 @@ impl ObjectType {
 /// ObjectRecord header (§7.1)
 #[derive(Debug, Clone)]
 pub struct ObjectRecordHeader {
+	/// Record magic, `OBJECT_RECORD_MAGIC` (§7.1).
 	pub magic: u64,
+	/// Object kind, one of the discriminators defined in §7.2.
 	pub object_type: ObjectType,
+	/// Compression algorithm applied to the payload, or 0 for none (§7.1,
+	/// §28.1).
 	pub compression: u8,
+	/// Encryption flags for the payload; 0 means plaintext (§7.1).
 	pub encryption: u8,
+	/// Payload length as stored, after any compression (§7.1).
 	pub stored_len: u32,
+	/// Payload length before compression; object identity is computed over
+	/// these bytes, so compressing an object does not change its name (§7.1).
 	pub logical_len: u32,
+	/// Truncated BLAKE3 over the record from `object_type` through the
+	/// payload, excluding `magic` and `checksum` itself (§7.1).
 	pub checksum: u64,
+	/// Full BLAKE3 hash of the canonical, uncompressed payload (§7.1).
 	pub object_id: [u8; BLAKE3_HASH_SIZE],
 }
 

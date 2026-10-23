@@ -28,6 +28,7 @@ use crate::commit::{AtaBlockDevice, BlockDevice};
 /// line without the caller needing to know this module's internals.
 #[derive(Debug, Clone, Copy)]
 pub struct RoundtripResult {
+	/// `true` when the block read back matched the pattern written.
 	pub passed: bool,
 	/// Index of the first byte that differed (only meaningful if `!passed`).
 	pub first_mismatch_offset: Option<usize>,

@@ -84,8 +84,13 @@ fn positioned_write(file: &File, at: u64, data: &[u8]) -> io::Result<usize> {
 /// every hint is re-verified against the block it names before it is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VolumeIdentity {
+	/// The volume's size in bytes.
 	pub size_bytes: u64,
+	/// Device id of the file behind the volume; zero where the platform has
+	/// none.
 	pub dev: u64,
+	/// Inode number of the file behind the volume; the file's creation time on
+	/// Windows.
 	pub ino: u64,
 }
 

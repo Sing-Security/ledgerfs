@@ -84,6 +84,8 @@ pub enum Origin {
 	ReadOnly,
 }
 
+/// A mounted, addressable LedgerFS volume: the read half, the CoW write and
+/// commit machinery, and the allocator that places new objects.
 pub struct Store {
 	/// The read half — path resolution, listing, and the object cache the
 	/// commit path fills.

@@ -34,15 +34,23 @@ use crate::volume::Volume;
 /// One directory entry, with the metadata a listing wants to show.
 #[derive(Debug, Clone)]
 pub struct Entry {
+	/// The entry's name within its parent directory.
 	pub name: String,
+	/// What the entry is: directory, regular file, or symlink.
 	pub kind: InodeKind,
+	/// Content size in bytes, from the entry's `Inode`.
 	pub size: u64,
+	/// Permission bits recorded on the entry's `Inode`.
 	pub mode: u32,
+	/// Reference to the entry's `Inode`, which carries its remaining metadata.
 	pub inode_ref: ObjectRef,
 }
 
+/// A mounted LedgerFS volume addressed by `/`-separated path.
 pub struct HostFs {
+	/// The mounted volume: its superblock, decoded copies, and mount decision.
 	pub volume: Volume,
+	/// The disk-backed object store every path lookup resolves through.
 	pub store: DiskObjectStore,
 
 	/// The active root directory's `Inode` — where the superblock points.

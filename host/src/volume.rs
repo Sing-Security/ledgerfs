@@ -29,6 +29,8 @@ pub const fn superblock_copy_lbas(total_blocks: u64) -> [u64; NUM_SUPERBLOCK_COP
 	[0, 1, total_blocks.saturating_sub(2), total_blocks.saturating_sub(1)]
 }
 
+/// A mounted volume: the superblock the mount reads from, every copy that
+/// decoded, and the selection that chose between them.
 pub struct Volume {
 	/// The superblock copy `mount_select` chose.
 	pub superblock: Superblock,

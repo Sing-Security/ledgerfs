@@ -24,16 +24,22 @@ pub struct WalkEntry {
 	/// Volume-absolute path, `/`-separated, no trailing slash. The root itself
 	/// is not an entry.
 	pub path: String,
+	/// What the entry is: directory, regular file, or symlink.
 	pub kind: InodeKind,
+	/// Content size in bytes, from the entry's `Inode`.
 	pub size: u64,
+	/// Permission bits, replayed as the destination's mode.
 	pub mode: u32,
 }
 
 /// What a rebuild moved.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RebuildStats {
+	/// Directories created in the destination, or found already present.
 	pub dirs: u64,
+	/// Files written to the destination.
 	pub files: u64,
+	/// Content bytes written — the sum of the copied files' lengths.
 	pub bytes: u64,
 }
 

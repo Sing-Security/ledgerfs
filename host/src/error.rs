@@ -9,8 +9,11 @@ use std::path::PathBuf;
 
 use ledgerfs::Error as LedgerFsError;
 
+/// The crate's result type: [`Error`] as the failure half.
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Everything that can fail while opening, mounting, reading, or writing a
+/// volume from the host side.
 #[derive(Debug)]
 pub enum Error {
 	// -- Command line
@@ -20,83 +23,111 @@ pub enum Error {
 	// -- Image & partition geometry
 	/// The image file could not be opened, or is not the size it claims.
 	ImageOpen {
+		/// The image file the caller named.
 		path: PathBuf,
+		/// The open or read failure, as the operating system reported it.
 		detail: String,
 	},
 	/// No MBR signature at byte 510 — not a partitioned image.
 	NoPartitionTable {
+		/// The image file whose MBR sector was read.
 		path: PathBuf,
 	},
 	/// The image has no partition of the requested kind.
 	PartitionNotFound {
+		/// The missing partition's mount-point label (`/system`, `/data`, ...).
 		kind: String,
 	},
 
 	// -- Mount
 	/// A superblock copy could not be turned into a `Superblock`.
 	SuperblockUnreadable {
+		/// Physical block of the copy that failed to decode.
 		copy_lba: u64,
+		/// The decode failure(s), joined when both head copies were tried.
 		detail: String,
 	},
 	/// `mount_select` found no usable root, or the volume's geometry
 	/// disagrees with its partition.
 	Mount {
+		/// What mount selection or the geometry check refused, and why.
 		detail: String,
 	},
 	/// The superblocks are valid and say nothing has ever been committed to
 	/// this volume — which is what the image initialiser leaves behind, not
 	/// damage.
 	VolumeUncommitted {
+		/// The block count the valid superblock advertises.
 		total_blocks: u64,
 	},
 	/// The active root object was located but would not decode.
 	RootUnreadable {
+		/// Why the root object could not be located or decoded.
 		detail: String,
 	},
 
 	// -- Object access
 	/// No `ObjectRecord` on the volume carries the requested `ObjectId`.
 	ObjectNotFound {
+		/// The missing object's id, in hex.
 		object_id: String,
 	},
 	/// A read would fall outside the partition this device was opened on.
 	OutOfBounds {
+		/// Byte offset of the requested read or write.
 		offset: u64,
+		/// Length in bytes of the requested read or write.
 		len: usize,
+		/// Size of the partition the request must fall inside.
 		size_bytes: u64,
 	},
 	/// The underlying file returned fewer bytes than `read_at` promised.
 	ShortRead {
+		/// Byte offset at which the short read occurred.
 		offset: u64,
+		/// Bytes still outstanding at that point.
 		want: usize,
+		/// Bytes actually delivered — zero when the file reported end-of-file.
 		got: usize,
 	},
 	/// A length that has to be a whole number of blocks is not one.
 	Misaligned {
+		/// The operation that required block alignment.
 		context: &'static str,
+		/// The offending length in bytes.
 		len: usize,
+		/// The block size `len` had to be a multiple of.
 		block_size: u32,
 	},
 
 	// -- Path resolution
+	/// A path component that must be a directory turned out not to be one.
 	NotADirectory {
+		/// The path whose lookup hit the non-directory.
 		path: String,
 	},
+	/// A file operation was handed a path to a directory.
 	IsADirectory {
+		/// The path that names a directory.
 		path: String,
 	},
+	/// A path component does not exist.
 	NoSuchFile {
+		/// The path that could not be resolved.
 		path: String,
 	},
 	/// A create was asked for a name that is already taken.
 	AlreadyExists {
+		/// The path whose creation was refused.
 		path: String,
 	},
 	/// A staged operation would take a staging session past the capacity the
 	/// session was opened with. The operation is refused and the session is
 	/// left as it was — it is not a partial write, and it does not auto-seal.
 	StagingFull {
+		/// Session total in bytes the operation would have reached.
 		wanted: u64,
+		/// The session's byte budget, as it was opened.
 		capacity: u64,
 	},
 
@@ -106,21 +137,27 @@ pub enum Error {
 	/// that would land inside a file's existing bytes — both refusals rather
 	/// than corruptions, see [`Store::rename`](crate::Store::rename).
 	Unsupported {
+		/// What was refused, named in the caller's own terms.
 		detail: String,
 	},
 	/// A file the store reads as text — an app-store marker — is not UTF-8.
 	/// Surfaced rather than swallowed: a volume that calls itself an app store
 	/// and then cannot say whose is worth a caller's attention.
 	MarkerUnreadable {
+		/// The marker file whose bytes were not valid UTF-8.
 		path: String,
+		/// The UTF-8 decoding failure.
 		detail: String,
 	},
 
 	// -- Verification
 	/// A file read back out of the volume is not the file that was written.
 	ContentMismatch {
+		/// The volume path whose content differed.
 		path: String,
+		/// The local file or image the read-back was compared against.
 		local: String,
+		/// What differed: sizes, the first differing byte, or entry counts.
 		detail: String,
 	},
 
@@ -130,6 +167,8 @@ pub enum Error {
 	/// volume. Both are stated in `detail`, because both arrive at the same
 	/// place in `commit`.
 	ReadOnly {
+		/// Which precondition was missing: a read-only device, or no allocator
+		/// snapshot on the volume.
 		detail: String,
 	},
 	/// A second writer tried to open a volume an existing writer already holds.
@@ -139,11 +178,14 @@ pub enum Error {
 	/// taken by every writable [`FileBlockDevice`](crate::FileBlockDevice);
 	/// a read-only open takes no lock and is always allowed.
 	Locked {
+		/// The volume file another handle already holds open for writing.
 		path: PathBuf,
 	},
 
 	// -- Externals
+	/// An operating-system I/O operation failed.
 	Io(std::io::Error),
+	/// The kernel-side LedgerFS code rejected the operation.
 	Format(LedgerFsError),
 }
 

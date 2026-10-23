@@ -17,14 +17,23 @@ use alloc::{collections::BTreeMap, vec, vec::Vec};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum IntentRecordType {
+	/// Transaction start.
 	Begin = 0x01,
+	/// An object staged by the transaction was written: object id, physical
+	/// LBA, and size in blocks (§16.2).
 	AddObject = 0x02,
+	/// The transaction's new root is prepared; the payload carries the root
+	/// id, commit sequence, and previous commit sequence (§16.2).
 	PrepareRoot = 0x03,
+	/// The transaction's root is durable.
 	CommitRoot = 0x04,
+	/// The transaction did not complete.
 	Abort = 0x05,
 }
 
 impl IntentRecordType {
+	/// Decode a discriminator, refusing values outside the set defined in
+	/// §16.2.
 	pub fn from_u16(val: u16) -> Result<Self> {
 		match val {
 			0x01 => Ok(Self::Begin),
@@ -36,6 +45,7 @@ impl IntentRecordType {
 		}
 	}
 
+	/// The on-disk discriminant for this record type.
 	pub fn to_u16(self) -> u16 {
 		self as u16
 	}
@@ -44,18 +54,28 @@ impl IntentRecordType {
 /// Intent log record (§16.1)
 #[derive(Debug, Clone)]
 pub struct IntentLogRecord {
+	/// Record magic, `INTENT_LOG_MAGIC` (§16.1).
 	pub magic: u64,
+	/// Record sequence within the ring (§16.1).
 	pub seq: u64,
+	/// Transaction this record belongs to (§16.1).
 	pub tx_id: u64,
+	/// Record kind, one of the discriminators defined in §16.2.
 	pub record_type: IntentRecordType,
+	/// Total encoded record length in bytes, covering header, payload, and
+	/// hash (§16.1).
 	pub record_len: u32,
+	/// Type-specific body; §16.2 describes the layout for each record type.
 	pub payload: Vec<u8>,
+	/// BLAKE3 over the record header and payload (§16.1).
 	pub record_hash: [u8; BLAKE3_HASH_SIZE],
 }
 
 impl IntentLogRecord {
 	/// Minimum header size (excluding payload and hash)
 	pub const HEADER_SIZE: usize = 8 + 8 + 8 + 2 + 4; // 30 bytes
+	/// Minimum encoded record size before 8-byte alignment: header plus hash
+	/// (§16.1). The ring parser rounds this up to `MIN_RECORD_LEN`.
 	pub const MIN_SIZE: usize = Self::HEADER_SIZE + BLAKE3_HASH_SIZE; // 62 bytes (aligned up to 64)
 
 	/// Create a new intent log record
@@ -184,15 +204,22 @@ impl IntentLogRecord {
 /// Transaction view (state from intent log)
 #[derive(Debug, Clone)]
 pub struct TxView {
+	/// Transaction this view describes.
 	pub tx_id: u64,
+	/// Sequence of the transaction's `Begin` record, if one was seen.
 	pub begin_seq: Option<u64>,
+	/// Sequence of the latest `PrepareRoot` record, if one was seen.
 	pub prepare_root_seq: Option<u64>,
+	/// Root commit sequence carried in that `PrepareRoot` payload, if present.
 	pub prepare_root_commit_seq: Option<u64>,
+	/// Sequence of the latest `CommitRoot` record, if one was seen.
 	pub commit_root_seq: Option<u64>,
+	/// Sequence of the latest `Abort` record, if one was seen.
 	pub abort_seq: Option<u64>,
 }
 
 impl TxView {
+	/// An empty view for `tx_id`, with no records observed yet.
 	pub fn new(tx_id: u64) -> Self {
 		Self {
 			tx_id,
@@ -218,8 +245,13 @@ impl TxView {
 /// Replay decision for mount
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayDecision {
+	/// The mounted root is current; the intent log holds nothing to replay.
 	NoReplay,
-	ReplayTo { commit_seq: u64 },
+	/// The root at `commit_seq` should be adopted (§18.5).
+	ReplayTo {
+		/// Commit sequence of the root to replay to.
+		commit_seq: u64,
+	},
 }
 
 /// Intent log structure
