@@ -62,11 +62,10 @@ use ledgerfs::{Error as LedgerFsError, Result as LedgerFsResult};
 use crate::device::BlockDevice;
 use crate::error::{Error, Result};
 use crate::image::PartitionKind;
-use crate::mutate::{
-	Chain, build_create_txn, build_create_with_data_txn, build_rename_txn, build_unlink_txn, build_write_txn,
-};
+use crate::mutate::{Chain, build_create_txn, build_rename_txn, build_unlink_txn};
 use crate::objstore::to_ledgerfs;
 use crate::path::{Entry, HostFs};
+use crate::staging::StagedFold;
 use crate::volume::{publish_root_into, superblock_copy_lbas};
 
 use std::path::Path;
@@ -573,19 +572,19 @@ impl Store {
 
 	/// Write `data` to a new file at `path`, creating it.
 	///
-	/// **One transaction** for content that fits in a single object — the file
-	/// inode, its page of content and its directory entry are placed and
-	/// committed together. The commit is this volume's durability point, so a
-	/// caller waiting for one 256-byte record to be durable should be waiting on
-	/// one commit and not two, and the create-then-write pair also rewrote the
-	/// inode and the directory node it had just written.
+	/// **One transaction**, whatever the length. The file inode, every chunk
+	/// of content, the extent tree over them and the directory entry are
+	/// placed and committed together: the commit is this volume's durability
+	/// point, so a caller storing a record waits on one of them, and a payload
+	/// larger than one object no longer costs one commit per object — nor
+	/// leaves a prefix of itself behind when a later piece runs out of room.
 	///
-	/// Data past the first `max_object_bytes` extends the file in further
-	/// transactions, one per piece. That ceiling belongs to the format, not to
-	/// this transaction: a single larger object would be refused by
-	/// `CommitEngine` (and skipped silently by readers) because it exceeds the
-	/// volume's own limit — [`Superblock::max_object_bytes`], which resolves an
-	/// all-zero `LedgerFsLimits` to the compiled-in default rather than to zero.
+	/// The pieces are still one object each. That ceiling belongs to the
+	/// format, not to this transaction: a single larger object would be refused
+	/// by `CommitEngine` (and skipped silently by readers) because it exceeds
+	/// the volume's own limit — [`Superblock::max_object_bytes`], which resolves
+	/// an all-zero `LedgerFsLimits` to the compiled-in default rather than to
+	/// zero.
 	pub fn write_new_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
 		let chunk = self.max_object_bytes.max(1);
 		let chain = self.fs.resolve_chain(path)?;
@@ -594,32 +593,31 @@ impl Store {
 		// An empty `data` is the plain create: there is no content to build a
 		// chunk and an extent out of, and a file created empty is exactly what
 		// `create_file` produces.
-		let (head, rest) = if data.len() > chunk {
-			data.split_at(chunk)
-		} else {
-			(data, &[][..])
-		};
-		let txn = if head.is_empty() {
-			build_create_txn(&self.fs.store, &self.root, &chain, 0, 0, mode, false)?
-		} else {
-			build_create_with_data_txn(&self.fs.store, &self.root, &chain, head, 0, 0, mode)?
-		};
-		self.commit(txn)?;
-
-		if !rest.is_empty() {
-			self.write_chunks(path, head.len() as u64, rest)?;
+		if data.is_empty() {
+			let txn = build_create_txn(&self.fs.store, &self.root, &chain, 0, 0, mode, false)?;
+			self.commit(txn)?;
+			return Ok(());
 		}
+
+		let mut fold = StagedFold::new(&self.fs.store, &self.root);
+		let head = data.len().min(chunk);
+		fold.create_with_data(path, &data[..head], mode)?;
+		for (i, piece) in data[head..].chunks(chunk).enumerate() {
+			fold.write(path, (head + i * chunk) as u64, piece)?;
+		}
+		let txn = fold.into_plan(self.root.commit_seq)?;
+		self.commit(txn)?;
 		Ok(())
 	}
 
 	/// Write `data` to `path`, replacing whatever was there.
 	///
-	/// Two or more transactions: an existing file is removed first, then the
-	/// new content is created and written. Deliberately not atomic — a crash
-	/// between the two leaves `path` absent — which is stated here because a
-	/// caller that needs the replace to be atomic (a `state.json` rewrite, say)
-	/// should instead build the new content under a scratch name and
-	/// [`rename`](Self::rename) it into place.
+	/// Two commits: an existing file is removed first, then the new content is
+	/// created and written. Deliberately not atomic — a crash between the two
+	/// leaves `path` absent — which is stated here because a caller that needs
+	/// the replace to be atomic (a `state.json` rewrite, say) should instead
+	/// build the new content under a scratch name and [`rename`](Self::rename)
+	/// it into place.
 	pub fn write_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
 		match self.stat(path) {
 			Ok(inode) if inode.kind == InodeKind::Directory => {
@@ -641,9 +639,9 @@ impl Store {
 	/// when it is missing is the logging case, not POSIX `O_APPEND` — a caller
 	/// that wants "must already exist" can [`stat`](Self::stat) first.
 	///
-	/// One transaction per `max_object_bytes` of `data` (see
-	/// [`write_new_file`](Self::write_new_file)), so a single small line is a
-	/// single commit.
+	/// **One transaction**, however many objects `data` spans: the pieces are
+	/// folded into a single commit by the same machinery
+	/// [`write_new_file`](Self::write_new_file) uses.
 	pub fn append(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
 		let size = match self.stat(path) {
 			Ok(inode) => {
@@ -759,16 +757,15 @@ impl Store {
 	}
 
 	/// Write `data` into the existing file at `path` beginning at
-	/// `start_offset`, in as many transactions as the volume's object ceiling
-	/// requires.
+	/// `start_offset`, as **one** transaction however many objects it spans.
 	///
-	/// The file reference is re-resolved on every iteration, and it must be:
-	/// each `write` replaces the file's inode with a CoW copy under a new
-	/// object id, so the reference from the previous iteration names an object
-	/// that is still on disk but no longer reachable from the directory entry.
-	/// Writing through a stale reference does not fail — it silently builds
-	/// every piece on top of the *original* inode, so only the last one
-	/// survives.
+	/// The pieces are folded, not committed one at a time: each `write`
+	/// replaces the file's inode with a CoW copy under a new object id, and the
+	/// fold re-resolves the file through an overlay of the pieces already
+	/// staged, so piece N+1 builds on piece N. The merged plan is pruned to
+	/// what the final root reaches, so the intermediate generations of the
+	/// inode and extent node are not written at all — the device bytes are the
+	/// chunks plus one copy of the metadata, not one copy per piece.
 	fn write_chunks(&mut self, path: &str, start_offset: u64, data: &[u8]) -> Result<()> {
 		if data.is_empty() {
 			return Ok(());
@@ -777,13 +774,12 @@ impl Store {
 		// volume's limits somehow resolve to it.
 		let chunk = self.max_object_bytes.max(1);
 
+		let mut fold = StagedFold::new(&self.fs.store, &self.root);
 		for (i, piece) in data.chunks(chunk).enumerate() {
-			let offset = start_offset + (i * chunk) as u64;
-			let file_ref = self.fs.resolve(path)?;
-			let chain = self.fs.resolve_chain(path)?;
-			let txn = build_write_txn(&self.fs.store, &self.root, &chain, file_ref, offset, piece)?;
-			self.commit(txn)?;
+			fold.write(path, start_offset + (i * chunk) as u64, piece)?;
 		}
+		let txn = fold.into_plan(self.root.commit_seq)?;
+		self.commit(txn)?;
 		Ok(())
 	}
 

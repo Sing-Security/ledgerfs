@@ -151,14 +151,7 @@ impl HostFs {
 	/// forward so the next level is one read rather than a scan. An empty path
 	/// or `/` is the root itself.
 	pub fn resolve(&self, path: &str) -> Result<ObjectRef> {
-		let components = components_of(path)?;
-		if components.is_empty() {
-			return Ok(self.root_inode_ref);
-		}
-
-		let chain = self.resolve_chain(path)?;
-		let (parent_ref, name) = chain.last().expect("a non-empty path yields a non-empty chain");
-		self.lookup_in(path, *parent_ref, name)
+		resolve_in(&self.store, self.root_inode_ref, path)
 	}
 
 	/// The mutation chain for `path`: one `(directory, name)` pair per
@@ -175,40 +168,7 @@ impl HostFs {
 	/// how a nested mutation reaches the volume root. See the `mutate` module for
 	/// why that has to happen at all.
 	pub fn resolve_chain(&self, path: &str) -> Result<Vec<(ObjectRef, String)>> {
-		let components = components_of(path)?;
-		if components.is_empty() {
-			return Err(Error::Usage(format!(
-				"{path} names the volume root, which is not something that can be created or written"
-			)));
-		}
-
-		let mut chain = Vec::with_capacity(components.len());
-		let mut current = self.root_inode_ref;
-		let mut prefix = String::new();
-
-		for (i, component) in components.iter().enumerate() {
-			chain.push((current, component.to_string()));
-
-			// The target's own parent is `current`, and there is nothing below
-			// the target to resolve.
-			if i + 1 == components.len() {
-				break;
-			}
-			if !prefix.is_empty() {
-				prefix.push('/');
-			}
-			prefix.push_str(component);
-			// Name the component that is actually missing. A create of
-			// `relay/transcript.jsonl` with no `relay/` is a missing
-			// *directory*, and a `NoSuchFile` naming the tail sends the caller
-			// hunting for the wrong thing — the failure mode that once left a
-			// whole fleet of writers recording nothing.
-			current = self
-				.lookup_child(path, current, component)?
-				.ok_or_else(|| Error::NoSuchFile { path: prefix.clone() })?;
-		}
-
-		Ok(chain)
+		resolve_chain_in(&self.store, self.root_inode_ref, path)
 	}
 
 	/// The [`Inode`] at `path`.
@@ -222,26 +182,123 @@ impl HostFs {
 	/// Distinguishes "absent" from "the parent is not a directory", which a
 	/// create needs: the first is the normal case, the second is an error.
 	pub(crate) fn lookup_child(&self, path: &str, dir_ref: ObjectRef, name: &str) -> Result<Option<ObjectRef>> {
-		let inode = self.store.inode(dir_ref)?;
-		if inode.kind != InodeKind::Directory {
-			return Err(Error::NotADirectory { path: path.to_string() });
-		}
-		if inode.content_ref.is_zero() {
-			return Ok(None);
-		}
-
-		let node = self.store.dir_node(inode.content_ref)?;
-		lookup(&self.store, &node, name, 0)
-	}
-
-	/// `name` inside the directory at `dir_ref`, which must exist.
-	fn lookup_in(&self, path: &str, dir_ref: ObjectRef, name: &str) -> Result<ObjectRef> {
-		self.lookup_child(path, dir_ref, name)?
-			.ok_or_else(|| Error::NoSuchFile { path: path.to_string() })
+		lookup_child_in(&self.store, path, dir_ref, name)
 	}
 }
 
-// endregion: --- Path resolution
+// endregion: --- Path resolution (HostFs)
+
+// region:    --- Node reads
+
+/// The object reads a path walk needs, in this crate's error type.
+///
+/// Mirrors kernel `ObjectStore`'s four lookups for the two kinds a walk
+/// decodes, and exists because the two differ at exactly the place a caller
+/// notices: `ObjectStore` answers in the kernel's error, which loses the
+/// `ObjectNotFound { object_id }` this crate reports for a reference that
+/// names nothing. Both implementations — the volume, and the volume plus a
+/// fold's staged objects — can say which id was missing.
+pub(crate) trait NodeStore {
+	fn inode_of(&self, obj_ref: ObjectRef) -> Result<Inode>;
+	fn dir_node_of(&self, obj_ref: ObjectRef) -> Result<DirNode>;
+}
+
+impl NodeStore for DiskObjectStore {
+	fn inode_of(&self, obj_ref: ObjectRef) -> Result<Inode> {
+		self.inode(obj_ref)
+	}
+
+	fn dir_node_of(&self, obj_ref: ObjectRef) -> Result<DirNode> {
+		self.dir_node(obj_ref)
+	}
+}
+
+// endregion: --- Node reads
+
+// region:    --- Path resolution (free functions)
+
+/// Resolve `/`-separated `path` to an object reference, starting the walk at
+/// `root_inode_ref` and reading every object through `store`.
+///
+/// The store-generic form of [`HostFs::resolve`] — the same walk over any
+/// [`ObjectStore`], which is what lets the multi-write fold resolve paths
+/// through objects a previous step only *staged*, not yet committed. An empty
+/// path or `/` is the root itself.
+pub(crate) fn resolve_in<S: NodeStore>(store: &S, root_inode_ref: ObjectRef, path: &str) -> Result<ObjectRef> {
+	let components = components_of(path)?;
+	if components.is_empty() {
+		return Ok(root_inode_ref);
+	}
+
+	let chain = resolve_chain_in(store, root_inode_ref, path)?;
+	let (parent_ref, name) = chain.last().expect("a non-empty path yields a non-empty chain");
+	lookup_child_in(store, path, *parent_ref, name)?.ok_or_else(|| Error::NoSuchFile { path: path.to_string() })
+}
+
+/// The store-generic form of [`HostFs::resolve_chain`]: the mutation chain for
+/// `path` read through `store`, starting at `root_inode_ref`.
+pub(crate) fn resolve_chain_in<S: NodeStore>(
+	store: &S,
+	root_inode_ref: ObjectRef,
+	path: &str,
+) -> Result<Vec<(ObjectRef, String)>> {
+	let components = components_of(path)?;
+	if components.is_empty() {
+		return Err(Error::Usage(format!(
+			"{path} names the volume root, which is not something that can be created or written"
+		)));
+	}
+
+	let mut chain = Vec::with_capacity(components.len());
+	let mut current = root_inode_ref;
+	let mut prefix = String::new();
+
+	for (i, component) in components.iter().enumerate() {
+		chain.push((current, component.to_string()));
+
+		// The target's own parent is `current`, and there is nothing below
+		// the target to resolve.
+		if i + 1 == components.len() {
+			break;
+		}
+		if !prefix.is_empty() {
+			prefix.push('/');
+		}
+		prefix.push_str(component);
+		// Name the component that is actually missing. A create of
+		// `relay/transcript.jsonl` with no `relay/` is a missing
+		// *directory*, and a `NoSuchFile` naming the tail sends the caller
+		// hunting for the wrong thing — the failure mode that once left a
+		// whole fleet of writers recording nothing.
+		current = lookup_child_in(store, path, current, component)?
+			.ok_or_else(|| Error::NoSuchFile { path: prefix.clone() })?;
+	}
+
+	Ok(chain)
+}
+
+/// The store-generic `name` lookup inside the directory at `dir_ref`: `None`
+/// when the directory has no such entry, an error when `dir_ref` is not a
+/// directory at all.
+pub(crate) fn lookup_child_in<S: NodeStore>(
+	store: &S,
+	path: &str,
+	dir_ref: ObjectRef,
+	name: &str,
+) -> Result<Option<ObjectRef>> {
+	let inode = store.inode_of(dir_ref)?;
+	if inode.kind != InodeKind::Directory {
+		return Err(Error::NotADirectory { path: path.to_string() });
+	}
+	if inode.content_ref.is_zero() {
+		return Ok(None);
+	}
+
+	let node = store.dir_node_of(inode.content_ref)?;
+	lookup(store, &node, name, 0)
+}
+
+// endregion: --- Path resolution (free functions)
 
 // region:    --- Query
 
@@ -374,7 +431,7 @@ pub fn components_of(path: &str) -> Result<Vec<&str>> {
 /// (`blake3(payload) == object_id` holds for a hostile volume too, so a node
 /// cannot name itself), but its *length* is bounded only by the volume size —
 /// which is why the walk needs a bound of its own rather than relying on one.
-fn lookup(store: &DiskObjectStore, node: &DirNode, name: &str, depth: usize) -> Result<Option<ObjectRef>> {
+fn lookup<S: NodeStore>(store: &S, node: &DirNode, name: &str, depth: usize) -> Result<Option<ObjectRef>> {
 	if let Some(entry) = node.lookup(name) {
 		return Ok(Some(entry.inode_ref()));
 	}
@@ -391,7 +448,7 @@ fn lookup(store: &DiskObjectStore, node: &DirNode, name: &str, depth: usize) -> 
 		if child.is_zero() {
 			continue;
 		}
-		let child_node = store.dir_node(*child)?;
+		let child_node = store.dir_node_of(*child)?;
 		if let Some(found) = lookup(store, &child_node, name, depth + 1)? {
 			return Ok(Some(found));
 		}

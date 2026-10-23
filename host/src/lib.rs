@@ -113,6 +113,7 @@ mod mutate;
 mod objstore;
 mod path;
 mod rebuild;
+mod staging;
 mod store;
 mod volume;
 

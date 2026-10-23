@@ -56,26 +56,35 @@ the ceiling; those are a binary search over a sorted entry vector and are fast
 
 ---
 
-## 3. A write larger than one object is one commit per object.
+## 3. An object is at most 256 KiB, so a large write is several objects.
 
-`Store::write_new_file` creates the file and writes its first object in **one**
-transaction: the chunk, its extent node, the file inode and the directory entry
-that names it are placed and committed together. A payload larger than
-`max_object_bytes` (256 KiB by default) is written in pieces, and every piece
-after the first is another commit.
+A write of any length is **one commit**: the chunks, the extent tree over them,
+the file inode and the directory entry are folded into a single transaction and
+placed together. The payload is still split into one object per
+`max_object_bytes` (256 KiB by default), and that ceiling is not this layer's
+to move — `MAX_OBJECT_SIZE` is a format limit (`FORMAT.md` §6), and the reader's
+scan skips any record above it, so an object over the limit would commit
+successfully and then read back as absent. `CommitEngine` refuses to place one
+rather than let that happen.
 
-**Consequence.** The durability cost of a large write is the cost of a commit
-multiplied by the number of objects it spans, not by a constant. Every row in
-`BENCHMARKS.md` stores 256 bytes, so every row there is one commit.
+**Consequence.** A large write costs one barrier pair, not one per object. What
+it still costs is *volume*: every chunk is a fresh 4 KiB-aligned object, and
+CoW re-places the metadata around it. The pieces are folded in memory before
+anything is written, so a payload that spans many objects also spends
+proportional transient RAM during the write.
 
-The ceiling itself is not this layer's to move: `MAX_OBJECT_SIZE` is a format
-limit (`FORMAT.md` §6), and the reader's scan skips any record above it, so an
-object over the limit would commit successfully and then read back as absent.
-`CommitEngine` refuses to place one rather than let that happen.
+**The ceiling that does bind.** `Store::append` adds one extent to the file's
+`ExtentNode` and CoW-copies the whole node on every commit, and extent-tree
+splitting is not wired into the write path. So a file that grows by appending
+*forever* eventually has an `ExtentNode` larger than the object ceiling, and its
+next append is refused; before that it is already paying O(N²) bytes. Write
+bounded chunk files instead of one endless file — `EMBEDDING.md` makes the case
+at length — and see entry 1 for why that is not a temporary limitation.
 
 **Also worth knowing.** `Store::write_file` — the verb that replaces an existing
 path — is a remove followed by the above, so it is two commits when the path
-exists and one when it does not.
+exists and one when it does not. It is not an atomic replace; write a scratch
+name and `rename` it if you need one.
 
 ---
 

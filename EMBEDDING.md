@@ -114,7 +114,9 @@ by construction.
 The cost is per *call*, not per byte. An app that writes a turn's worth of
 files should think of each call as a sync point and not scatter single-byte
 writes. A call larger than the volume's object ceiling (`max_object_bytes`,
-256 KiB by default) becomes several transactions internally.
+256 KiB by default) is split into several *objects* but stays **one**
+transaction: the pieces, the extent tree over them and the directory entry are
+folded and placed together, then committed once.
 
 Worth budgeting in real terms, because it is not small and it does not fall
 with the size of the write: **a commit costs about five blocks of volume
@@ -128,9 +130,12 @@ exists so this number can be re-derived rather than believed.
 
 The corollaries are the ones an app plans around: fewer, larger commits beat
 many small ones; a deep path costs more per write than a shallow one; and
-`write_new_file` is *two* commits (a create, then a write), so it costs about
-twice what the paragraph above describes. Use `create_file` plus `write_at`, or
-`write_file`, when you are counting.
+`write_new_file` is **one** commit — the create and the write are a single
+transaction, and a payload spanning several objects is folded into that same
+transaction rather than committed one piece at a time. The one verb that costs
+two is `write_file` replacing an existing path, which is a remove followed by a
+create; `create_file` plus `append` is the same cost, and `rename` over the
+target is one commit if you need an atomic replace.
 
 **Ordering rule, do not invert:** within `commit`, the allocator snapshot is
 persisted before the superblock. The other order can brick a volume — a

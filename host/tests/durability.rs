@@ -311,9 +311,14 @@ fn test_every_prefix_of_a_mutation_session_mounts_to_a_whole_tree() -> Result<()
 ///
 /// A caller that reasons about how much a write costs — an append-only log, a
 /// rotation policy — needs these numbers to be stable. Every verb that puts
-/// content into a new file is now **one** commit: the create and the write are
-/// a single transaction, because the commit is this volume's durability point
+/// content into a new file is **one** commit: the create and the write are a
+/// single transaction, because the commit is this volume's durability point
 /// and a caller waiting for one small record should not be waiting on two.
+///
+/// "One" holds however many objects the payload spans, too. The pieces past
+/// the first are folded into the same transaction rather than committed one
+/// each, so a large write's durability cost is one barrier pair rather than
+/// one per object — see `host/src/staging.rs`.
 ///
 /// The one verb that still costs more than one commit is `write_file`
 /// *replacing* an existing file, which is a remove followed by a create. That is
@@ -364,6 +369,17 @@ fn test_each_verb_costs_a_known_number_of_commits() -> Result<()> {
 	// -- Exec: an append that has to create the file is the same one commit
 	store.append("/h", b"first", 0o644)?;
 	expect(&store, 12, "append creating the file");
+
+	// -- Exec: a write that spans several objects is still **one** commit.
+	// Content past `max_object_bytes` is several chunks, and the chunks, the
+	// extent tree over them, the inode and the directory entry are folded into
+	// a single transaction — the cost of a large write is its bytes, not one
+	// durability point per object.
+	store.write_new_file("/big", &vec![0u8; 400_000], 0o644)?;
+	expect(&store, 13, "write_new_file spanning two objects");
+
+	store.append("/big", &vec![1u8; 300_000], 0o644)?;
+	expect(&store, 14, "append spanning two objects");
 	Ok(())
 }
 

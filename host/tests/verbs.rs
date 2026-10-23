@@ -430,21 +430,26 @@ fn test_a_failed_write_new_file_of_one_object_leaves_nothing_behind() -> Result<
 }
 
 #[test]
-fn test_a_failed_write_new_file_over_one_object_leaves_a_partial_file() -> Result<()> {
-	// -- Setup & Fixtures: the honest limit of the guarantee above. Content past
-	// one object is written a chunk per transaction, so the create commits
-	// carrying the first chunk and a later chunk can still fail — leaving a file
-	// whose bytes are a *prefix* of what was asked for. Pinned here rather than
-	// left implicit, because "one transaction" is easy to over-read as "atomic":
-	// a caller that needs all-or-nothing must still write a scratch name and
-	// rename it into place.
+fn test_a_failed_write_new_file_spanning_several_objects_leaves_no_file() -> Result<()> {
+	// -- Setup & Fixtures: the guarantee above holds however many objects the
+	// write spans. Content past one object is still written a chunk per object
+	// — that ceiling is the format's — but the pieces are folded into one
+	// transaction, so a later piece running out of room is the *whole* write
+	// failing rather than a file whose bytes are a prefix of what was asked
+	// for.
 	//
-	// The volume is sized deliberately inside a narrow window: big enough for the
-	// first chunk's commit — 256 KiB of content is 64 blocks, plus its metadata,
-	// the snapshot and the four superblock copies — and too small for the
-	// second. Under 100 blocks the *first* commit is the one refused, and the
-	// test would pass for the wrong reason, asserting nothing about partiality.
-	let mut store = store(135)?;
+	// This is the pin that used to say the opposite. It asserted that the
+	// first chunk committed and the second did not, which was true when the
+	// pieces were one commit each; folding them made it false, and an absent
+	// name is the more useful failure state — the same argument as the
+	// single-object case, now without the qualifier.
+	//
+	// The volume is sized deliberately inside the window: big enough for a
+	// single chunk's commit — 256 KiB of content is 64 blocks, plus its
+	// metadata, the snapshot and the four superblock copies — and too small
+	// for both chunks of a 400 KB write. Under 80 blocks the first chunk would
+	// not fit either, and the test would pass for the wrong reason.
+	let mut store = store(100)?;
 
 	// -- Exec
 	let e = expect_err(
@@ -458,14 +463,18 @@ fn test_a_failed_write_new_file_over_one_object_leaves_a_partial_file() -> Resul
 		other => panic!("expected an out-of-space refusal, got {other:?}"),
 	}
 
-	// -- Check: ...and the first chunk is there, the second is not.
-	let inode = store.stat("/over")?;
-	assert_eq!(inode.kind, InodeKind::RegularFile);
-	assert_eq!(
-		inode.size,
-		256 * 1024,
-		"the first chunk committed and the second did not"
+	// -- Check: ...and the name was never created, so there is no prefix of
+	// the payload for a caller to mistake for content.
+	assert!(
+		matches!(store.stat("/over"), Err(Error::NoSuchFile { .. })),
+		"a multi-object write that fails must leave no file behind"
 	);
+
+	// -- Check: the volume is still usable for a write that does fit, so the
+	// refusal cost the handle nothing — the allocator was restored, not
+	// consumed.
+	store.write_new_file("/fits", &vec![0u8; 64 * 1024], 0o644)?;
+	assert_eq!(store.stat("/fits")?.size, 64 * 1024);
 	Ok(())
 }
 
@@ -635,6 +644,55 @@ fn test_an_append_log_survives_a_remount() -> Result<()> {
 
 	// -- Check
 	assert_eq!(back.read_file("/log")?, expected);
+	Ok(())
+}
+
+#[test]
+fn test_a_folded_append_costs_one_commit_and_less_volume_than_one_per_piece() -> Result<()> {
+	// -- Setup & Fixtures: the same five pieces appended to two twin volumes,
+	// one append each versus one folded append. The fold is what a write
+	// spanning several objects has to get right beyond "the bytes come back":
+	// the commit is the volume's durability point, so five of them is five
+	// durability points for one logical append — and CoW re-places the whole
+	// extent node each time, so it is also five copies of metadata that is
+	// thrown away four times.
+	let mut folded = store(BIG_BLOCKS)?;
+	let mut per_piece = store(BIG_BLOCKS)?;
+	let pieces: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 64 * 1024]).collect();
+	let joined: Vec<u8> = pieces.concat();
+
+	folded.create_file("/log", 0o644)?;
+	per_piece.create_file("/log", 0o644)?;
+
+	// -- Exec: one append of 320 KiB (five objects) against five appends
+	let folded_before = folded.free_bytes().expect("free bytes");
+	folded.append("/log", &joined, 0o644)?;
+	let folded_after = folded.free_bytes().expect("free bytes");
+
+	let per_piece_before = per_piece.free_bytes().expect("free bytes");
+	for piece in &pieces {
+		per_piece.append("/log", piece, 0o644)?;
+	}
+	let per_piece_after = per_piece.free_bytes().expect("free bytes");
+
+	// -- Check: one commit against five
+	assert_eq!(folded.commit_seq(), 3, "format, create, one folded append");
+	assert_eq!(per_piece.commit_seq(), 7, "format, create, five appends");
+
+	// -- Check: and the fold costs the volume less — the intermediate
+	// generations of the extent tree and the inode are pruned at seal, so the
+	// bytes written are the chunks plus one copy of the metadata.
+	let folded_cost = folded_before - folded_after;
+	let per_piece_cost = per_piece_before - per_piece_after;
+	assert!(
+		folded_cost < per_piece_cost,
+		"a folded append must cost less volume than one commit per piece: \
+		 {folded_cost} bytes vs {per_piece_cost}"
+	);
+
+	// -- Check: and both volumes hold the same file, byte for byte.
+	assert_eq!(folded.read_file("/log")?, joined);
+	assert_eq!(per_piece.read_file("/log")?, joined);
 	Ok(())
 }
 
