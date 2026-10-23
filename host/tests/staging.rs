@@ -79,6 +79,140 @@ fn test_staged_appends_seal_as_one_commit() -> Result<()> {
 	Ok(())
 }
 
+// region:    --- The deferred seal
+
+/// A deferred seal is a commit the *volume* has not heard of yet.
+///
+/// Everything it wrote is on the device — the commit engine's barrier covered
+/// the objects and the allocator snapshot — but the superblock naming the new
+/// root is held back. So the handle reads its own seal immediately, while a
+/// mount of the same bytes sees the root from before it.
+#[test]
+fn test_deferred_seal_is_invisible_until_sync() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BLOCKS)?;
+	store.mkdir("/log", 0o755)?;
+	let start = store.commit_seq();
+	store.begin_staging(0)?;
+	store.staged_append("/log/stream", b"first\n", 0o644)?;
+	store.staged_append("/log/stream", b"second\n", 0o644)?;
+
+	// -- Exec
+	let sealed = store.seal_staged_deferred()?;
+
+	// -- Check: committed to this handle, not to the volume
+	assert_eq!(sealed.commit_seq, start + 1);
+	assert_eq!(store.commit_seq(), start + 1);
+	assert!(store.has_pending_sync(), "a deferred seal leaves work for sync");
+	assert_eq!(store.read_file("/log/stream")?, b"first\nsecond\n");
+	let mounted = open_bytes(bytes(&watch))?;
+	assert_eq!(mounted.commit_seq(), start, "the volume still names the old root");
+	assert!(
+		is_no_such_file(
+			&expect_err(
+				"a deferred seal must not be on the volume",
+				mounted.read_file("/log/stream")
+			),
+			"/log/stream"
+		),
+		"a deferred seal must not appear in a mount of the volume's bytes"
+	);
+
+	// -- Exec: the durability point
+	store.sync()?;
+
+	// -- Check: now the volume names it
+	assert!(!store.has_pending_sync());
+	let mounted = open_bytes(bytes(&watch))?;
+	assert_eq!(mounted.commit_seq(), start + 1);
+	assert_eq!(mounted.read_file("/log/stream")?, b"first\nsecond\n");
+	Ok(())
+}
+
+/// An ordinary commit after a deferred seal makes both durable: its own
+/// superblock write names a newer root, and its predecessor's objects were
+/// flushed by the engine barrier underneath it. Nothing is left pending.
+#[test]
+fn test_deferred_seal_is_superseded_by_an_ordinary_commit() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BLOCKS)?;
+	store.mkdir("/log", 0o755)?;
+	let start = store.commit_seq();
+	store.begin_staging(0)?;
+	store.staged_append("/log/stream", b"staged\n", 0o644)?;
+	store.seal_staged_deferred()?;
+	assert!(store.has_pending_sync());
+
+	// -- Exec
+	store.append("/log/stream", b"ordinary\n", 0o644)?;
+
+	// -- Check
+	assert!(
+		!store.has_pending_sync(),
+		"a durable commit persists everything above it"
+	);
+	let mounted = open_bytes(bytes(&watch))?;
+	assert_eq!(mounted.commit_seq(), start + 2);
+	assert_eq!(mounted.read_file("/log/stream")?, b"staged\nordinary\n");
+	Ok(())
+}
+
+/// Dropping a handle with a deferred seal pending loses exactly that seal's
+/// work and leaves a volume that mounts: the old-or-new rule, avoided rather
+/// than stressed.
+#[test]
+fn test_deferred_seal_without_sync_is_lost_cleanly() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BLOCKS)?;
+	store.mkdir("/log", 0o755)?;
+	let start = store.commit_seq();
+	store.begin_staging(0)?;
+	store.staged_append("/log/stream", b"volatile\n", 0o644)?;
+	store.seal_staged_deferred()?;
+
+	// -- Exec: no sync; the handle goes away
+	drop(store);
+
+	// -- Check: the volume is the pre-seal tree, and it is intact
+	let mounted = open_bytes(bytes(&watch))?;
+	assert_eq!(mounted.commit_seq(), start);
+	assert!(mounted.read_dir("/log")?.is_empty());
+	assert!(
+		is_no_such_file(
+			&expect_err(
+				"a deferred seal must not be on the volume",
+				mounted.read_file("/log/stream")
+			),
+			"/log/stream"
+		),
+		"a deferred seal must not appear in a mount of the volume's bytes"
+	);
+	Ok(())
+}
+
+/// `sync` with nothing pending writes nothing at all — the call is safe to
+/// make at every durability point without paying for it.
+#[test]
+fn test_sync_without_a_deferred_seal_is_a_no_op() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BLOCKS)?;
+	store.mkdir("/log", 0o755)?;
+	store.write_new_file("/log/stream", b"durable\n", 0o644)?;
+	let before = bytes(&watch);
+	assert!(!store.has_pending_sync());
+
+	// -- Exec
+	store.sync()?;
+
+	// -- Check
+	assert_eq!(
+		bytes(&watch),
+		before,
+		"sync must not rewrite the superblock for nothing"
+	);
+	Ok(())
+}
+
 #[test]
 fn test_intermediate_object_generations_are_pruned_at_seal() -> Result<()> {
 	// -- Setup & Fixtures: the same file, appended to five times inside one

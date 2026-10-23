@@ -72,6 +72,9 @@ than a second filesystem (§3, *Staging: many writes, one commit*):
 | `staged_write_new_file(path, data, mode)` | create into the session; refuses a taken name |
 | `staged_remove(path)` | remove into the session |
 | `seal_staged()` | everything staged, as **one** commit; the session ends |
+| `seal_staged_deferred()` | the same seal, stopping before the superblock write (see below) |
+| `sync()` | write the superblock a deferred seal withheld, and flush it; a no-op otherwise |
+| `has_pending_sync()` | whether `sync()` has something to do |
 | `end_staging()` | discard the session; the volume is untouched |
 | `staged_bytes()` / `staging_is_open()` | what the session holds, and whether it is open |
 | `read_file_committed(path)` | the committed tier, even while a session is open |
@@ -186,6 +189,27 @@ code. The format does not change: a sealed session is indistinguishable from the
 equivalent sequence of commits, except that it is one. Before the seal the
 staged tier is RAM only, so a crash loses it exactly — not partially, and never
 half-applied.
+
+A capture loop that seals faster than it can afford a full durability point
+calls `seal_staged_deferred` instead. It does everything `seal_staged` does —
+one transaction, objects written, allocator snapshot written, one device
+barrier — and then stops before the superblock write. The new root is live for
+this handle and invisible to every other handle and to a crash, which is
+exactly the two-tier read story one level down. `sync()` writes the withheld
+superblock and flushes it, one barrier, and after that the whole group of seals
+since the last `sync()` is as durable as any commit. Sealing *n* times between
+syncs therefore costs *n* barriers plus one, where *n* ordinary seals cost 2*n*.
+
+What a crash in that window costs is bounded and honest: the previous root
+stays live, so the group since the last `sync()` is lost whole — never a
+blend, because the superblock naming it was never written. The allocator
+snapshot did ride with the objects, so the recovered volume may have that
+group's blocks marked in use while no live root names them: leaked space, never
+a wrong answer. Any ordinary commit writes a newer root and clears the pending
+one, so a write-heavy program that mixes tiers does not have to track it. The
+cost is a real one — an app that never calls `sync()` has a fast, consistent,
+*ephemeral* volume — and that is why the durable seal is `seal_staged` and the
+deferred one says so in its name.
 
 What that buys, and what it costs:
 
@@ -305,6 +329,12 @@ Stated plainly so an app plans around them rather than discovering them:
   (a format-level fast path) is not implemented, and nothing in the format is
   reserved for one yet. A session's staged writes are limited to files;
   directories cannot be created or removed inside one.
+- **A deferred seal is durable only at `sync()`.** `seal_staged_deferred`
+  writes and flushes the objects and the allocator snapshot but withholds the
+  superblock, so the root it sealed is live for this handle and lost to a crash
+  until `sync()` returns. Do not treat its return as a durability point, and do
+  not treat a volume whose app never syncs as durable at all; see §3,
+  *Staging: many writes, one commit*.
 - **A session is not a batch across handles.** Only the handle that opened it
   sees the staged tier, and every other handle sees the committed tier. There is
   no cohort commit: one `seal_staged`, one root.

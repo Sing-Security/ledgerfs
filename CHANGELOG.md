@@ -32,6 +32,17 @@ again — see [`FORMAT.md`](FORMAT.md).
 - `Error::StagingFull { wanted, capacity }`: a staged operation that would
   exceed the session's byte budget is refused, and the session is left exactly
   as it was.
+- **`Store::seal_staged_deferred`, `Store::sync`, `Store::has_pending_sync`**:
+  a seal variant that stops before the superblock write, so a program that
+  seals in a loop pays **one barrier per group of seals** instead of two per
+  seal. The objects and the allocator snapshot are still written and flushed
+  by the seal itself, so no unbarriered root is ever published. A crash before
+  `sync` leaves the previous root live — the group just sealed is lost whole,
+  never blended, and the recovered volume may leak the group's space (blocks
+  in the allocator snapshot that the live root does not name), never give a
+  wrong answer. Any ordinary commit supersedes the pending root and clears it.
+  This is a library-level durability tier: no format change, no feature bit,
+  and the durable seal is still `seal_staged`.
 - `examples/staging_capture.rs`: stage, read both tiers mid-session, seal, and
   reopen the volume from its bytes.
 

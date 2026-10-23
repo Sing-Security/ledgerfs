@@ -110,6 +110,16 @@ pub struct Store {
 	/// The reader silently skips a record above this, so an object committed
 	/// over it would report success and then read back as missing.
 	max_object_bytes: usize,
+
+	/// Whether this handle's root is ahead of the volume's superblock because
+	/// of a deferred seal. See [`Store::seal_staged_deferred`].
+	///
+	/// The objects of a deferred seal are durable — the commit engine's own
+	/// barrier covered them — but the superblock naming them has deliberately
+	/// not been written yet, because writing it before a barrier on a device
+	/// that reorders writes is the one thing that could make a crash boot a
+	/// root pointing at absent objects.
+	sb_pending: bool,
 }
 
 // region:    --- Contract
@@ -296,6 +306,7 @@ impl Store {
 			origin: Origin::Formatted,
 			staged: None,
 			max_object_bytes,
+			sb_pending: false,
 		})
 	}
 
@@ -343,6 +354,7 @@ impl Store {
 			origin,
 			staged: None,
 			max_object_bytes,
+			sb_pending: false,
 		})
 	}
 
@@ -412,6 +424,18 @@ impl Store {
 	/// persistence steps are not optional and not separable — see this
 	/// module's doc comment.
 	pub fn commit(&mut self, txn: TxnPlan) -> Result<CommitResult> {
+		self.commit_inner(txn, true)
+	}
+
+	/// The body of [`commit`](Self::commit), with the one choice a deferred
+	/// seal makes: whether the superblock naming this root is written now.
+	///
+	/// The commit engine's own barrier has already run, so *objects and the
+	/// allocator snapshot are durable either way*. Only the superblock is
+	/// held back — and it has to be held back entirely, not written without
+	/// a barrier: a superblock that reaches media before the objects it
+	/// names is the one failure mode this ordering exists to prevent.
+	fn commit_inner(&mut self, txn: TxnPlan, persist: bool) -> Result<CommitResult> {
 		// Before the transaction is touched: both of these are checked here
 		// rather than left to fail on the first write, one as `EBADF` from the
 		// device and the other as a panic on an unwrapped allocator.
@@ -496,9 +520,47 @@ impl Store {
 		// the directory that was just created.
 		self.fs.root_inode_ref = self.root.file_tree_root;
 		self.fs.volume.publish_root(&self.root);
-		persist_superblock(device, &self.fs.volume.superblock)?;
+
+		if persist {
+			persist_superblock(device, &self.fs.volume.superblock)?;
+			self.sb_pending = false;
+		} else {
+			// The root is live for this handle, and no handle but this one
+			// knows it. See `seal_staged_deferred`.
+			self.sb_pending = true;
+		}
 
 		Ok(result)
+	}
+
+	/// Make a deferred seal durable, and return.
+	///
+	/// The only thing left to do is write the superblock that names the
+	/// newest root and flush it: the objects and the allocator snapshot were
+	/// made durable by the seal's own barrier. That is why this is **one**
+	/// barrier rather than the two an ordinary commit issues, and why a
+	/// program that seals many times between `sync` calls pays for a
+	/// superblock write and a flush once per group instead of once per
+	/// seal.
+	///
+	/// A no-op when nothing is pending, so a caller can call it on every
+	/// durability point without tracking whether the last seal was deferred.
+	pub fn sync(&mut self) -> Result<()> {
+		if !self.sb_pending {
+			return Ok(());
+		}
+		if let Some(refusal) = self.write_refusal() {
+			return Err(Error::ReadOnly { detail: refusal });
+		}
+		persist_superblock(self.fs.store.device(), &self.fs.volume.superblock)?;
+		self.sb_pending = false;
+		Ok(())
+	}
+
+	/// Whether this handle holds a committed root the volume's superblock
+	/// does not name yet — i.e. [`sync`](Self::sync) has something to do.
+	pub fn has_pending_sync(&self) -> bool {
+		self.sb_pending
 	}
 
 	/// Put this handle's in-memory allocator back where the volume says it is,
@@ -1018,6 +1080,39 @@ impl Store {
 	/// that changed no path, and [`commit`](Self::commit) is where that belongs
 	/// if a caller really wants it.
 	pub fn seal_staged(&mut self) -> Result<CommitResult> {
+		self.seal_staged_inner(true)
+	}
+
+	/// Seal the session into a commit that is **consistent but not yet
+	/// durable when this returns**.
+	///
+	/// The seal does everything [`seal_staged`](Self::seal_staged) does —
+	/// builds one transaction, places and writes its objects, and flushes
+	/// them behind the commit engine's barrier — and then stops. The
+	/// superblock that makes the new root the volume's root is not written
+	/// until [`sync`](Self::sync), or until any ordinary commit, which
+	/// writes a still newer root and flushes everything beneath it in the
+	/// same two steps.
+	///
+	/// # What a crash loses, and what it cannot do
+	///
+	/// A crash before that point leaves the *previous* root live: the work
+	/// this seal staged is gone, exactly as if the seal had never been
+	/// called. It cannot leave a half-applied root, because the superblock
+	/// naming this one was never written — the format's old-or-new rule is
+	/// not being tested here, it is being avoided. The allocator snapshot
+	/// *was* written and flushed (it rides with the objects), so a
+	/// crash-recovered volume may have blocks marked in use that the live
+	/// root does not name: leaked space, never a wrong answer.
+	///
+	/// Batching seals this way is what makes the staged tier's steady state
+	/// one barrier per group rather than two per seal. See `BENCHMARKS.md`
+	/// for the measured difference.
+	pub fn seal_staged_deferred(&mut self) -> Result<CommitResult> {
+		self.seal_staged_inner(false)
+	}
+
+	fn seal_staged_inner(&mut self, persist: bool) -> Result<CommitResult> {
 		let state = self
 			.staged
 			.take()
@@ -1045,7 +1140,7 @@ impl Store {
 		// The plan is built; the session's state is only needed if the commit
 		// fails, so recover it before `commit` takes `&mut self`.
 		let state = fold.into_state();
-		match self.commit(txn) {
+		match self.commit_inner(txn, persist) {
 			Ok(result) => Ok(result),
 			Err(e) => {
 				self.staged = Some(state);

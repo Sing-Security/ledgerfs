@@ -13,7 +13,12 @@ that: a **staging session** gathers writes in memory and seals them as one
 ordinary commit, and the caller chooses, per read, whether it wants the
 committed tier or its own staged one. The seal is still the point of truth —
 before it, the staged work is RAM only; after it, it has exactly the guarantee
-every other write has.
+every other write has. A caller that wants exactly **one** barrier per group of
+seals can defer the superblock write with `seal_staged_deferred` and pay for it
+at `sync`; the old tree stays the filesystem until that write, so the crash
+rule below still holds — the group is lost whole, never half-applied. Choosing
+that tier is choosing how often the point of truth moves, not whether it is a
+point.
 
 It is built for two deployments, and neither is a special case of the other. A
 volume can be **provisioned onto a real disk** — its own partition, formatted

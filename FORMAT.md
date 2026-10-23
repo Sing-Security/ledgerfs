@@ -429,6 +429,16 @@ does exactly that — but this is library behaviour, not a format state:
   feature bit, no recovery path and no new record type.
 - If the process dies before the seal, the staged work is gone entirely; if it
   dies during the seal, §15.2 applies unchanged.
+- A seal MAY stop after writing and flushing its objects and the allocator
+  snapshot, leaving the superblock write to a later `sync` (the host crate's
+  `seal_staged_deferred`). This is the same commit with its last step postponed,
+  not a new format state: until that superblock is written and flushed, the
+  previously published root is the volume's root, so a crash loses the
+  postponed group whole and §15.2 still sees only the old root. It cannot leave
+  a half-applied root, because no superblock naming the new one exists yet. The
+  allocator snapshot published ahead of the root may mark blocks no live root
+  names — unreachable space, never a wrong answer. No feature bit is involved
+  and a mount needs no new behaviour.
 
 There is no on-disk representation of staged-but-unsealed data. The intent log
 (§16–§18) exists and is defined; it is not this, and §18.5/§44.2 keep root
