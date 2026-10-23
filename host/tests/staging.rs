@@ -761,3 +761,318 @@ fn test_empty_and_multi_block_staged_appends_round_trip() -> Result<()> {
 }
 
 // endregion:    --- Multi-object staged data
+
+// region:    --- Drafts
+
+/// A session appends into a draft rather than building an object per append,
+/// so the two routes must still produce the *same objects*: the seal is one
+/// commit of the ordinary shape, and a session is indistinguishable from the
+/// equivalent sequence of commits.
+///
+/// The file inode's id is the check that matters: it is the hash of the
+/// inode's bytes, which name the extent node by id, which is the hash of every
+/// extent in the file's history. Equality here means the draft route rebuilt
+/// exactly what the eager `write` route would have.
+#[test]
+fn test_a_sealed_session_names_the_same_objects_as_the_eager_sequence() -> Result<()> {
+	// -- Setup & Fixtures: twin volumes with the same seed file
+	let mut staged = store(BLOCKS)?;
+	let mut eager = store(BLOCKS)?;
+	for twin in [&mut staged, &mut eager] {
+		twin.mkdir("/log", 0o755)?;
+		twin.write_new_file("/log/stream", b"seed\n", 0o644)?;
+	}
+	let records: Vec<Vec<u8>> = (0..6).map(|i| format!("record {i}\n").into_bytes()).collect();
+
+	// -- Exec: one session of appends against one commit per append
+	staged.begin_staging(0)?;
+	for record in &records {
+		staged.staged_append("/log/stream", record, 0o644)?;
+	}
+	staged.seal_staged()?;
+	for record in &records {
+		eager.append("/log/stream", record, 0o644)?;
+	}
+
+	// -- Check: same content, same sizes, and the same object ids all the way
+	// down the file's subtree
+	let staged_inode = staged.stat("/log/stream")?;
+	let eager_inode = eager.stat("/log/stream")?;
+	assert_eq!(staged_inode.size, eager_inode.size);
+	assert_eq!(
+		staged_inode.content_ref, eager_inode.content_ref,
+		"the sealed extent node must be the one the eager appends built"
+	);
+	assert_eq!(
+		staged_inode.object_id, eager_inode.object_id,
+		"the sealed inode must be the one the eager appends built"
+	);
+	assert_eq!(staged.read_file("/log/stream")?, eager.read_file("/log/stream")?);
+	Ok(())
+}
+
+/// The reason the draft exists: a session's cost is the bytes it appended, not
+/// the history of the file it appended to.
+///
+/// Before the draft layer every staged append re-encoded the whole extent node
+/// and kept the previous generation, so N appends held O(N²) bytes and the
+/// per-append time grew with N. This pins the memory half: a session of 256
+/// distinct records holds its payload plus one descriptor per record, and the
+/// seal still writes one generation of each metadata object.
+#[test]
+fn test_a_draft_is_linear_in_the_appended_bytes_not_the_file_history() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BIG_BLOCKS)?;
+	store.mkdir("/log", 0o755)?;
+	store.write_new_file("/log/stream", b"", 0o644)?;
+	const N: usize = 256;
+	const RECORD: usize = 960;
+
+	// -- Exec
+	store.begin_staging(0)?;
+	for i in 0..N {
+		// Distinct bytes per record, so this measures history rather than
+		// content-addressed dedupe.
+		let mut record = [0u8; RECORD];
+		record[..8].copy_from_slice(&(i as u64).to_le_bytes());
+		store.staged_append("/log/stream", &record, 0o644)?;
+	}
+
+	// -- Check: the session holds the payload plus a descriptor per extent, and
+	// no generation of anything else
+	let payload = (N * RECORD) as u64;
+	let staged = store.staged_bytes().expect("a session is open");
+	assert!(
+		staged <= payload + (N as u64 * 128),
+		"a session of {N} appends must hold about its payload: {staged} bytes staged for {payload} bytes of records"
+	);
+
+	// -- Exec: seal
+	let result = store.seal_staged()?;
+
+	// -- Check: one chunk per record, one extent node, one inode, and the
+	// directory pair the path lives under (plus the root's, for /log)
+	assert_eq!(result.objects_written, N + 6);
+	let reopened = open_bytes(bytes(&watch))?;
+	assert_eq!(reopened.stat("/log/stream")?.size, payload);
+	let content = reopened.read_file("/log/stream")?;
+	assert_eq!(content.len() as u64, payload);
+	for i in 0..N {
+		let at = i * RECORD;
+		assert_eq!(&content[at..at + 8], &(i as u64).to_le_bytes());
+	}
+	Ok(())
+}
+
+#[test]
+fn test_a_drafted_read_crosses_the_committed_and_staged_boundary() -> Result<()> {
+	// -- Setup & Fixtures
+	let mut store = store(BLOCKS)?;
+	store.write_new_file("/f", b"abc", 0o644)?;
+	store.begin_staging(0)?;
+	store.staged_append("/f", b"defgh", 0o644)?;
+
+	// -- Check: read_at is a byte window over both tiers, clamped as always
+	assert_eq!(store.read_at("/f", 0, 3)?, b"abc", "a range inside the committed bytes");
+	assert_eq!(store.read_at("/f", 2, 4)?, b"cdef", "a range across the boundary");
+	assert_eq!(store.read_at("/f", 3, 100)?, b"defgh", "a range wholly in the draft");
+	assert_eq!(store.read_at("/f", 8, 5)?, b"", "a range past the end is empty");
+	assert_eq!(store.read_file("/f")?, b"abcdefgh");
+
+	// -- Exec & Check: the same windows from the committed tier after the seal
+	store.seal_staged()?;
+	assert_eq!(store.read_at("/f", 2, 4)?, b"cdef");
+	Ok(())
+}
+
+/// A `stat` asks for an inode, and a draft does not have one yet — so the read
+/// materializes. It must not publish: the committed tier still answers what a
+/// crash would leave, and the seal is still the only commit.
+#[test]
+fn test_stat_materializes_a_draft_without_publishing_it() -> Result<()> {
+	// -- Setup & Fixtures
+	let mut store = store(BLOCKS)?;
+	store.write_new_file("/state", b"old", 0o644)?;
+	let seq = store.commit_seq();
+	store.begin_staging(0)?;
+	store.staged_append("/state", b"-new", 0o644)?;
+
+	// -- Exec
+	let inode = store.stat("/state")?;
+
+	// -- Check: the staged size, a live content reference, and no commit
+	assert_eq!(inode.size, 7);
+	assert!(!inode.content_ref.is_zero(), "the materialized inode names its content");
+	assert_eq!(store.read_file_committed("/state")?, b"old");
+	assert_eq!(store.commit_seq(), seq, "a metadata read must not commit");
+
+	// -- Check: the listing carries the same size, not the committed one
+	let listing = store.read_dir("/")?;
+	let entry = listing.iter().find(|entry| entry.name == "state").expect("state is listed");
+	assert_eq!(entry.size, 7);
+	assert_eq!(
+		entry.inode_ref.object_id, inode.object_id,
+		"the listing names the same inode"
+	);
+
+	// -- Exec & Check: the seal publishes what the stat already showed
+	store.seal_staged()?;
+	assert_eq!(store.read_file("/state")?, b"old-new");
+	Ok(())
+}
+
+#[test]
+fn test_a_refused_append_leaves_an_open_draft_untouched() -> Result<()> {
+	// -- Setup & Fixtures: room for two 1 KiB appends and not for a 6 KiB one
+	let mut store = store(BLOCKS)?;
+	store.write_new_file("/f", b"seed", 0o644)?;
+	store.begin_staging(6_000)?;
+	store.staged_append("/f", &vec![b'a'; 1000], 0o644)?;
+	store.staged_append("/f", &vec![b'b'; 1000], 0o644)?;
+	let held = store.staged_bytes().expect("open");
+
+	// -- Exec
+	let e = expect_err(
+		"a 6 KiB append over a 6 KiB budget",
+		store.staged_append("/f", &vec![b'c'; 6000], 0o644),
+	);
+
+	// -- Check: the draft is where it was, and the refused bytes are nowhere
+	assert!(matches!(e, Error::StagingFull { capacity: 6_000, .. }), "got {e:?}");
+	assert_eq!(
+		store.staged_bytes(),
+		Some(held),
+		"a refused append must not extend the draft"
+	);
+	let expected = [b"seed".as_slice(), &[b'a'; 1000], &[b'b'; 1000]].concat();
+	assert_eq!(store.read_file("/f")?, expected);
+
+	// -- Check: and the session still seals what it had
+	store.seal_staged()?;
+	assert_eq!(store.read_file("/f")?, expected);
+	Ok(())
+}
+
+/// A draft is opened by an append, and the file is still an ordinary path to
+/// every other staged verb: a sibling create, a removal elsewhere, and further
+/// appends may interleave freely.
+#[test]
+fn test_a_draft_interleaves_with_staged_creates_and_removes() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BLOCKS)?;
+	store.mkdir("/d", 0o755)?;
+	store.write_new_file("/d/gone", b"gone", 0o644)?;
+
+	// -- Exec
+	store.begin_staging(0)?;
+	store.staged_append("/d/log", b"one\n", 0o644)?; // creates the file
+	store.staged_append("/d/log", b"two\n", 0o644)?; // opens a draft
+	store.staged_write_new_file("/d/other", b"other", 0o644)?;
+	store.staged_append("/d/log", b"three\n", 0o644)?; // the draft outlives the sibling create
+	store.staged_remove("/d/gone")?;
+	store.staged_append("/d/log", b"four\n", 0o644)?;
+	store.seal_staged()?;
+
+	// -- Check: a fresh mount sees exactly the tree the verbs described
+	let reopened = open_bytes(bytes(&watch))?;
+	assert_eq!(reopened.read_file("/d/log")?, b"one\ntwo\nthree\nfour\n");
+	assert_eq!(reopened.read_file("/d/other")?, b"other");
+	assert!(
+		is_no_such_file(&expect_err("removed", reopened.read_file("/d/gone")), "/d/gone"),
+		"the removal must survive the seal"
+	);
+	Ok(())
+}
+
+/// A file that is appended to and then removed in one session never needs its
+/// appended bytes as objects: the draft is dropped with the entry, and the
+/// seal carries only the removal.
+#[test]
+fn test_a_drafted_file_can_be_removed_before_the_seal() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BLOCKS)?;
+	store.write_new_file("/doomed", b"original", 0o644)?;
+	store.write_new_file("/kept", b"kept", 0o644)?;
+
+	// -- Exec
+	store.begin_staging(0)?;
+	store.staged_append("/doomed", b" + appended", 0o644)?;
+	store.staged_append("/kept", b" +", 0o644)?;
+	store.staged_remove("/doomed")?;
+	let result = store.seal_staged()?;
+
+	// -- Check: /kept's chunk, its node, its inode and the root pair — nothing
+	// for the drafted bytes of /doomed
+	assert_eq!(result.objects_written, 5, "a removed draft must not be materialized");
+	let reopened = open_bytes(bytes(&watch))?;
+	assert_eq!(reopened.read_file("/kept")?, b"kept +");
+	assert!(
+		is_no_such_file(&expect_err("removed", reopened.read_file("/doomed")), "/doomed"),
+		"the drafted file must be gone"
+	);
+	Ok(())
+}
+
+/// The deferred seal is the same seal without the superblock, and it has to
+/// flush drafts exactly as the durable one does — otherwise a caller batching
+/// seals would hold the last group's bytes in RAM.
+#[test]
+fn test_a_deferred_seal_materializes_the_drafts() -> Result<()> {
+	// -- Setup & Fixtures
+	let (mut store, watch) = watched(BLOCKS)?;
+	store.begin_staging(0)?;
+	store.staged_append("/a", b"first", 0o644)?;
+	store.staged_append("/a", b"-second", 0o644)?;
+
+	// -- Exec
+	store.seal_staged_deferred()?;
+
+	// -- Check: the handle reads it, the volume does not yet
+	assert!(store.has_pending_sync());
+	assert_eq!(store.read_file("/a")?, b"first-second");
+	assert!(is_no_such_file(
+		&expect_err("not published", open_bytes(bytes(&watch))?.read_file("/a")),
+		"/a"
+	));
+
+	// -- Exec & Check: the durable point
+	store.sync()?;
+	assert_eq!(open_bytes(bytes(&watch))?.read_file("/a")?, b"first-second");
+	Ok(())
+}
+
+// endregion:    --- Drafts
+
+// region:    --- Sharing
+
+/// A session lives inside the handle, so it must not take `Store`'s
+/// `Send + Sync` away. The draft is read through an interior lock precisely
+/// so an embedder that fans one handle out across threads keeps compiling.
+#[test]
+fn test_a_store_with_a_session_open_is_still_send_and_sync() -> Result<()> {
+	// -- Setup & Fixtures: the compile-time half of the embedding contract
+	fn assert_send_sync<T: Send + Sync>() {}
+	assert_send_sync::<Store>();
+
+	// -- Exec: open a session, so the type under assertion is the one that
+	// exists while the session does
+	let mut s = store(BLOCKS)?;
+	s.begin_staging(0)?;
+	s.staged_append("/a", b"staged", 0o644)?;
+
+	// -- Check: the value is usable from a scoped thread while the session is
+	// open on this one — the lock is what makes that legal
+	let seen = std::thread::scope(|scope| {
+		scope
+			.spawn(|| {
+				let bytes = s.read_file("/a")?;
+				Ok::<_, Error>(bytes)
+			})
+			.join()
+			.expect("thread")
+	})?;
+	assert_eq!(seen, b"staged");
+	Ok(())
+}
+
+// endregion:    --- Sharing

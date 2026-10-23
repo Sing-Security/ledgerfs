@@ -972,9 +972,12 @@ impl Store {
 /// A commit is this volume's durability point — objects, allocator snapshot,
 /// barrier, superblock, barrier — and on a batched capture workload that price
 /// is paid per batch. A staging session moves the price to the seal: staged
-/// writes build new objects in memory and thread a staged root, touching no
-/// device block and no allocator state, until [`seal_staged`](#method.seal_staged)
-/// folds everything staged into **one** transaction of the ordinary shape.
+/// writes thread a staged root and touch no device block and no allocator
+/// state, and an append extends a per-file draft rather than building the
+/// file's objects — so a session's cost is the bytes it appended, not the
+/// history of the files it appended to — until
+/// [`seal_staged`](#method.seal_staged) folds everything staged into **one**
+/// transaction of the ordinary shape.
 ///
 /// # The two tiers
 ///
@@ -1000,11 +1003,12 @@ impl Store {
 ///
 /// # Capacity
 ///
-/// `capacity_bytes` bounds the canonical bytes staged, intermediate object
-/// generations included; `0` means unbounded. A staged operation that would
-/// exceed it is refused with [`Error::StagingFull`] and leaves the session as
-/// it was. A session never seals itself: an implicit seal would be an implicit
-/// durability point, which is exactly the choice the caller is here to make.
+/// `capacity_bytes` bounds the bytes the session is holding — the objects it
+/// has built plus each file draft's chunks and extent descriptors — and `0`
+/// means unbounded. A staged operation that would exceed it is refused with
+/// [`Error::StagingFull`] and leaves the session as it was. A session never
+/// seals itself: an implicit seal would be an implicit durability point, which
+/// is exactly the choice the caller is here to make.
 impl Store {
 	/// Open a staging session with a byte budget (`0` = unbounded).
 	///
@@ -1036,8 +1040,8 @@ impl Store {
 		self.staged.is_some()
 	}
 
-	/// The canonical bytes the session has staged, `None` when no session is
-	/// open. Counts intermediate generations, which occupy memory until seal.
+	/// The bytes the session is holding, `None` when no session is open: the
+	/// staged objects plus each file draft's chunks and extent descriptors.
 	pub fn staged_bytes(&self) -> Option<u64> {
 		self.staged.as_ref().map(StagedState::bytes)
 	}
@@ -1056,10 +1060,11 @@ impl Store {
 	/// already taken (staged or committed).
 	pub fn staged_write_new_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
 		let chunk = self.max_object_bytes.max(1);
-		self.with_staging(|fold| match fold.stat(path) {
-			Ok(_) => Err(Error::AlreadyExists { path: path.to_string() }),
-			Err(Error::NoSuchFile { .. }) => fold.create_with_data(path, data, mode, chunk),
-			Err(e) => Err(e),
+		self.with_staging(|fold| {
+			if fold.exists(path)? {
+				return Err(Error::AlreadyExists { path: path.to_string() });
+			}
+			fold.create_with_data(path, data, mode, chunk)
 		})
 	}
 
@@ -1125,7 +1130,7 @@ impl Store {
 			));
 		}
 
-		let fold = state.into_fold(&self.fs.store, &self.root);
+		let mut fold = state.into_fold(&self.fs.store, &self.root);
 		let txn = match fold.seal_plan(self.root.commit_seq) {
 			Ok(txn) => txn,
 			Err(e) => {

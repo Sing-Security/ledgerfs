@@ -158,10 +158,11 @@ linear in the data. This is not a tuning detail — it is the difference between
 volume that lasts a campaign and one that fills in an afternoon.
 
 That rule is about *committed* appends. A staging session (§3, *Staging: many
-writes, one commit*) makes the same traffic linear in **device** bytes, at the
-cost of holding the intermediate generations in RAM until the seal — so a
-long-running recorder either chunks its files or seals its sessions, and which
-one is cheaper depends on how often it can afford the seal.
+writes, one commit*) makes the same traffic linear in both device bytes and
+memory: a staged append extends a per-file draft in place, and the object a
+file's history would produce is built once, at the seal. A long-running recorder
+either chunks its files or seals its sessions, and which one is cheaper depends
+on how often it can afford the seal.
 
 ### A commit is the durability point
 
@@ -209,6 +210,17 @@ session; `seal_staged` folds everything staged into **one** transaction of the
 ordinary shape and commits it. Between the two, no device block is allocated, no
 allocator state is touched, and no barrier is paid.
 
+An append inside a session does not build an object. It hashes the appended
+bytes into a chunk and pushes one extent descriptor onto the file's **draft**;
+the objects — the extent node and the inode — are built when something needs
+their identity: the seal, a `stat`, a `read_dir`. That is what keeps a session's
+cost proportional to the records and not to the file it is extending: an
+object's id *is* the hash of its bytes, and an extent node's bytes are the whole
+file's history. Contents reads (`read_file`, `read_at`) serve the draft without
+building it; the reads that expose an identity materialize first, because an
+inode whose `content_ref` lagged the content would be one the session cannot
+honour.
+
 While the session is open, the handle that owns it resolves reads through the
 staged root: `read_file`, `read_at`, `stat` and `read_dir` show the caller its
 own writes at memory speed, and a staged object costs zero device reads.
@@ -251,18 +263,17 @@ What that buys, and what it costs:
 - The seal is pruned to what the final root reaches, so a session of N appends
   carries N chunks plus **one** generation of each metadata object, not one per
   append: O(N) device bytes instead of the O(N²) that N committed appends cost.
-- The transient cost inside the session is still O(N²) — each staged append
-  rebuilds the current extent node in RAM — bounded by the capacity passed to
-  `begin_staging`. Be generous with RAM; be stingy about how long one file grows
-  before you seal.
+- A session's memory is its payload plus one descriptor per appended piece —
+  linear in the records, not in the file's history. The extent node is encoded
+  and hashed once per file at the seal, not once per append.
 - Per-object ceilings bind at the seal exactly as at a commit: an extent node's
   ~1500-extent ceiling, and the volume's `max_object_bytes` split, are enforced
   there. A stream longer than those should seal in batches rather than stage one
   enormous file.
-- Capacity is enforced in canonical staged bytes, intermediate generations
-  included. Exceeding it refuses that call with `Error::StagingFull`, leaving
-  the session as it was. A session never seals itself: an implicit seal would be
-  an implicit durability point.
+- Capacity is enforced in the bytes the session is holding — staged objects plus
+  each draft's chunks and extent descriptors. Exceeding it refuses that call
+  with `Error::StagingFull`, leaving the session as it was. A session never
+  seals itself: an implicit seal would be an implicit durability point.
 - While a session is open, the ordinary mutating verbs and `rebuild_into` are
   refused (`Error::Usage`, naming the session). One staged root, one writer.
 

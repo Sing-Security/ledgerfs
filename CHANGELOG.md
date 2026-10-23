@@ -17,9 +17,9 @@ again — see [`FORMAT.md`](FORMAT.md).
 - **Staging sessions** in `ledgerfs-host`: `Store::begin_staging`,
   `staged_append`, `staged_write_new_file`, `staged_remove`, `seal_staged`,
   `end_staging`, `staged_bytes`, `staging_is_open`, and the scoped
-  `Store::staging(capacity)` wrapper. Staged writes build objects and thread a
-  staged root in memory — no device block, no allocator state, no barrier —
-  until `seal_staged` folds everything into **one** commit of the ordinary
+  `Store::staging(capacity)` wrapper. Staged writes thread a staged root in
+  memory — no device block, no allocator state, no barrier — until
+  `seal_staged` folds everything into **one** commit of the ordinary
   shape. The seal is pruned to what the final root reaches, so N staged appends
   carry N chunks plus one generation of each metadata object rather than one
   generation per append. No format change: a sealed session is indistinguishable
@@ -48,6 +48,20 @@ again — see [`FORMAT.md`](FORMAT.md).
 
 ### Changed
 
+- **A staged append costs the appended bytes, not the file's history.** Every
+  staged append used to run the `write` builder: decode the file's `ExtentNode`,
+  rebuild it, encode and hash all of it, and keep that generation until the
+  seal — O(history) time per append and O(N²) session memory. A session now
+  keeps a **draft** per appended file (the decoded inode and its extent list)
+  and extends it in place; the objects are built when something needs their
+  identity — the seal, a `stat`, a `read_dir` — and the seal builds each file's
+  node once. Measured on a memory volume, 960-byte appends over 1,024 records
+  went from 18 → 139 µs per append (growing with the file) to a flat ~6 µs, and
+  the session held 20.7 MB for a ~1 MB payload where it now holds 1.05 MB.
+  `staged_bytes` and the capacity budget count drafts too, and `stat`/`read_dir`
+  materialize a draft before answering — contents reads do not. No format
+  change and no change to what a seal writes: a test pins the sealed file's
+  inode and extent-node ids to the ones the equivalent eager appends produce.
 - **A write spanning several objects is one commit.** `write_new_file`,
   `append`, `write_at` and `write_file` over the volume's `max_object_bytes`
   split the payload into several objects but fold them into a single

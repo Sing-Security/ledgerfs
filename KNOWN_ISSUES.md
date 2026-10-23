@@ -88,11 +88,13 @@ the path absent or the file empty. `remove` followed by `create_file` (which is
 what a caller writing the sequence itself does) still has that window.
 
 **The staging tier is the answer for a stream that keeps appending.** Inside a
-staging session the intermediate generations live in memory and the seal is
-pruned to what the final root reaches, so a session of N appends costs O(N)
-device bytes instead of the O(N²) that N committed appends cost. The `ExtentNode`
-ceiling still binds *at the seal*, so a stream longer than one node can hold has
-to seal in batches rather than stage one enormous file. See `EMBEDDING.md` §3.
+staging session an append extends a per-file **draft** — the decoded inode and
+its extent list — instead of building an object, so neither the device nor the
+session pays for the file's history per append: N staged appends hold their
+payload plus one descriptor each, and the seal writes one generation of the
+file's metadata pruned to the final root. The `ExtentNode` ceiling still binds
+*at the seal*, so a stream longer than one node can hold has to seal in batches
+rather than stage one enormous file. See `EMBEDDING.md` §3.
 
 ---
 
