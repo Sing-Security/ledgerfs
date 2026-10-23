@@ -145,9 +145,10 @@ Worth budgeting in real terms, because it is not small and it does not fall
 with the size of the write: **a commit costs about five blocks of volume
 metadata** (the allocator snapshot, four superblock copies) **plus one block
 for every object in the path it touched** — and CoW re-places every object on
-that path, not just the one being changed. A two-level path (root, directory,
-file inode, extent, chunk) is therefore five or six fresh 4 KiB blocks per
-commit. `BENCHMARKS.md` reports the measured figure as the `volume KiB/op`
+that path, not just the one being changed. A two-level path (directory, file
+inode, extent, chunk) is therefore about nine fresh 4 KiB blocks per commit,
+which is the 36 KiB the harness measures for a single 256-byte insert.
+`BENCHMARKS.md` reports the measured figure as the `volume KiB/op`
 column, produced by `benchmarks/` on the reader's own machine; the harness
 exists so this number can be re-derived rather than believed.
 

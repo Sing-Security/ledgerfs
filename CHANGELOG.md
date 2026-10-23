@@ -56,6 +56,15 @@ again — see [`FORMAT.md`](FORMAT.md).
 - `kernel`: `cow::apply_ops_to_root` documents that it threads only the root
   descriptor, so an op cannot see an earlier op's objects, and that it does not
   perform the ancestor cascade. Documentation only.
+- **`benchmarks/` measures the staging tier on all four engines.** The new
+  `staged_append_960b` workload streams batches through each engine's own
+  staging idiom and seals every `--staged-seal-every` batches (default 10);
+  `insert_batched_256b` now runs on LedgerFS through a staging session, so that
+  long-standing gap is gone. Separately, the `volume KiB/op` column is
+  **corrected**: every figure recorded before 2026-10-23 was inflated by
+  `Config::repeats`, because the free-space delta spans the whole run while the
+  divisor was one repetition's operation count. `BENCHMARKS.md` gains *The
+  staging tier* and re-rendered tables.
 
 ## [0.7.0] / [0.1.0] - 2026-10-14
 

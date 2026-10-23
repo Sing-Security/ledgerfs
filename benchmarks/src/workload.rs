@@ -17,13 +17,22 @@
 //! so nothing is overwritten (LedgerFS frees nothing, and an overwrite would
 //! make the repetitions unequal for a different reason).
 //!
+//! # The non-comparable rows
+//!
+//! Two workloads are deliberately not like-for-like and are marked so
+//! (`comparable = false`, a dagger in the tables, the reason in `note`):
+//! `insert_batched_256b`, whose per-insert figure is 1/N of one commit, and
+//! `staged_append_960b`, whose durability point is every Nth batch. Both apply
+//! the same relaxation to every engine, so the engines stay comparable to each
+//! other; what does not hold is the comparison to the one-durability-point-per-
+//! operation rows.
+//!
 //! # Gaps
 //!
 //! An engine that cannot express a workload is recorded with `missing` set, not
-//! with a zero. Three rows are expected to be gaps somewhere: the batch row
-//! (LedgerFS has no caller-visible batch transaction), the reopen row for the
-//! raw-file control (a directory tree has no recovery step), and anything on a
-//! platform where an engine will not open.
+//! with a zero. One row is expected to be a gap somewhere — reopen for the
+//! raw-file control, because a directory tree has no recovery step — as is
+//! anything on a platform where an engine will not open.
 
 use std::time::Instant;
 
@@ -96,6 +105,11 @@ pub const WORKLOADS: &[Workload] = &[
 		id: "append_batched_960b",
 		blocks: 131072,
 		run: append_batched,
+	},
+	Workload {
+		id: "staged_append_960b",
+		blocks: 131072,
+		run: append_staged,
 	},
 	Workload {
 		id: "read_back_960b",
@@ -241,6 +255,13 @@ fn record(stream: &str, row: usize) -> [u8; RECORD_BYTES] {
 /// LedgerFS's image are both one file, but what grew inside it is not
 /// comparable, whereas "bytes the medium no longer has" is.
 ///
+/// The reading is taken once before and once after the **whole** repeat run, so
+/// the delta spans every repetition; it is divided by `ops × repeats`, the work
+/// the run actually did. Dividing by the per-repetition `ops` alone multiplies
+/// every figure by the repeat count — which is what this harness did until
+/// 2026-10-23, so every `volume KiB/op` recorded before that date is inflated
+/// by `Config::repeats` (3). The 2026-10-23 run is the correction.
+///
 /// Left `None` when the engine reports no figure, or when the delta is not
 /// positive — a workload that freed space, or one whose engine cannot say, is
 /// reported as not measured rather than as zero.
@@ -248,8 +269,9 @@ fn record_space(sample: &mut Sample, engine: &dyn Engine, before: Option<u64>, o
 	let (Some(before), Some(after)) = (before, engine.space_used()) else {
 		return;
 	};
-	if before > after && ops > 0 {
-		sample.space_per_op = Some((before - after) / ops);
+	let run_ops = ops.saturating_mul(sample.repeats as u64);
+	if before > after && run_ops > 0 {
+		sample.space_per_op = Some((before - after) / run_ops);
 	}
 }
 
@@ -300,8 +322,9 @@ fn insert_durable(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 ///
 /// Not comparable with the row above and marked so: the per-insert number this
 /// produces is the cost of *1/N* of a commit. It is here because the gap between
-/// the two rows is the whole argument for batching, and because LedgerFS cannot
-/// produce it at all.
+/// the two rows is the whole argument for batching — and because LedgerFS now
+/// produces it too, through a staging session sealed once, which is the same
+/// transaction SQLite's `BEGIN … COMMIT` is.
 fn insert_batched(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	let name = engine.name();
 	if !engine.supports(Op::Batch) {
@@ -436,6 +459,75 @@ fn append_batched(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
 	)?;
 	sample.note = Some(format!(
 		"{batches} durable batches of {ROWS_PER_BATCH} × {RECORD_BYTES} B records; the batch is the durability point"
+	));
+	record_space(&mut sample, engine, before, batches as u64);
+	Ok(sample)
+}
+
+/// The same records as [`append_batched`], with the durability point moved off
+/// the batch: rows accumulate in each engine's staged tier and one seal makes
+/// `staged_seal_every` batches durable at once.
+///
+/// This is the row for an application that has decided a commit per batch is
+/// more durability than it needs — the promise is "a seal's worth survives, an
+/// unsealed tail need not". It is marked non-comparable because it is not: the
+/// same work is being made durable an Nth as often. Every engine gets the same
+/// relaxation, in its own idiom, so the comparison between them stays honest
+/// even though the comparison to the rows above does not.
+///
+/// `ops` counts batches, as in the row above, so the two figures are per-batch
+/// costs of the same payload; what differs is how many of those batches share a
+/// durability point.
+fn append_staged(engine: &mut dyn Engine, cfg: &Config) -> Result<Sample> {
+	let name = engine.name();
+	if !engine.supports(Op::Staged) {
+		return Ok(unsupported(name, "staged_append_960b", "no staging tier"));
+	}
+	let batches = cfg.append_batches;
+	let seal_every = cfg.staged_seal_every.max(1);
+	let streams: Vec<String> = (0..cfg.repeats).map(|r| format!("t{r}")).collect();
+	let mut per_rep: Vec<Vec<Vec<u8>>> = Vec::with_capacity(cfg.repeats);
+	for stream in &streams {
+		let rep: Vec<Vec<u8>> = (0..batches)
+			.map(|b| {
+				(0..ROWS_PER_BATCH)
+					.flat_map(|j| record(stream, b * ROWS_PER_BATCH + j))
+					.collect()
+			})
+			.collect();
+		per_rep.push(rep);
+	}
+	let before = engine.space_used();
+	let mut sample = measure(
+		name,
+		"staged_append_960b",
+		batches as u64,
+		(batches * BATCH_BYTES) as u64,
+		cfg.repeats,
+		|r| {
+			let mut since_seal = 0;
+			for batch in &per_rep[r] {
+				let rows: Vec<&[u8]> = batch.chunks(RECORD_BYTES).collect();
+				engine.staged_append(&streams[r], &rows)?;
+				since_seal += 1;
+				if since_seal == seal_every {
+					engine.seal_staged()?;
+					since_seal = 0;
+				}
+			}
+			// A tail shorter than one seal's worth is sealed too: the workload
+			// is finished, so leaving it staged would be data the engine
+			// promises to nobody.
+			if since_seal > 0 {
+				engine.seal_staged()?;
+			}
+			Ok(())
+		},
+	)?;
+	sample.comparable = false;
+	sample.note = Some(format!(
+		"{batches} batches of {ROWS_PER_BATCH} × {RECORD_BYTES} B records, sealed every {seal_every}; \
+		 the durability point is the seal, so the per-batch figure is 1/{seal_every} of a commit"
 	));
 	record_space(&mut sample, engine, before, batches as u64);
 	Ok(sample)

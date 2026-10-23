@@ -11,6 +11,9 @@ pub struct Config {
 	pub log_appends: usize,
 	/// Durable batches per repetition in the batched-append workloads.
 	pub append_batches: usize,
+	/// Batches per seal in the staged-append workload: the durability point is
+	/// every `staged_seal_every`th batch, not every batch.
+	pub staged_seal_every: usize,
 	/// Repetitions per workload. The reported figure is their median.
 	pub repeats: usize,
 }
@@ -21,6 +24,7 @@ impl Default for Config {
 			insert_n: 200,
 			log_appends: 64,
 			append_batches: 512,
+			staged_seal_every: 10,
 			repeats: 3,
 		}
 	}
@@ -29,8 +33,8 @@ impl Default for Config {
 impl Config {
 	pub fn describe(&self) -> String {
 		format!(
-			"insert_n={}, log_appends={}, append_batches={}, repeats={}",
-			self.insert_n, self.log_appends, self.append_batches, self.repeats
+			"insert_n={}, log_appends={}, append_batches={}, staged_seal_every={}, repeats={}",
+			self.insert_n, self.log_appends, self.append_batches, self.staged_seal_every, self.repeats
 		)
 	}
 

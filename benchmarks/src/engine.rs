@@ -26,17 +26,39 @@
 //!
 //! # What is deliberately absent
 //!
-//! LedgerFS has no batch API — a transaction is built internally and a caller
-//! cannot hand it a hundred inserts — so it reports `Batch` as unsupported and
-//! the batch rows are gaps rather than numbers. The same for the raw-file
-//! control on `Reopen`: there is no recovery step to time. A gap is the honest
-//! entry; a fabricated one would be the thing this harness exists to prevent.
+//! The raw-file control cannot express `Reopen`: a directory full of fsync'd
+//! files has no journal to replay and no root to select, so there is no
+//! recovery step to time. A gap is the honest entry; a fabricated one would be
+//! the thing this harness exists to prevent. (A gap is kept rather than filled
+//! by timing `open(2)` — that would measure the kernel, and the row would read
+//! as a win for the control.)
 //!
 //! Batched *appends* are a different operation ([`Engine::append_batch`]) and
 //! every engine can express it: one append is one object, so writing a batch of
 //! rows costs one durability point per engine — a transaction for SQLite, one
 //! write transaction for redb, one `sync_all` for the raw control, one commit
 //! for LedgerFS.
+//!
+//! # The staged tier
+//!
+//! [`Engine::staged_append`] / [`Engine::seal_staged`] are the operation whose
+//! durability point is *not* every call: rows accumulate with no barrier and
+//! `seal_staged` makes everything since the last seal durable in one step.
+//! Every engine has an honest idiom for it, which is why the row exists:
+//!
+//! - LedgerFS — a staging session (`begin_staging` … `seal_staged`): objects
+//!   built in memory, one commit at the seal.
+//! - SQLite — one deferred transaction left open: rows accumulate in the WAL's
+//!   dirty pages, `COMMIT` at the seal.
+//! - redb — one `WriteTransaction` held open with `Durability::Immediate`,
+//!   committed at the seal.
+//! - raw-file — a held append-mode file: `write_all` per row, one `sync_all`
+//!   at the seal.
+//!
+//! What the row measures is therefore the cost of *one batch* when the
+//! durability point is every Nth batch, and it is marked non-comparable for
+//! exactly that reason. It is not a way to make LedgerFS look fast: the same
+//! relaxation is granted to all four engines.
 //!
 //! # Per deployment
 //!
@@ -65,6 +87,8 @@ pub enum Op {
 	Batch,
 	/// Append to an existing file without rewriting it.
 	Append,
+	/// Accumulate rows with no durability point, then seal them in one.
+	Staged,
 	/// Close and reopen, as a restart would.
 	Reopen,
 }
@@ -115,6 +139,19 @@ pub trait Engine {
 	/// LedgerFS one append *is* one commit, so the batch costs what one append
 	/// costs.
 	fn append_batch(&mut self, name: &str, rows: &[&[u8]]) -> Result<()>;
+
+	/// Append each row of `rows` to the log named `name` **without** a
+	/// durability point, to be made durable by the next
+	/// [`seal_staged`](Engine::seal_staged).
+	///
+	/// The bytes are in the engine's own machinery — dirty pages, an open
+	/// transaction, a held file — but a power cut at this instant is allowed to
+	/// lose them. That is the tier's whole point: the caller decides how often
+	/// it pays for durability.
+	fn staged_append(&mut self, name: &str, rows: &[&[u8]]) -> Result<()>;
+
+	/// Make everything staged since the last seal durable, in one step.
+	fn seal_staged(&mut self) -> Result<()>;
 
 	/// The whole log named `name`, first byte written first.
 	fn read_log(&self, name: &str) -> Result<Vec<u8>>;
@@ -242,9 +279,10 @@ impl Engine for LedgerFs {
 	}
 
 	fn supports(&self, op: Op) -> bool {
-		// No batch API, and no recovery step that is separable from a mount —
-		// `reopen` below re-mounts, which is the thing a restart pays for.
-		matches!(op, Op::Append | Op::Reopen)
+		// Every operation, now that `put_batch` is a staging session: there is
+		// no recovery step separable from a mount (`reopen` below re-mounts,
+		// which is the thing a restart pays for).
+		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Reopen)
 	}
 
 	fn prepare(&mut self, prefixes: &[String]) -> Result<()> {
@@ -263,8 +301,26 @@ impl Engine for LedgerFs {
 		self.store()?.write_new_file(&path, value, 0o644).map_err(Self::err)
 	}
 
-	fn put_batch(&mut self, _items: &[(String, Vec<u8>)]) -> Result<()> {
-		Err(Error::engine("ledgerfs", "no caller-visible batch transaction"))
+	/// One staging session, one seal — the caller-visible batch transaction the
+	/// volume did not have before it had a staging tier. Each key is still its
+	/// own file; what is shared is the commit.
+	fn put_batch(&mut self, items: &[(String, Vec<u8>)]) -> Result<()> {
+		const WORKLOAD: &str = "ledgerfs";
+		let store = self.store()?;
+		store.begin_staging(0).map_err(Self::err)?;
+		for (key, value) in items {
+			if let Err(e) = store.staged_write_new_file(&Self::key_path(key), value, 0o644) {
+				store.end_staging();
+				return Err(Error::engine(WORKLOAD, e.to_string()));
+			}
+		}
+		match store.seal_staged() {
+			Ok(_) => Ok(()),
+			Err(e) => {
+				store.end_staging();
+				Err(Error::engine(WORKLOAD, e.to_string()))
+			}
+		}
 	}
 
 	fn get(&self, key: &str) -> Result<Vec<u8>> {
@@ -319,6 +375,30 @@ impl Engine for LedgerFs {
 			data.extend_from_slice(row);
 		}
 		self.append(name, &data)
+	}
+
+	/// The volume's own staged tier: bytes go into objects built in memory, and
+	/// the session is opened on `open_ledgerfs`'s store if it is not already
+	/// open. Nothing here reaches the device.
+	fn staged_append(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		let mut data = Vec::with_capacity(rows.iter().map(|r| r.len()).sum());
+		for row in rows {
+			data.extend_from_slice(row);
+		}
+		let path = format!("/log/{name}");
+		let store = self.store()?;
+		if !store.staging_is_open() {
+			store.begin_staging(0).map_err(Self::err)?;
+		}
+		store.staged_append(&path, &data, 0o644).map_err(Self::err)
+	}
+
+	fn seal_staged(&mut self) -> Result<()> {
+		let store = self.store()?;
+		if store.staging_is_open() {
+			store.seal_staged().map_err(Self::err)?;
+		}
+		Ok(())
 	}
 
 	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
@@ -423,7 +503,7 @@ impl Engine for Sqlite {
 	}
 
 	fn supports(&self, op: Op) -> bool {
-		matches!(op, Op::Batch | Op::Append | Op::Reopen)
+		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Reopen)
 	}
 
 	fn put(&mut self, key: &str, value: &[u8]) -> Result<()> {
@@ -494,6 +574,32 @@ impl Engine for Sqlite {
 		tx.commit().map_err(sq)
 	}
 
+	/// One deferred transaction left open: rows land in the WAL's dirty pages
+	/// and nothing is fsync'd until [`seal_staged`](Self::seal_staged) commits.
+	fn staged_append(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		if self.conn.is_autocommit() {
+			self.conn.execute_batch("BEGIN").map_err(sq)?;
+		}
+		let mut stmt = self
+			.conn
+			.prepare(
+				"INSERT INTO log (stream, seq, data)
+				 SELECT ?1, COALESCE(MAX(seq) + 1, 0), ?2 FROM log WHERE stream = ?1",
+			)
+			.map_err(sq)?;
+		for row in rows {
+			stmt.execute(rusqlite::params![name, row]).map_err(sq)?;
+		}
+		Ok(())
+	}
+
+	fn seal_staged(&mut self) -> Result<()> {
+		if !self.conn.is_autocommit() {
+			self.conn.execute_batch("COMMIT").map_err(sq)?;
+		}
+		Ok(())
+	}
+
 	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
 		let mut stmt = self
 			.conn
@@ -508,6 +614,15 @@ impl Engine for Sqlite {
 	}
 
 	fn reopen(&mut self) -> Result<()> {
+		// A reopen with a staged transaction open would roll it back by closing
+		// the connection; refuse instead, so a workload bug cannot read as a
+		// durability result.
+		if !self.conn.is_autocommit() {
+			return Err(Error::engine(
+				"sqlite-wal",
+				"reopen: a staged transaction is still open; seal it first",
+			));
+		}
 		self.conn = rusqlite::Connection::open(&self.path).map_err(sq)?;
 		configure(&self.conn)
 	}
@@ -530,6 +645,11 @@ struct Redb {
 	/// carry — so [`Redb::reopen`] can rebuild every counter in one pass over
 	/// the table, exactly the way the single counter used to.
 	log_seq: std::collections::HashMap<u64, u64>,
+	/// The write transaction a staging session holds open, if any.
+	///
+	/// redb's `WriteTransaction` owns `Arc`s rather than borrowing the database,
+	/// so holding one across calls is just a field — no leak, no ouroboros.
+	staged: Option<redb::WriteTransaction>,
 }
 
 /// A log row's key: the stream name's 64-bit FNV-1a hash in the high half, the
@@ -564,6 +684,7 @@ fn open_redb(dir: &Path, _blocks: u64) -> Result<Box<dyn Engine>> {
 		path,
 		db: Some(db),
 		log_seq: std::collections::HashMap::new(),
+		staged: None,
 	}))
 }
 
@@ -590,7 +711,7 @@ impl Engine for Redb {
 	}
 
 	fn supports(&self, op: Op) -> bool {
-		matches!(op, Op::Batch | Op::Append | Op::Reopen)
+		matches!(op, Op::Batch | Op::Append | Op::Staged | Op::Reopen)
 	}
 
 	fn put(&mut self, key: &str, value: &[u8]) -> Result<()> {
@@ -669,6 +790,35 @@ impl Engine for Redb {
 		Ok(())
 	}
 
+	/// One write transaction held open across calls: rows are inserted into it
+	/// and nothing is fsync'd until [`seal_staged`](Self::seal_staged) commits,
+	/// which is redb's own answer to "many rows, one durability point".
+	fn staged_append(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		let hash = stream_hash(name);
+		let first = *self.log_seq.entry(hash).or_insert(0);
+		if self.staged.is_none() {
+			let mut write = self.db()?.begin_write().map_err(rd)?;
+			write.set_durability(redb::Durability::Immediate).map_err(rd)?;
+			self.staged = Some(write);
+		}
+		{
+			let write = self.staged.as_ref().expect("just opened");
+			let mut table = write.open_table(REDB_LOG).map_err(rd)?;
+			for (i, row) in rows.iter().enumerate() {
+				table.insert(stream_key(name, first + i as u64), *row).map_err(rd)?;
+			}
+		}
+		self.log_seq.insert(hash, first + rows.len() as u64);
+		Ok(())
+	}
+
+	fn seal_staged(&mut self) -> Result<()> {
+		if let Some(write) = self.staged.take() {
+			write.commit().map_err(rd)?;
+		}
+		Ok(())
+	}
+
 	fn read_log(&self, name: &str) -> Result<Vec<u8>> {
 		let read = self.db()?.begin_read().map_err(rd)?;
 		let table = read.open_table(REDB_LOG).map_err(rd)?;
@@ -683,6 +833,12 @@ impl Engine for Redb {
 	}
 
 	fn reopen(&mut self) -> Result<()> {
+		// A staged write transaction is uncommitted by definition; aborting it
+		// here is what a crash would do, and it must happen before the handle
+		// to the database goes away.
+		if let Some(write) = self.staged.take() {
+			write.abort().map_err(rd)?;
+		}
 		self.db = None;
 		let db = redb::Database::open(&self.path).map_err(rd)?;
 		// Pick each stream's sequence counter back up from what survived: the
@@ -719,6 +875,10 @@ impl Engine for Redb {
 struct RawFile {
 	dir: PathBuf,
 	next_seq: u64,
+	/// The append handle a staging session holds open, and the stream it names.
+	/// The name is kept so a session that switches streams reopens the right
+	/// file rather than appending to the wrong one.
+	staged: Option<(String, File)>,
 }
 
 fn open_raw_file(dir: &Path, _blocks: u64) -> Result<Box<dyn Engine>> {
@@ -733,6 +893,7 @@ fn open_raw_file(dir: &Path, _blocks: u64) -> Result<Box<dyn Engine>> {
 	Ok(Box::new(RawFile {
 		dir: dir.join("raw"),
 		next_seq: 0,
+		staged: None,
 	}))
 }
 
@@ -753,7 +914,7 @@ impl Engine for RawFile {
 	fn supports(&self, op: Op) -> bool {
 		// There is nothing to recover: a directory full of fsync'd files has no
 		// journal to replay and no root to select.
-		matches!(op, Op::Batch | Op::Append)
+		matches!(op, Op::Batch | Op::Append | Op::Staged)
 	}
 
 	fn prepare(&mut self, prefixes: &[String]) -> Result<()> {
@@ -831,6 +992,30 @@ impl Engine for RawFile {
 			file.write_all(row)?;
 		}
 		file.sync_all()?;
+		Ok(())
+	}
+
+	/// A held append handle: `write_all` per row into the kernel's page cache,
+	/// and a power cut at this instant may lose any of it. The `sync_all` that
+	/// makes it durable is [`seal_staged`](Self::seal_staged).
+	fn staged_append(&mut self, name: &str, rows: &[&[u8]]) -> Result<()> {
+		let wrong_stream = matches!(&self.staged, Some((open, _)) if open != name);
+		if self.staged.is_none() || wrong_stream {
+			let path = self.dir.join("log").join(name);
+			let file = OpenOptions::new().create(true).append(true).open(&path)?;
+			self.staged = Some((name.to_string(), file));
+		}
+		let (_, file) = self.staged.as_mut().expect("just opened");
+		for row in rows {
+			file.write_all(row)?;
+		}
+		Ok(())
+	}
+
+	fn seal_staged(&mut self) -> Result<()> {
+		if let Some((_, file)) = self.staged.take() {
+			file.sync_all()?;
+		}
 		Ok(())
 	}
 

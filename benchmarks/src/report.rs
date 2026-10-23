@@ -257,7 +257,8 @@ pub fn render(run: &Run) -> String {
 	out.push_str(
 		"Each workload is run for every engine `repeats` times; the figure below is the median of \
 		 the per-repetition means, and each repetition does the same amount of work. Nothing is \
-		 tuned: every engine is asked for one write, durable before the call returns.\n\n",
+		 tuned. Every engine is asked for one write, durable before the call returns, except where \
+		 a row is marked \u{2020}: those state their own durability point instead.\n\n",
 	);
 
 	// The durability statements belong before the numbers, not after them: a
@@ -300,6 +301,7 @@ fn workload_order(run: &Run) -> Vec<String> {
 		"read_point_256b",
 		"append_log_64k",
 		"append_batched_960b",
+		"staged_append_960b",
 		"read_back_960b",
 		"scan_10",
 		"scan_100",
@@ -391,13 +393,24 @@ fn render_workload(out: &mut String, run: &Run, workload: &str) {
 			);
 		}
 
+		// Grouped by reason, not listed per engine: every engine in a tier row
+		// carries the same sentence, and four copies of it push the one fact a
+		// reader needs out of view.
 		let slanted: Vec<&&Sample> = measured.iter().filter(|s| !s.comparable).collect();
 		if !slanted.is_empty() {
 			out.push_str("\u{2020} not a like-for-like row:\n");
-			for s in slanted {
-				if let Some(note) = &s.note {
-					out.push_str(&format!("- `{}` — {note}.\n", s.engine));
+			let mut shown: Vec<&str> = Vec::new();
+			for note in slanted.iter().filter_map(|s| s.note.as_deref()) {
+				if shown.contains(&note) {
+					continue;
 				}
+				shown.push(note);
+				let names: Vec<String> = slanted
+					.iter()
+					.filter(|s| s.note.as_deref() == Some(note))
+					.map(|s| format!("`{}`", s.engine))
+					.collect();
+				out.push_str(&format!("- {} — {note}.\n", names.join(", ")));
 			}
 			out.push('\n');
 		}
