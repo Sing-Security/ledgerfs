@@ -416,6 +416,24 @@ only operation that makes anything visible, and the only one that requires the
 volume's write lock for its duration. The host crate's `Store` exposes exactly
 this shape; see §15.1 for the steps a commit performs.
 
+A caller with many mutations MAY build **one** transaction out of all of them
+before committing — the host crate's `Store::begin_staging` … `seal_staged`
+does exactly that — but this is library behaviour, not a format state:
+
+- Everything staged before the seal lives in the caller's memory. No device
+  block is allocated, no allocator state is snapshotted, no copy of the
+  superblock is touched, and no intermediate state is ever visible to another
+  reader or to a crash.
+- The seal produces one transaction of the ordinary shape above. The format
+  therefore sees a session exactly as it sees a single commit, and needs no
+  feature bit, no recovery path and no new record type.
+- If the process dies before the seal, the staged work is gone entirely; if it
+  dies during the seal, §15.2 applies unchanged.
+
+There is no on-disk representation of staged-but-unsealed data. The intent log
+(§16–§18) exists and is defined; it is not this, and §18.5/§44.2 keep root
+adoption away from it.
+
 ## 13. Commit sequence semantics (Normative)
 
 ### 13.1. Monotonicity requirement

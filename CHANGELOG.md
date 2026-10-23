@@ -10,6 +10,53 @@ operations, `ledgerfs-host` carries the `std` volume layer. The on-disk
 format has its own version field in the superblock, which is a third number
 again — see [`FORMAT.md`](FORMAT.md).
 
+## [Unreleased]
+
+### Added
+
+- **Staging sessions** in `ledgerfs-host`: `Store::begin_staging`,
+  `staged_append`, `staged_write_new_file`, `staged_remove`, `seal_staged`,
+  `end_staging`, `staged_bytes`, `staging_is_open`, and the scoped
+  `Store::staging(capacity)` wrapper. Staged writes build objects and thread a
+  staged root in memory — no device block, no allocator state, no barrier —
+  until `seal_staged` folds everything into **one** commit of the ordinary
+  shape. The seal is pruned to what the final root reaches, so N staged appends
+  carry N chunks plus one generation of each metadata object rather than one
+  generation per append. No format change: a sealed session is indistinguishable
+  from the equivalent sequence of commits.
+- **Two read tiers.** While a session is open, the owning handle's `read_file`,
+  `read_at`, `stat` and `read_dir` resolve through the staged root (read your
+  own writes, zero device reads for staged objects), and the new
+  `Store::read_file_committed` returns the committed tier — what a crash at
+  that instant would leave. Other handles see the committed tier only.
+- `Error::StagingFull { wanted, capacity }`: a staged operation that would
+  exceed the session's byte budget is refused, and the session is left exactly
+  as it was.
+- `examples/staging_capture.rs`: stage, read both tiers mid-session, seal, and
+  reopen the volume from its bytes.
+
+### Changed
+
+- **A write spanning several objects is one commit.** `write_new_file`,
+  `append`, `write_at` and `write_file` over the volume's `max_object_bytes`
+  split the payload into several objects but fold them into a single
+  transaction; they used to commit once per object, so a failed larger write
+  could leave a prefix behind. `KNOWN_ISSUES.md` §3 is retired.
+- **`write_file` over an existing file is one atomic commit.** The new content
+  is built whole under no directory entry, then the entry the path names is
+  re-pointed at it in the same commit — there is no instant at which the path is
+  absent or empty. The `remove` + `create` sequence still has that window, and
+  `durability.rs` still pins it as the thing `write_file` avoids.
+- `STORE_CONTRACT_VERSION` is `"2"`. The bump names a real behavioural change
+  for an embedding app (atomic replace, and one commit per verb however many
+  objects it spans), not a format change.
+- `FORMAT.md` §12.3 states that a staged session is library behaviour: no
+  on-disk state, no feature bit, no recovery path. `EMBEDDING.md` gains the
+  staging rule and the tier choice; `README.md` says what the tier is for.
+- `kernel`: `cow::apply_ops_to_root` documents that it threads only the root
+  descriptor, so an op cannot see an earlier op's objects, and that it does not
+  perform the ancestor cascade. Documentation only.
+
 ## [0.7.0] / [0.1.0] - 2026-10-14
 
 First public release of both crates. Everything below the two headings existed

@@ -133,6 +133,7 @@ pub use objstore::DiskObjectStore;
 // a caller that checks first and a store that checks second cannot disagree.
 pub use path::{Entry, HostFs, components_of};
 pub use rebuild::{RebuildStats, WalkEntry, rebuild_into};
+pub use staging::Staging;
 pub use store::{Origin, STORE_APP_FILE, STORE_CONTRACT_VERSION, STORE_DIR, STORE_VERSION_FILE, Store};
 pub use volume::{CopyStatus, Volume};
 

@@ -105,6 +105,18 @@ impl Store {
 /// The caller is expected to verify before trusting the result; `walk()` on
 /// both volumes is the check a compaction pass uses.
 pub fn rebuild_into(src: &Store, dst: &mut Store) -> Result<RebuildStats> {
+	// A compaction reads one volume's committed tree and writes another's.
+	// With a staging session open on either side, `read_file`/`stat` answer the
+	// staged tier and `write_file` would be refused mid-replay — a wrong copy
+	// or a half-built one. Refuse up front and name the session.
+	if src.staging_is_open() || dst.staging_is_open() {
+		return Err(Error::Usage(
+			"rebuild_into: a staging session is open on the source or the destination; seal or \
+			 end it before compacting"
+				.to_string(),
+		));
+	}
+
 	let mut stats = RebuildStats::default();
 	for entry in src.walk()? {
 		match entry.kind {

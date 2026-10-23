@@ -8,6 +8,13 @@ durable at one point: the superblock write that ends a commit. Before that write
 the old tree is the filesystem; after it, the new one. There is no interval a
 crash can leave half-applied.
 
+A caller with more mutations than commits can afford does not have to loosen
+that: a **staging session** gathers writes in memory and seals them as one
+ordinary commit, and the caller chooses, per read, whether it wants the
+committed tier or its own staged one. The seal is still the point of truth —
+before it, the staged work is RAM only; after it, it has exactly the guarantee
+every other write has.
+
 It is built for two deployments, and neither is a special case of the other. A
 volume can be **provisioned onto a real disk** — its own partition, formatted
 once and opened directly by whatever owns it — or **embedded in a program**,
@@ -59,10 +66,18 @@ fn main() -> Result<()> {
 	store.write_new_file("/state.new", b"{\"phase\":\"stopped\"}\n", 0o644)?;
 	store.rename("/state.new", "/state")?;
 
+	// High-frequency traffic: many writes, one commit — and a per-read choice
+	// of how true the answer has to be.
+	store.begin_staging(4 * 1024 * 1024)?;
+	store.staged_append("/log.jsonl", b"{\"turn\":2}\n", 0o644)?;
+	assert_eq!(store.read_file_committed("/log.jsonl")?, b"{\"turn\":1}\n");
+	assert_eq!(store.read_file("/log.jsonl")?, b"{\"turn\":1}\n{\"turn\":2}\n");
+	let _seal = store.seal_staged()?; // one transaction, one durability point
+
 	// A volume is a byte string. Ship it, archive it, or reopen it here.
 	let bytes = mirror.bytes_snapshot();
 	let reopened = Store::open(Box::new(MemBlockDevice::from_bytes(bytes)?))?;
-	assert_eq!(reopened.read_file("/log.jsonl")?, b"{\"turn\":1}\n");
+	assert_eq!(reopened.read_file("/log.jsonl")?, b"{\"turn\":1}\n{\"turn\":2}\n");
 	Ok(())
 }
 ```
@@ -75,6 +90,8 @@ partition. Runnable versions, one per way to hold a volume:
   one-writer lock, a read-only open beside a live writer, the hint sidecar
 - `cargo run --example app_store` — the application-store contract from
   [`EMBEDDING.md`](EMBEDDING.md) as code
+- `cargo run --example staging_capture` — the staging tier: stage, read both
+  tiers mid-session, seal, and reopen from the volume's bytes
 - `cargo run --example custom_device` — your own storage: implement the four
   required [`BlockDevice`](host/src/device.rs) methods and the whole filesystem
   works on top of it unchanged
@@ -121,8 +138,10 @@ all.
 - **Not yet claimed to be fast.** [`BENCHMARKS.md`](BENCHMARKS.md) reports
   LedgerFS against SQLite with `synchronous=FULL`, `redb`, and a raw `fsync`'d
   file, with the durability setting stated for every engine. The unit of
-  durability here is a whole-filesystem commit, which is the wrong unit for a
-  batched analytical load and would lose badly at one. Where a number was not
+  durability here is a whole-filesystem commit, and a commit that is paid per
+  small record is the wrong unit for a capture-shaped load. That is what the
+  staging tier is for: the same traffic pays one commit per seal instead of one
+  per record, and the benchmark has a row for it. Where a number was not
   measured, the table says so rather than leaving a blank.
 
 ## Documents

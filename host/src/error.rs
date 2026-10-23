@@ -92,6 +92,13 @@ pub enum Error {
 	AlreadyExists {
 		path: String,
 	},
+	/// A staged operation would take a staging session past the capacity the
+	/// session was opened with. The operation is refused and the session is
+	/// left as it was — it is not a partial write, and it does not auto-seal.
+	StagingFull {
+		wanted: u64,
+		capacity: u64,
+	},
 
 	// -- Filesystem verbs
 	/// An operation the store's contract does not cover, named as the caller
@@ -193,6 +200,11 @@ impl Display for Error {
 			Self::IsADirectory { path } => write!(f, "{path} is a directory"),
 			Self::NoSuchFile { path } => write!(f, "no such file or directory: {path}"),
 			Self::AlreadyExists { path } => write!(f, "already exists: {path}"),
+			Self::StagingFull { wanted, capacity } => write!(
+				f,
+				"staging is full: this operation would take the session to {wanted} bytes of its \
+				 {capacity}-byte budget — seal or end the session, or open a larger one"
+			),
 			Self::Unsupported { detail } => write!(f, "unsupported: {detail}"),
 			Self::MarkerUnreadable { path, detail } => {
 				write!(f, "{path} is not readable text: {detail}")

@@ -62,6 +62,23 @@ returns `NoSuchFile { path: "findings" }`. A create never makes its parents —
 that is the app's job, and the store says which one is missing rather than
 letting a caller conclude its *file* is the problem.
 
+An app whose traffic is too fast for a commit per call has a second tier rather
+than a second filesystem (§3, *Staging: many writes, one commit*):
+
+| verb | does |
+|---|---|
+| `begin_staging(capacity_bytes)` | open a session; `0` = unbounded |
+| `staged_append(path, data, mode)` | append into the session — no commit, no device write |
+| `staged_write_new_file(path, data, mode)` | create into the session; refuses a taken name |
+| `staged_remove(path)` | remove into the session |
+| `seal_staged()` | everything staged, as **one** commit; the session ends |
+| `end_staging()` | discard the session; the volume is untouched |
+| `staged_bytes()` / `staging_is_open()` | what the session holds, and whether it is open |
+| `read_file_committed(path)` | the committed tier, even while a session is open |
+
+A mutating call outside a session and its `staged_` counterpart take the same
+arguments and mean the same thing; the difference is *when* it becomes durable.
+
 ## 3. Rules
 
 ### One writer per volume
@@ -102,6 +119,12 @@ cost of a commit is then bounded by the chunk, and total write amplification is
 linear in the data. This is not a tuning detail — it is the difference between a
 volume that lasts a campaign and one that fills in an afternoon.
 
+That rule is about *committed* appends. A staging session (§3, *Staging: many
+writes, one commit*) makes the same traffic linear in **device** bytes, at the
+cost of holding the intermediate generations in RAM until the seal — so a
+long-running recorder either chunks its files or seals its sessions, and which
+one is cheaper depends on how often it can afford the seal.
+
 ### A commit is the durability point
 
 Every mutating call is one transaction through the real `CommitEngine`: the
@@ -137,6 +160,51 @@ and `write_file` over an existing path builds the new content whole and
 re-points the entry at it in one transaction — there is no instant at which the
 path is absent or empty. `create_file` followed by `append` is the one shape
 that still costs two, because it is two calls.
+
+### Staging: many writes, one commit
+
+A capture loop — records arriving faster than a commit can be paid for — uses a
+staging session instead of a per-record verb. `begin_staging` opens one;
+`staged_append`, `staged_write_new_file` and `staged_remove` run against the
+session; `seal_staged` folds everything staged into **one** transaction of the
+ordinary shape and commits it. Between the two, no device block is allocated, no
+allocator state is touched, and no barrier is paid.
+
+While the session is open, the handle that owns it resolves reads through the
+staged root: `read_file`, `read_at`, `stat` and `read_dir` show the caller its
+own writes at memory speed, and a staged object costs zero device reads.
+`read_file_committed` is the other tier — the last root a superblock published,
+which is exactly what a crash at this instant would leave. Any other handle on
+the volume sees the committed tier only. That choice is the point: the
+application decides how true the data it reads back is, per read.
+
+The seal is the ultimate point of truth. Once it returns, the staged work has
+the guarantee every write in this store has — one atomic commit,
+BLAKE3-verified on every read, recovered by a plain mount with no new recovery
+code. The format does not change: a sealed session is indistinguishable from the
+equivalent sequence of commits, except that it is one. Before the seal the
+staged tier is RAM only, so a crash loses it exactly — not partially, and never
+half-applied.
+
+What that buys, and what it costs:
+
+- The seal is pruned to what the final root reaches, so a session of N appends
+  carries N chunks plus **one** generation of each metadata object, not one per
+  append: O(N) device bytes instead of the O(N²) that N committed appends cost.
+- The transient cost inside the session is still O(N²) — each staged append
+  rebuilds the current extent node in RAM — bounded by the capacity passed to
+  `begin_staging`. Be generous with RAM; be stingy about how long one file grows
+  before you seal.
+- Per-object ceilings bind at the seal exactly as at a commit: an extent node's
+  ~1500-extent ceiling, and the volume's `max_object_bytes` split, are enforced
+  there. A stream longer than those should seal in batches rather than stage one
+  enormous file.
+- Capacity is enforced in canonical staged bytes, intermediate generations
+  included. Exceeding it refuses that call with `Error::StagingFull`, leaving
+  the session as it was. A session never seals itself: an implicit seal would be
+  an implicit durability point.
+- While a session is open, the ordinary mutating verbs and `rebuild_into` are
+  refused (`Error::Usage`, naming the session). One staged root, one writer.
 
 **Ordering rule, do not invert:** within `commit`, the allocator snapshot is
 persisted before the superblock. The other order can brick a volume — a
@@ -229,13 +297,16 @@ Stated plainly so an app plans around them rather than discovering them:
 - **No in-place truncate.** Replace the file instead.
 - **No GC, no encryption** on the host write path (an encrypted volume fails the
   mount with a clear message rather than decoding garbage).
-- **No batch commit in the host API.** Each verb is its own transaction; a
-  multi-op transaction needs an in-memory overlay the host `Store` does not
-  build, though the kernel side is closer to it than the API suggests
-  (`cow::apply_ops_to_root` already takes a *list* of operations, and refuses
-  when one op's input feeds another's path). A single verb that touches a deep
-  path *is* still one commit — the ancestor cascade merges several objects into
-  one.
+- **A staging session is RAM only until its seal.** Closing the process, or
+  losing power, before `seal_staged` loses everything the session staged — the
+  session is a durability *choice*, not a durability guarantee, and the
+  committed tier is always the one a crash leaves. On-disk staged durability
+  (a format-level fast path) is not implemented, and nothing in the format is
+  reserved for one yet. A session's staged writes are limited to files;
+  directories cannot be created or removed inside one.
+- **A session is not a batch across handles.** Only the handle that opened it
+  sees the staged tier, and every other handle sees the committed tier. There is
+  no cohort commit: one `seal_staged`, one root.
 - **A directory is flat and bounded at 400 entries.** `DirNode` entries live in
   one object and there is no split, so the 401st child fails the write. Partition
   deep fan-out across subdirectories; do not plan on a `node_modules`-shaped
@@ -264,6 +335,9 @@ observability, and the export path is how the two are reconciled.
 
 - The contract as running code: `examples/app_store.rs`
   (`cargo run --example app_store`).
+- The staging tier, both reads and the seal: `examples/staging_capture.rs`
+  (`cargo run --example staging_capture`) — stage, read both tiers mid-session,
+  seal, reopen from the volume's bytes.
 - The verb-by-verb behaviour, including every refusal above, is covered by the
   `store::tests` suite in `src/store.rs`.
 - The in-memory, relocatable half of the story — snapshot the bytes, restore

@@ -679,6 +679,23 @@ pub fn readdir<S: ObjectStore>(store: &S, _root: &Root, dir_inode_ref: ObjectRef
 
 /// Apply a slice of [`Operation`]s to `root` in order, returning a single
 /// merged [`TxnPlan`].
+///
+/// # What "in order" does and does not mean
+///
+/// The ops are applied in slice order and their plans are merged, but only the
+/// **root descriptor** is threaded between them: every op reads through the
+/// same immutable `store`. An op therefore cannot see the objects an earlier op
+/// produced. Two writes to one file, or a create followed by a write of the
+/// file it created, would each be built against the *original* inode, and the
+/// merged plan would carry both versions with only the later one reachable —
+/// silent data loss, not an error. This function is for ops that touch
+/// disjoint objects; a caller that needs chained visibility has to supply it,
+/// which is what the host crate's `StagedFold` does with an overlay store.
+///
+/// The merged `new_root.file_tree_root` is the **last** op's, and `mkdir` /
+/// `create_file` leave theirs at the CoW copy of the immediate parent (their
+/// own doc comments say so). Callers still owe the ancestor cascade; this
+/// function does not add one.
 pub fn apply_ops_to_root<S: ObjectStore>(store: &S, root: &Root, ops: &[Operation]) -> Result<TxnPlan> {
 	let mut current_root = root.clone();
 	let mut combined_txn = TxnPlan::new(ObjectRef::from_id(root.object_id), root.next_commit());

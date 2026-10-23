@@ -87,6 +87,13 @@ directory entry and re-points the existing entry at it, so a reader never sees
 the path absent or the file empty. `remove` followed by `create_file` (which is
 what a caller writing the sequence itself does) still has that window.
 
+**The staging tier is the answer for a stream that keeps appending.** Inside a
+staging session the intermediate generations live in memory and the seal is
+pruned to what the final root reaches, so a session of N appends costs O(N)
+device bytes instead of the O(N²) that N committed appends cost. The `ExtentNode`
+ceiling still binds *at the seal*, so a stream longer than one node can hold has
+to seal in batches rather than stage one enormous file. See `EMBEDDING.md` §3.
+
 ---
 
 ## 4. Reads fall back to scanning the volume, because hints are never written.

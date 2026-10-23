@@ -22,7 +22,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use ledgerfs::cow::{read_inode, readdir};
+use ledgerfs::cow::{ObjectStore, read_inode, readdir};
 use ledgerfs::object::{DirNode, Inode, InodeKind, ObjectRef, Root};
 
 use crate::device::{BlockDevice, FileBlockDevice};
@@ -173,7 +173,7 @@ impl HostFs {
 
 	/// The [`Inode`] at `path`.
 	pub fn stat(&self, path: &str) -> Result<Inode> {
-		self.store.inode(self.resolve(path)?)
+		stat_in(&self.store, self.root_inode_ref, path)
 	}
 
 	/// `name` inside the directory at `dir_ref`, or `None` if the directory has
@@ -308,31 +308,12 @@ impl HostFs {
 	/// Read each entry's Inode so the listing carries kind/size/mode: a
 	/// `DirEntry` alone is only a name and a reference.
 	pub fn read_dir(&self, path: &str) -> Result<Vec<Entry>> {
-		let dir_ref = self.resolve(path)?;
-		let inode = self.store.inode(dir_ref)?;
-		if inode.kind != InodeKind::Directory {
-			return Err(Error::NotADirectory { path: path.to_string() });
-		}
-		if !inode.content_ref.is_zero() {
-			check_dir_depth(&self.store, inode.content_ref)?;
-		}
-
-		let query_root = self.query_root();
-		let entries = readdir(&self.store, &query_root, dir_ref).map_err(Error::from)?;
-
-		let mut out = Vec::with_capacity(entries.len());
-		for entry in entries {
-			let inode_ref = entry.inode_ref();
-			let child = self.store.inode(inode_ref)?;
-			out.push(Entry {
-				name: entry.name.as_str().to_string(),
-				kind: child.kind,
-				size: child.size,
-				mode: child.mode,
-				inode_ref,
-			});
-		}
-		Ok(out)
+		read_dir_in(
+			&self.store,
+			self.root_inode_ref,
+			self.volume.superblock.active_commit_seq,
+			path,
+		)
 	}
 
 	/// Read a whole file, delegating to `cow::operations::read_inode`.
@@ -341,17 +322,7 @@ impl HostFs {
 	/// to learn the same size and content reference this function has just read
 	/// it for, which on a CoW volume is a second device read of the same block.
 	pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
-		let file_ref = self.resolve(path)?;
-		let inode = self.store.inode(file_ref)?;
-		if inode.kind == InodeKind::Directory {
-			return Err(Error::IsADirectory { path: path.to_string() });
-		}
-
-		let len = usize::try_from(inode.size).map_err(|_| Error::RootUnreadable {
-			detail: format!("{path}: file size {} does not fit in usize", inode.size),
-		})?;
-
-		read_inode(&self.store, &inode, 0, len).map_err(Error::from)
+		read_file_in(&self.store, self.root_inode_ref, path)
 	}
 
 	/// A byte range of a file: at most `len` bytes from `offset`.
@@ -363,36 +334,104 @@ impl HostFs {
 	/// grown by less than it asked for is the normal case, not a failure. The
 	/// caller detects "no more" by the empty result, exactly as it would at EOF.
 	pub fn read_at(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-		let file_ref = self.resolve(path)?;
-		let inode = self.store.inode(file_ref)?;
-		if inode.kind == InodeKind::Directory {
-			return Err(Error::IsADirectory { path: path.to_string() });
-		}
-
-		let available = inode.size.saturating_sub(offset);
-		let len = len.min(usize::try_from(available).map_err(|_| Error::RootUnreadable {
-			detail: format!("{path}: {} unread bytes do not fit in usize", available),
-		})?);
-
-		read_inode(&self.store, &inode, offset, len).map_err(Error::from)
-	}
-
-	/// The minimal [`Root`] `cow::operations`' query signatures take.
-	///
-	/// `readdir` takes a `&Root` but reads no field of it (it names the
-	/// parameter `_root`), and no `Root` object exists on an
-	/// image-builder-written volume to read one from. Building one from the
-	/// superblock's own commit sequence keeps the descriptor truthful rather
-	/// than defaulted.
-	fn query_root(&self) -> Root {
-		let mut root = Root::new();
-		root.commit_seq = self.volume.superblock.active_commit_seq;
-		root.file_tree_root = self.root_inode_ref;
-		root
+		read_at_in(&self.store, self.root_inode_ref, path, offset, len)
 	}
 }
 
 // endregion: --- Query
+
+// region:    --- Query (free functions)
+
+/// The store-generic form of [`HostFs::read_dir`] — the listing as seen from
+/// `root_inode_ref`, read through any [`ObjectStore`].
+///
+/// `commit_seq` is only there to build the `Root` descriptor `readdir`'s
+/// signature takes; the kernel reads no field of it (its parameter is named
+/// `_root`). A staging session passes its own staged root, so a listing during
+/// a session sees staged children that no superblock names yet.
+pub(crate) fn read_dir_in<S: ObjectStore + NodeStore>(
+	store: &S,
+	root_inode_ref: ObjectRef,
+	commit_seq: u64,
+	path: &str,
+) -> Result<Vec<Entry>> {
+	let dir_ref = resolve_in(store, root_inode_ref, path)?;
+	let inode = store.get_inode(dir_ref).map_err(Error::from)?;
+	if inode.kind != InodeKind::Directory {
+		return Err(Error::NotADirectory { path: path.to_string() });
+	}
+	if !inode.content_ref.is_zero() {
+		check_dir_depth(store, inode.content_ref)?;
+	}
+
+	let mut query_root = Root::new();
+	query_root.commit_seq = commit_seq;
+	query_root.file_tree_root = root_inode_ref;
+
+	let entries = readdir(store, &query_root, dir_ref).map_err(Error::from)?;
+
+	let mut out = Vec::with_capacity(entries.len());
+	for entry in entries {
+		let inode_ref = entry.inode_ref();
+		let child = store.get_inode(inode_ref).map_err(Error::from)?;
+		out.push(Entry {
+			name: entry.name.as_str().to_string(),
+			kind: child.kind,
+			size: child.size,
+			mode: child.mode,
+			inode_ref,
+		});
+	}
+	Ok(out)
+}
+
+/// The store-generic form of [`HostFs::read_file`].
+pub(crate) fn read_file_in<S: ObjectStore + NodeStore>(
+	store: &S,
+	root_inode_ref: ObjectRef,
+	path: &str,
+) -> Result<Vec<u8>> {
+	let file_ref = resolve_in(store, root_inode_ref, path)?;
+	let inode = store.get_inode(file_ref).map_err(Error::from)?;
+	if inode.kind == InodeKind::Directory {
+		return Err(Error::IsADirectory { path: path.to_string() });
+	}
+
+	let len = usize::try_from(inode.size).map_err(|_| Error::RootUnreadable {
+		detail: format!("{path}: file size {} does not fit in usize", inode.size),
+	})?;
+
+	read_inode(store, &inode, 0, len).map_err(Error::from)
+}
+
+/// The store-generic form of [`HostFs::read_at`], with the same clamping.
+pub(crate) fn read_at_in<S: ObjectStore + NodeStore>(
+	store: &S,
+	root_inode_ref: ObjectRef,
+	path: &str,
+	offset: u64,
+	len: usize,
+) -> Result<Vec<u8>> {
+	let file_ref = resolve_in(store, root_inode_ref, path)?;
+	let inode = store.get_inode(file_ref).map_err(Error::from)?;
+	if inode.kind == InodeKind::Directory {
+		return Err(Error::IsADirectory { path: path.to_string() });
+	}
+
+	let available = inode.size.saturating_sub(offset);
+	let len = len.min(usize::try_from(available).map_err(|_| Error::RootUnreadable {
+		detail: format!("{path}: {} unread bytes do not fit in usize", available),
+	})?);
+
+	read_inode(store, &inode, offset, len).map_err(Error::from)
+}
+
+/// The [`Inode`] at `path`, read through any [`NodeStore`].
+pub(crate) fn stat_in<S: NodeStore>(store: &S, root_inode_ref: ObjectRef, path: &str) -> Result<Inode> {
+	store.inode_of(resolve_in(store, root_inode_ref, path)?)
+}
+
+// endregion: --- Query (free functions)
 
 // region:    --- Support
 
@@ -469,7 +508,7 @@ fn lookup<S: NodeStore>(store: &S, node: &DirNode, name: &str, depth: usize) -> 
 /// before `readdir` is ever entered. The extra pass costs one read per node on
 /// a well-formed directory — a single leaf — and only ever runs on the way to
 /// a listing.
-fn check_dir_depth(store: &DiskObjectStore, root: ObjectRef) -> Result<()> {
+fn check_dir_depth<S: NodeStore>(store: &S, root: ObjectRef) -> Result<()> {
 	let mut stack = vec![(root, 0usize)];
 	// A node's own depth is the same however it is reached, so a node named by
 	// two parents (which content-addressed storage makes ordinary — identical
@@ -484,7 +523,7 @@ fn check_dir_depth(store: &DiskObjectStore, root: ObjectRef) -> Result<()> {
 		if !seen.insert(node_ref.object_id) {
 			continue;
 		}
-		let node = store.dir_node(node_ref)?;
+		let node = store.dir_node_of(node_ref)?;
 		if node.is_leaf {
 			continue;
 		}

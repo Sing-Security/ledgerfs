@@ -65,7 +65,7 @@ use crate::image::PartitionKind;
 use crate::mutate::{Chain, build_create_txn, build_rename_txn, build_unlink_txn};
 use crate::objstore::to_ledgerfs;
 use crate::path::{Entry, HostFs};
-use crate::staging::StagedFold;
+use crate::staging::{StagedFold, StagedState};
 use crate::volume::{publish_root_into, superblock_copy_lbas};
 
 use std::path::Path;
@@ -103,6 +103,9 @@ pub struct Store {
 
 	origin: Origin,
 
+	/// An open staging session, if any. See [`Store::begin_staging`].
+	staged: Option<StagedState>,
+
 	/// The volume's own configured ceiling, from its superblock's limits.
 	/// The reader silently skips a record above this, so an object committed
 	/// over it would report success and then read back as missing.
@@ -117,7 +120,7 @@ pub struct Store {
 /// records under [`STORE_DIR`] and what [`Store::contract_version`] reports
 /// back, so an app can refuse a volume written against a contract it does not
 /// know. See `EMBEDDING.md`.
-pub const STORE_CONTRACT_VERSION: &str = "1";
+pub const STORE_CONTRACT_VERSION: &str = "2";
 
 /// The single top-level name an application store reserves for itself.
 ///
@@ -291,6 +294,7 @@ impl Store {
 			alloc_node: Some(alloc_node),
 			allocator: Some(allocator),
 			origin: Origin::Formatted,
+			staged: None,
 			max_object_bytes,
 		})
 	}
@@ -337,6 +341,7 @@ impl Store {
 			alloc_node,
 			allocator,
 			origin,
+			staged: None,
 			max_object_bytes,
 		})
 	}
@@ -412,6 +417,19 @@ impl Store {
 		// device and the other as a panic on an unwrapped allocator.
 		if let Some(refusal) = self.write_refusal() {
 			return Err(Error::ReadOnly { detail: refusal });
+		}
+
+		// A session already holds a staged root, and this transaction was built
+		// against the committed one; committing it would publish a root that
+		// does not contain the staged work, and the staged work would then be
+		// replayed on top of a root it was not built from. The session is the
+		// only thing that may commit while it is open.
+		if self.staged.is_some() {
+			return Err(Error::Usage(
+				"a staging session is open on this store: seal_staged commits what it staged, \
+				 end_staging discards it, and no other commit is accepted meanwhile"
+					.to_string(),
+			));
 		}
 
 		let alloc_node = self.alloc_node.take().ok_or_else(|| Error::ReadOnly {
@@ -525,27 +543,64 @@ impl Store {
 
 impl Store {
 	/// Read a directory. Delegates to the read path.
+	///
+	/// During a staging session this is the **staged** tier: the listing is
+	/// resolved from the session's root, so a directory entry that has only
+	/// been staged is visible here. [`read_file_committed`](Self::read_file_committed)
+	/// is the other tier.
 	pub fn read_dir(&self, path: &str) -> Result<Vec<Entry>> {
-		self.fs.read_dir(path)
+		match &self.staged {
+			Some(staged) => staged.read_dir(&self.fs.store, path),
+			None => self.fs.read_dir(path),
+		}
 	}
 
 	/// Read a whole file. Delegates to the read path.
+	///
+	/// During a staging session this is the **staged** tier: staged objects
+	/// answer from memory and committed objects from the volume, so a caller
+	/// reads its own writes back without waiting for a seal. A crash before
+	/// the seal loses them; see [`begin_staging`](Self::begin_staging).
 	pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
-		self.fs.read_file(path)
+		match &self.staged {
+			Some(staged) => staged.read_file(&self.fs.store, path),
+			None => self.fs.read_file(path),
+		}
 	}
 
 	/// A byte range of a file — at most `len` bytes from `offset`.
 	///
 	/// For a caller watching an append-only file (a log, a transcript) without
 	/// holding the whole thing: remember how many bytes you have seen, ask for
-	/// the rest. A range past the end is an empty vector, not an error.
+	/// the rest. A range past the end is an empty vector, not an error. During a
+	/// staging session it reads the staged tier, like
+	/// [`read_file`](Self::read_file).
 	pub fn read_at(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-		self.fs.read_at(path, offset, len)
+		match &self.staged {
+			Some(staged) => staged.read_at(&self.fs.store, path, offset, len),
+			None => self.fs.read_at(path, offset, len),
+		}
 	}
 
 	/// Stat a path. Delegates to the read path.
+	///
+	/// During a staging session the inode, size and mode are the staged ones.
 	pub fn stat(&self, path: &str) -> Result<Inode> {
-		self.fs.stat(path)
+		match &self.staged {
+			Some(staged) => staged.stat(&self.fs.store, path),
+			None => self.fs.stat(path),
+		}
+	}
+
+	/// Read a whole file from the **committed** tier — the last root a
+	/// superblock published, BLAKE3-verified as always.
+	///
+	/// Identical to [`read_file`](Self::read_file) outside a staging session,
+	/// and the way to ask "what would survive a crash right now?" inside one:
+	/// staged writes are not part of this answer until
+	/// [`seal_staged`](Self::seal_staged) returns.
+	pub fn read_file_committed(&self, path: &str) -> Result<Vec<u8>> {
+		self.fs.read_file(path)
 	}
 
 	/// Create the directory at `path`.
@@ -600,12 +655,8 @@ impl Store {
 		}
 
 		let mut fold = StagedFold::new(&self.fs.store, &self.root);
-		let head = data.len().min(chunk);
-		fold.create_with_data(path, &data[..head], mode)?;
-		for (i, piece) in data[head..].chunks(chunk).enumerate() {
-			fold.write(path, (head + i * chunk) as u64, piece)?;
-		}
-		let txn = fold.into_plan(self.root.commit_seq)?;
+		fold.create_with_data(path, data, mode, chunk)?;
+		let txn = fold.seal_plan(self.root.commit_seq)?;
 		self.commit(txn)?;
 		Ok(())
 	}
@@ -632,7 +683,7 @@ impl Store {
 				let chunk = self.max_object_bytes.max(1);
 				let mut fold = StagedFold::new(&self.fs.store, &self.root);
 				fold.replace_with_data(path, data, mode, chunk)?;
-				let txn = fold.into_plan(self.root.commit_seq)?;
+				let txn = fold.seal_plan(self.root.commit_seq)?;
 				self.commit(txn)?;
 				Ok(())
 			}
@@ -789,7 +840,7 @@ impl Store {
 		for (i, piece) in data.chunks(chunk).enumerate() {
 			fold.write(path, start_offset + (i * chunk) as u64, piece)?;
 		}
-		let txn = fold.into_plan(self.root.commit_seq)?;
+		let txn = fold.seal_plan(self.root.commit_seq)?;
 		self.commit(txn)?;
 		Ok(())
 	}
@@ -849,6 +900,176 @@ impl Store {
 }
 
 // endregion: --- Filesystem verbs
+
+// region:    --- Staging
+
+/// A staging session: many fast writes, one seal, and a choice of read tier.
+///
+/// # What it is for
+///
+/// A commit is this volume's durability point — objects, allocator snapshot,
+/// barrier, superblock, barrier — and on a batched capture workload that price
+/// is paid per batch. A staging session moves the price to the seal: staged
+/// writes build new objects in memory and thread a staged root, touching no
+/// device block and no allocator state, until [`seal_staged`](#method.seal_staged)
+/// folds everything staged into **one** transaction of the ordinary shape.
+///
+/// # The two tiers
+///
+/// While a session is open, this handle's [`read_file`](#method.read_file),
+/// [`read_at`](#method.read_at), [`stat`](#method.stat) and
+/// [`read_dir`](#method.read_dir) resolve through the staged root: a caller
+/// reads its own writes back at memory speed, and a staged object costs zero
+/// device reads. [`read_file_committed`](#method.read_file_committed) is the
+/// other tier — the last root a superblock published — and is exactly what a
+/// crash at this instant would leave behind. Any *other* handle on the volume
+/// sees the committed tier only, by construction.
+///
+/// # What a seal promises
+///
+/// Once `seal_staged` returns, the staged work has the same guarantee as any
+/// write in this store: it is one atomic commit, its objects are BLAKE3-verified
+/// on every read, and a plain mount recovers it with no new recovery code. The
+/// format does not change — a sealed session is indistinguishable from the
+/// equivalent sequence of commits, except that it is one commit.
+///
+/// Before the seal the staged tier is RAM only: a crash loses it exactly, not
+/// partially, and never exposes a half-applied state of it.
+///
+/// # Capacity
+///
+/// `capacity_bytes` bounds the canonical bytes staged, intermediate object
+/// generations included; `0` means unbounded. A staged operation that would
+/// exceed it is refused with [`Error::StagingFull`] and leaves the session as
+/// it was. A session never seals itself: an implicit seal would be an implicit
+/// durability point, which is exactly the choice the caller is here to make.
+impl Store {
+	/// Open a staging session with a byte budget (`0` = unbounded).
+	///
+	/// Refuses on a volume that cannot be written, and refuses a second session
+	/// on the same store — one staged root, one caller.
+	pub fn begin_staging(&mut self, capacity_bytes: u64) -> Result<()> {
+		if let Some(refusal) = self.write_refusal() {
+			return Err(Error::ReadOnly { detail: refusal });
+		}
+		if self.staged.is_some() {
+			return Err(Error::Usage(
+				"a staging session is already open on this store; seal or end it before opening another".to_string(),
+			));
+		}
+		self.staged = Some(StagedState::begin(&self.root, capacity_bytes));
+		Ok(())
+	}
+
+	/// Discard the open session without committing anything.
+	///
+	/// Every staged object is dropped; the volume is not touched, so nothing
+	/// was ever at risk. A no-op when no session is open.
+	pub fn end_staging(&mut self) {
+		self.staged = None;
+	}
+
+	/// Whether a staging session is open.
+	pub fn staging_is_open(&self) -> bool {
+		self.staged.is_some()
+	}
+
+	/// The canonical bytes the session has staged, `None` when no session is
+	/// open. Counts intermediate generations, which occupy memory until seal.
+	pub fn staged_bytes(&self) -> Option<u64> {
+		self.staged.as_ref().map(StagedState::bytes)
+	}
+
+	/// Stage an append — creating the file when the name is free — exactly as
+	/// [`append`](Self::append) would, but with no commit and no device write.
+	///
+	/// The size it appends at is the **staged** size, so consecutive staged
+	/// appends to one file continue each other.
+	pub fn staged_append(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
+		let chunk = self.max_object_bytes.max(1);
+		self.with_staging(|fold| fold.append(path, data, mode, chunk))
+	}
+
+	/// Stage the creation of a file with `data`, refusing a name that is
+	/// already taken (staged or committed).
+	pub fn staged_write_new_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<()> {
+		let chunk = self.max_object_bytes.max(1);
+		self.with_staging(|fold| match fold.stat(path) {
+			Ok(_) => Err(Error::AlreadyExists { path: path.to_string() }),
+			Err(Error::NoSuchFile { .. }) => fold.create_with_data(path, data, mode, chunk),
+			Err(e) => Err(e),
+		})
+	}
+
+	/// Stage the removal of a file. A directory is refused, as in
+	/// [`remove`](Self::remove).
+	pub fn staged_remove(&mut self, path: &str) -> Result<()> {
+		self.with_staging(|fold| fold.remove(path))
+	}
+
+	/// Commit everything staged as **one** transaction and close the session.
+	///
+	/// The plan is pruned to what the final staged root reaches, so the commit
+	/// carries the staged content plus one generation of each metadata object —
+	/// not one generation per operation. On success the session is gone; on any
+	/// error the session is left exactly as it was and can be sealed again.
+	///
+	/// Refuses when the session staged nothing: an empty seal would be a commit
+	/// that changed no path, and [`commit`](Self::commit) is where that belongs
+	/// if a caller really wants it.
+	pub fn seal_staged(&mut self) -> Result<CommitResult> {
+		let state = self
+			.staged
+			.take()
+			.ok_or_else(|| Error::Usage("no staging session is open; call begin_staging before sealing".to_string()))?;
+
+		if state.ops() == 0 {
+			self.staged = Some(state);
+			return Err(Error::Usage(
+				"the staging session has staged nothing to seal; end_staging discards an empty one".to_string(),
+			));
+		}
+
+		let fold = state.into_fold(&self.fs.store, &self.root);
+		let txn = match fold.seal_plan(self.root.commit_seq) {
+			Ok(txn) => txn,
+			Err(e) => {
+				// The fold borrowed nothing that outlives this call, but the
+				// session's objects are moved into it — hand them back so a
+				// caller can retry rather than lose the staged work.
+				self.staged = Some(fold.into_state());
+				return Err(e);
+			}
+		};
+
+		// The plan is built; the session's state is only needed if the commit
+		// fails, so recover it before `commit` takes `&mut self`.
+		let state = fold.into_state();
+		match self.commit(txn) {
+			Ok(result) => Ok(result),
+			Err(e) => {
+				self.staged = Some(state);
+				Err(e)
+			}
+		}
+	}
+
+	/// Run `body` against a fold continuing the open session, and put the
+	/// session back exactly as the operation left it.
+	fn with_staging(&mut self, body: impl FnOnce(&mut StagedFold<'_>) -> Result<()>) -> Result<()> {
+		let state = self
+			.staged
+			.take()
+			.ok_or_else(|| Error::Usage("no staging session is open; call begin_staging first".to_string()))?;
+
+		let mut fold = state.into_fold(&self.fs.store, &self.root);
+		let out = body(&mut fold);
+		self.staged = Some(fold.into_state());
+		out
+	}
+}
+
+// endregion: --- Staging
 
 // region:    --- Space
 
