@@ -33,6 +33,12 @@ that a citation resolves and a reader is not left guessing.
 
 ## Glossary
 
+This table defines the terms *as this format document uses them*. The
+project-wide vocabulary — including the words that belong to the host API and
+the staging tier, and the list of words this project does not use — is
+[`TERMINOLOGY.md`](TERMINOLOGY.md), which is normative for prose and naming in
+every document and in the source.
+
 | Term | Meaning |
 | --- | --- |
 | **Object** | An immutable, content-addressed blob. Its identity is the BLAKE3 hash of its canonical encoding. |

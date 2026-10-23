@@ -1,0 +1,32 @@
+LedgerFS
+Copyright 2026 Sing-Security
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+LedgerFS is also available under the MIT License (see LICENSE-MIT); you may
+choose either term for redistribution. The Apache grant above applies when no
+choice is made.
+
+Third-party dependencies carry their own licenses. Read them from the resolved
+graph rather than a list here, which would go stale on the next bump:
+
+    cargo metadata --format-version 1 | jq -r '.packages[] | "\(.name) \(.version) \(.license)"'
+
+Two of them are worth naming because they reach further than a normal
+dependency:
+
+  - The kernel crate vendors the six x86 port-I/O instructions it issues
+    (`kernel/src/arch/x86_port.rs`) rather than depending on an assembly crate,
+    so no third party is involved in the hardware surface.
+  - `lz4` and `zstd` wrap the reference C implementations. They are optional,
+    behind the `std` feature, and nothing outside that feature links them.

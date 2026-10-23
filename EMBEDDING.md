@@ -13,6 +13,11 @@ wanted a file, you wanted a file. You embed LedgerFS because you want a *tree*
 of files with a crash-consistent commit protocol behind every write — and you
 pay for that with the constraints below.
 
+The words used here — *commit*, *seal*, *staging session*, *draft*, *tier* —
+are defined in [`TERMINOLOGY.md`](TERMINOLOGY.md). They are not synonyms for the
+database words that look similar, and the difference is the point of the
+contract.
+
 ---
 
 ## 1. The shape

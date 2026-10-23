@@ -11,7 +11,13 @@ keywords = ["filesystem", "copy-on-write", "content-addressed", "no-std", "embed
 categories = ["filesystem", "no-std"]
 
 [lib]
+# No doctests: every code block in this crate's documentation is a fragment of
+# `no_std` code that needs a device implementation to run, and the runnable
+# version of each lives in `examples/` or in `ledgerfs-host`.
 doctest = false
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = []

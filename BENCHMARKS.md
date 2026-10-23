@@ -199,8 +199,8 @@ Put the rows together and the shape is specific. This is not a row store: there
 is no index, no in-place update, no query, and the volume cost per commit means
 there cannot be one without becoming a different format. What it is: records
 that land once, are never rewritten, live for a lifetime the application
-chooses, and come back **verified** — the capture tier that sits on the near
-side of a database, not a replacement for one.
+chooses, and come back **verified** — an application storage layer that can
+stand where a database stood, for that shape of data.
 
 The division of labour follows. Capture into this filesystem when the record
 has to survive a power cut *and survive provably* — that is what the read-back

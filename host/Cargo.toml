@@ -10,8 +10,8 @@ readme = "README.md"
 keywords = ["filesystem", "copy-on-write", "content-addressed", "embedded", "storage"]
 categories = ["filesystem", "embedded"]
 
-[lib]
-doctest = false
+[package.metadata.docs.rs]
+all-features = true
 
 [lints.rust]
 unsafe_code = "forbid"

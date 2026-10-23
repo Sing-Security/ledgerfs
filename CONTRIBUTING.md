@@ -94,3 +94,9 @@ from them rather than editing the tables by hand.
 
 Keep messages short and factual. Explain *why* in the body when the change is not
 self-evident; the code comments are for what the code cannot say itself.
+
+## Releasing
+
+[`RELEASING.md`](RELEASING.md) is the procedure: the publish order, the gates,
+and the independent verification that has to happen before `cargo publish`.
+

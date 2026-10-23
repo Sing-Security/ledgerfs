@@ -10,7 +10,11 @@ operations, `ledgerfs-host` carries the `std` volume layer. The on-disk
 format has its own version field in the superblock, which is a third number
 again — see [`FORMAT.md`](FORMAT.md).
 
-## [Unreleased]
+## [0.7.0] / [0.1.0] - 2026-10-22
+
+The first public release of both crates. The two sections below are this
+release's own changes; `### Lineage` records what the format and the crates
+already were, which is most of what a reader will actually depend on.
 
 ### Added
 
@@ -118,13 +122,13 @@ again — see [`FORMAT.md`](FORMAT.md).
   which rebuilds the node on every operation, an isolated measurement put a
   staged append at p50 76 → 50 µs and the 512-batch tail at 132 → 80 µs.
 
-## [0.7.0] / [0.1.0] - 2026-10-14
+### Lineage: what existed before this release
 
-First public release of both crates. Everything below the two headings existed
-before this in some internal state; treat it as lineage rather than as release
-notes for something you could have depended on.
+Everything in this section existed in some internal state before the crates were
+published; it is recorded because each entry is a fact about the format or the
+crates rather than because it was a change you could have observed.
 
-### Added
+#### Added
 
 - **The on-disk format**, specified in [`FORMAT.md`](FORMAT.md): content-addressed
   objects with BLAKE3 identity, four superblock copies with a Root Locator Ring,
@@ -149,7 +153,7 @@ notes for something you could have depended on.
   implemented and tested, but nothing in the shipping path calls them, so they
   are built in this workspace and published to nobody.
 
-### Features
+#### Features
 
 - `reader` — compiles the ATA PIO read path and its port-I/O primitives. Off by
   default; it is ring-0 code and does not belong in a userspace binary.
@@ -163,7 +167,7 @@ notes for something you could have depended on.
   `temper-rs` crate on crates.io. Off by default; a plain filesystem build does
   not need a post-quantum signature stack.
 
-### Changed - Breaking
+#### Changed - Breaking
 
 - **The `data-encryption` key-derivation domain strings were renamed.** The two
   BLAKE3 domain separators — one stretching a passphrase into a key-encryption
@@ -176,7 +180,7 @@ notes for something you could have depended on.
   a wire format carries them. A development volume from before this change is
   unreadable; reformat it.
 
-### Changed
+#### Changed
 
 - **The x86 port-I/O primitives are vendored.** The four instructions the ATA
   path issues (`inb`, `outb`, `rep insw`, `rep outsw`) now live in
@@ -188,14 +192,14 @@ notes for something you could have depended on.
   The benchmark harness is a workspace binary rather than a published crate and
   needs 1.90 — see [`BENCHMARKS.md`](BENCHMARKS.md).
 
-### Removed
+#### Removed
 
 - Internal work-log documents: per-phase implementation summaries, standalone
   test-status reports, and the shell scripts that re-ran one phase's checks.
   They described a project phase rather than a system, and several stated test
   counts that were true only on one feature set.
 
-### Fixed before this release
+#### Fixed before this release
 
 Listed because each one is the class of defect the format's constraints exist to
 prevent, and because the constraint in the code reads as arbitrary without the

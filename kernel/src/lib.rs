@@ -1,30 +1,93 @@
-//! LedgerFS v7 Core On-Disk Substrate
+//! The on-disk format of LedgerFS, and the copy-on-write operations that
+//! produce it.
 //!
-//! This crate implements the on-disk format and mount/replay core
-//! for LedgerFS v7 as specified in FORMAT.md.
+//! This is the `no_std` half of the project. It defines every byte a volume
+//! contains — superblock, object framing, the object model, the allocator, the
+//! commit protocol — and the operations that turn paths and bytes into new
+//! generations of those objects. It performs **no I/O of its own**: reads and
+//! writes go through the [`cow::ObjectStore`] trait, which the host crate
+//! implements over a `BlockDevice` and tests implement over a `Vec<u8>`. The
+//! same code therefore runs in a kernel, in a userspace process, and in a
+//! harness.
 //!
-//! # Architecture
+//! [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host) is the crate to
+//! depend on if you want a volume you can open and write files to; it supplies
+//! the `ObjectStore` implementation, the mount and the `Store` verbs. This
+//! crate is for a consumer that already has a byte-addressed store of its own,
+//! or that is implementing the filesystem from the bottom (a boot loader, an
+//! OS, a tool that inspects a volume).
 //!
-//! LedgerFS is a copy-on-write filesystem with:
-//! - Content-addressed objects using BLAKE3
-//! - Four-copy superblock with Root Locator Ring (RLR)
-//! - Intent log for crash-consistent commit protocol
-//! - Deterministic mount selection and replay
+//! # How the format works
+//!
+//! - **Everything is an object.** An immutable blob named by the BLAKE3 hash of
+//!   its canonical encoding: a [`object::Chunk`] for content, an
+//!   [`object::Inode`] for file metadata, a [`object::DirNode`] for a
+//!   directory, an [`object::ExtentNode`] for a file's extent list, and the
+//!   [`object::Root`] that names the tree. Identical content has one id, and a
+//!   reader verifies an object against its name before returning it.
+//! - **Nothing is modified in place.** An operation writes new generations of
+//!   every object on the path and hands back one [`cow::TxnPlan`] naming them
+//!   plus the new root. [`commit::CommitEngine`] places those objects and
+//!   writes them in a fixed order: objects and the allocator snapshot, a
+//!   barrier, the four superblock copies naming the new root, a barrier. That
+//!   order is the crash-consistency argument (`FORMAT.md` §15) — a crash leaves
+//!   the old root live or the new one, and never a blend.
+//! - **The superblock names the root.** [`superblock::mount_select`] picks the
+//!   highest verifying `commit_seq` among the four copies, uses the Root
+//!   Locator Ring when the newest copy is damaged, and reports a disagreement
+//!   rather than guessing between roots.
+//! - **The allocator is persisted beside the tree, not inside it.** Its
+//!   snapshot lives at a fixed reserved block because storing it through the
+//!   allocator would change the state being written (see
+//!   [`ALLOC_SNAPSHOT_BLOCK`]).
+//!
+//! The normative description of these bytes is `FORMAT.md`, which this crate
+//! cites by section; the project's vocabulary is `TERMINOLOGY.md`. Where this
+//! documentation and the format document disagree, the code is right and the
+//! document is a bug.
+//!
+//! # What is here, and what is not
+//!
+//! The format defines more than the shipping host path drives. Subsystems
+//! marked Tier B in `FORMAT.md` §44 — deduplication at write time, snapshots,
+//! the scrubber, garbage-collection execution, content-defined chunking — are
+//! implemented and tested in the separate, unpublished `ledgerfs-pending`
+//! crate, not here; treat them as unavailable. `FORMAT.md` §44.1 and
+//! `KNOWN_ISSUES.md` in the repository say the same thing in more detail.
 //!
 //! # Modules
 //!
-//! - `encoding`: Canonical encoding with strict decode rejection
-//! - `record`: ObjectRecord framing with BLAKE3 verification
-//! - `superblock`: Superblock format with RLR and mount selection
-//! - `intent_log`: Intent log with O(N) ring parsing
-//! - `mode`: Filesystem mode (ReadWrite vs ReadOnlySafe)
-//! - `alloc_state`: Allocation state tracking (Free/Allocated/PendingFree/Reserved)
-//! - `alloc_node`: Allocation tree B-tree nodes
-//! - `allocator`: Block allocator with emergency reserves
-//! - `placement`: Placement engine turning TxnPlan into placed ObjectRecords
-//! - `object`: Object model (Chunk, Inode, DirNode, ExtentNode, Root)
-//! - `cow`: Copy-on-write operations and transaction planning
+//! | | |
+//! |---|---|
+//! | [`encoding`] | canonical little-endian encoding, BLAKE3 hashing, strict decode rejection |
+//! | [`record`] | `ObjectRecord` framing — magic, length, checksum, verification |
+//! | [`object`] | the object model: [`ObjectId`](object::ObjectId), [`Chunk`](object::Chunk), [`Inode`](object::Inode), [`DirNode`](object::DirNode), [`ExtentNode`](object::ExtentNode), [`Root`](object::Root) |
+//! | [`superblock`] | the 4 KiB superblock, its four copies, the Root Locator Ring, mount selection |
+//! | [`intent_log`] | the ring buffer of commit-intent records and the replay decision |
+//! | [`alloc_state`], [`alloc_node`], [`allocator`] | the allocation tree, block states, and the allocator with its emergency reserves |
+//! | [`placement`] | turns a [`cow::TxnPlan`] into placed `ObjectRecord`s |
+//! | [`commit`] | [`CommitEngine`](commit::CommitEngine): the ordered write of objects → allocator snapshot → superblocks |
+//! | [`cow`] | the operations — read, readdir, mkdir, create, write, unlink, rename — and the [`ObjectStore`](cow::ObjectStore) trait they are generic over |
+//! | [`compression`], [`lz4_block`] | the per-chunk compression policies |
+//! | [`mode`] | [`FsMode`]: read-write versus the write-embargoed read-only-safe mode |
+//! | [`keyslot`] | passphrase-derived key slots, sealed with the volume's key material |
+//! | `data_crypto` | transparent XTS-AES-256 over raw blocks, with the `data-encryption` feature |
+//!
+//! The ATA PIO path (`reader`, `writer`) and the modules under it are compiled
+//! only with the `reader` feature on x86-64; they are ring-0 code and do not
+//! belong in a userspace binary.
+//!
+//! # Features
+//!
+//! | feature | effect |
+//! |---|---|
+//! | *(none)* | the format and the copy-on-write operations, `no_std` + `alloc` |
+//! | `std` | pulls the `lz4` and `zstd` decoders that [`compression`] gates, so a record written under either policy decodes |
+//! | `reader` | compiles the ATA PIO reader, writer and boot self-test. x86-64 only, off by default |
+//! | `data-encryption` | transparent XTS-AES-256 over a volume's raw blocks, applied below the object model and chosen at format time |
+//! | `temper_sealing` | ML-DSA-65 and SLH-DSA sealing of audit records, via the `temper-rs` crate |
 
+#![deny(missing_docs)]
 #![no_std]
 
 extern crate alloc;
