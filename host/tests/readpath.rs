@@ -20,7 +20,6 @@ mod common;
 
 use common::*;
 use ledgerfs_host::{Error, HostFs, InodeKind, Store};
-use std::os::unix::fs::PermissionsExt;
 
 // region:    --- Mount
 
@@ -956,8 +955,18 @@ fn test_hostfs_open_refuses_a_read_only_image_for_a_writable_store() -> Result<(
 	// -- Teardown: make the file writable again so `TempImage`'s Drop can unlink
 	// it (on Linux unlinking needs write permission on the directory, not the
 	// file, but a read-only file in a sticky /tmp is worth restoring anyway).
+	// The restore is spelled per platform: `PermissionsExt` restores exactly
+	// the owner write bit on Unix, and the read-only attribute is the spelling
+	// Windows has. `set_readonly(false)` alone is not used on Unix because it
+	// sets the group and other write bits too.
 	let mut perms = std::fs::metadata(&image.path)?.permissions();
-	perms.set_mode(perms.mode() | 0o200);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		perms.set_mode(perms.mode() | 0o200);
+	}
+	#[cfg(windows)]
+	perms.set_readonly(false);
 	std::fs::set_permissions(&image.path, perms)?;
 	Ok(())
 }
