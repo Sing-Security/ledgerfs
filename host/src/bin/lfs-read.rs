@@ -14,13 +14,22 @@
 //! lfs-read <IMAGE> cat     <PATH> [--bare] [--part system|data]
 //! lfs-read <IMAGE> stat    <PATH> [--bare] [--part system|data]
 //! ```
+//!
+//! An encrypted volume is readable with a credential: `--passphrase` reads one
+//! line from stdin (not from argv, which every process on the machine can see),
+//! and `--key-file` reads the 32-byte key-encryption key an HSM or a
+//! machine-held secret would supply. The superblock is plaintext, so `info`
+//! reports an encrypted volume and its keyslot kinds even without one.
+
+mod common;
 
 use std::io::Write;
 use std::path::PathBuf;
 
+use common::UnlockSource;
 use ledgerfs_host::{
-	Error, FileBlockDevice, HostFs, InodeKind, ObjectId, Partition, PartitionKind, Result, Volume, find_partition,
-	read_partitions,
+	BlockDevice, Error, FileBlockDevice, HostFs, InodeKind, ObjectId, Partition, PartitionKind, Result, Volume,
+	find_partition, read_partitions,
 };
 
 // region:    --- Cli
@@ -33,6 +42,10 @@ struct Cli {
 	/// Treat the whole file as one volume; no partition table is read or
 	/// expected. The reader counterpart of `lfs-write --bare`.
 	bare: bool,
+	/// Where the credential for an encrypted volume comes from, if one was
+	/// named. Read only when a volume is actually opened, so `parts` works on
+	/// any image without prompting.
+	unlock: UnlockSource,
 }
 
 /// Default to the system volume: it is the partition an image always has a
@@ -43,6 +56,7 @@ const DEFAULT_PART: PartitionKind = PartitionKind::System;
 
 const USAGE: &str = "\
 usage: lfs-read <IMAGE> <COMMAND> [PATH] [--bare] [--part system|data]
+                 [--passphrase | --key-file PATH]
 
   parts            list the image's MBR partitions
   info             superblock, mount selection, and root summary
@@ -51,7 +65,9 @@ usage: lfs-read <IMAGE> <COMMAND> [PATH] [--bare] [--part system|data]
   stat <PATH>      show one inode's metadata
 
   --bare           the file is the volume: no partition table is read
-  --part KIND      which partition to open, 'system' (default) or 'data'";
+  --part KIND      which partition to open, 'system' (default) or 'data'
+  --passphrase     read the passphrase from one line of stdin
+  --key-file PATH  read a 32-byte key-encryption key from PATH";
 
 fn parse_args(argv: Vec<String>) -> Result<Cli> {
 	let mut image: Option<PathBuf> = None;
@@ -59,6 +75,7 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 	let mut positional = Vec::new();
 	let mut part = DEFAULT_PART;
 	let mut bare = false;
+	let mut unlock = UnlockSource::None;
 
 	let mut it = argv.into_iter();
 	while let Some(arg) = it.next() {
@@ -75,6 +92,27 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 				.ok_or_else(|| Error::Usage(format!("--part needs a value\n\n{USAGE}")))?;
 			part = PartitionKind::parse(&value)
 				.ok_or_else(|| Error::Usage(format!("unknown partition '{value}': expected system or data")))?;
+			continue;
+		}
+		if arg == "--passphrase" {
+			if !matches!(unlock, UnlockSource::None) {
+				return Err(Error::Usage(format!(
+					"give at most one credential, --passphrase or --key-file\n\n{USAGE}"
+				)));
+			}
+			unlock = UnlockSource::Passphrase;
+			continue;
+		}
+		if arg == "--key-file" {
+			if !matches!(unlock, UnlockSource::None) {
+				return Err(Error::Usage(format!(
+					"give at most one credential, --passphrase or --key-file\n\n{USAGE}"
+				)));
+			}
+			let value = it
+				.next()
+				.ok_or_else(|| Error::Usage(format!("--key-file needs a value\n\n{USAGE}")))?;
+			unlock = UnlockSource::KeyFile(PathBuf::from(value));
 			continue;
 		}
 		if image.is_none() {
@@ -97,6 +135,7 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 		positional,
 		part,
 		bare,
+		unlock,
 	})
 }
 
@@ -169,15 +208,31 @@ fn usage_exit(message: &str) -> ! {
 /// Partitioned image by default; `--bare` opens the whole file as one volume.
 /// This is the same target fork `lfs-write`'s `open_target` makes, kept in
 /// step so the two tools can always read what the other wrote.
+///
+/// With a credential the device is wrapped before it is mounted, so every read
+/// below this line sees plaintext. Without one the mount is unchanged, and an
+/// encrypted volume fails at `mount_device` rather than yielding garbage: the
+/// superblock's feature flag is checked before any object is read.
 fn open_fs(cli: &Cli) -> Result<HostFs> {
-	if cli.bare {
+	let device: Box<dyn BlockDevice> = if cli.bare {
 		let len = std::fs::metadata(&cli.image).map_err(Error::Io)?.len();
-		let device = FileBlockDevice::open(&cli.image, 0, len)?;
-		let fs = HostFs::mount_device(Box::new(device))?;
-		fs.require_root()?;
-		return Ok(fs);
-	}
-	HostFs::open(&cli.image, cli.part)
+		Box::new(FileBlockDevice::open(&cli.image, 0, len)?)
+	} else {
+		let partition = find_partition(&cli.image, cli.part)?;
+		Box::new(FileBlockDevice::open(
+			&cli.image,
+			partition.start_bytes(),
+			partition.size_bytes(),
+		)?)
+	};
+
+	let unlock = cli.unlock.read()?;
+	let fs = match &unlock {
+		Some(unlock) => HostFs::mount_encrypted(device, unlock.credential())?,
+		None => HostFs::mount_device(device)?,
+	};
+	fs.require_root()?;
+	Ok(fs)
 }
 
 fn cmd_parts(cli: &Cli) -> Result<()> {
@@ -310,6 +365,12 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 			println!("  mode         {:o}", inode.mode);
 			println!("  size         {}", inode.size);
 			println!("  content_ref  {}", inode.content_ref.object_id.to_hex());
+		}
+		Err(_) if sb.is_data_encrypted() && cli.unlock.is_none() => {
+			// The expected state of a locked volume, not damage: say so, and name
+			// the two flags that open it.
+			println!();
+			println!("root           LOCKED: the volume is encrypted; pass --passphrase or --key-file to read it");
 		}
 		Err(e) => {
 			println!();

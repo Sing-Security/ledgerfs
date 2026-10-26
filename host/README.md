@@ -57,6 +57,18 @@ formats one in place, and `lfs-read <IMAGE> parts` reads the partition table
 back to locate it. Writing the partition table is the installer's task; this
 crate reads a table that is already present.
 
+Encryption is a property of the volume, not of the calls.
+`Store::format_encrypted` takes the credential the new master key is sealed
+under; `Store::open_encrypted` takes the credential that unwraps it; every
+method above is unchanged on top of the wrapper. The credential is a passphrase
+or a 32-byte key-encryption key (`UnlockCredential`), and `Store::add_slot`,
+`Store::revoke_slot` and `Store::change_passphrase` manage the volume's two
+slots. `EncryptedDevice` applies the cipher at the `BlockDevice` seam, so a
+caller driving `Volume` or the kernel's `CommitEngine` directly can wrap its
+device and use it too. `FORMAT.md` §36 is the format description;
+`lfs-write <TARGET> mkfs --encrypt --passphrase` is the shortest way to see it
+work.
+
 ## 1. Write path
 
 Each method is one transaction. The objects and the allocator snapshot are
@@ -78,7 +90,8 @@ before the seal loses the staged work and nothing else.
 | module | contents |
 |---|---|
 | `device` | `BlockDevice`, `FileBlockDevice`, `MemBlockDevice`, the hint cache, volume identity |
-| `store` | `Store`: format, open, the file operations (`read_file`, `read_dir`, `stat`, `mkdir`, `create_file`, `write_new_file`, `write_file`, `append`, `write_at`, `remove`, `rename`), staging, and the free-space and geometry accessors |
+| `store` | `Store`: format, open, the file operations (`read_file`, `read_dir`, `stat`, `mkdir`, `create_file`, `write_new_file`, `write_file`, `append`, `write_at`, `remove`, `rename`), staging, encryption, and the free-space and geometry accessors |
+| `crypto` | `VolumeKey`, `UnlockCredential` and `EncryptedDevice`: the keyslot lifecycle and the block-device wrapper that apply per-volume encryption |
 | `staging` | `Staging`, the scoped handle over a staging session |
 | `volume` | `Volume`, the lower-level mount for driving the kernel's `CommitEngine` directly |
 | `path`, `mutate`, `objstore` | path resolution, mutation plumbing, and the `DiskObjectStore` that reads and writes records |
@@ -95,11 +108,11 @@ methods. An operating system adopts the library as its filesystem by writing the
 service layer above it; CrucibleOS does this, and that service is what serves
 file descriptors to other processes.
 
-The `data-encryption` and `reader` features are not enabled here. The first
-would place a key-management surface in a library that has no answer for where
-the key resides; the second compiles ring-0 ATA port I/O into a userspace
-binary. A volume formatted with encryption enabled fails to mount with a
-diagnostic rather than being decoded as ciphertext.
+The `reader` feature is not enabled here: it compiles ring-0 ATA port I/O into a
+userspace binary. `data-encryption` is: this crate turns it on for its `ledgerfs`
+dependency and supplies the key handling above it. A volume that was never
+formatted encrypted mounts normally; an encrypted one without a credential is
+refused with `EncryptedVolume` rather than decoded as ciphertext.
 
 The behavioural limits of a volume, and their causes, are listed in
 `KNOWN_ISSUES.md`. No shipping path frees space, so a volume fills

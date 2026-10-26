@@ -89,7 +89,54 @@ impl HostFs {
 	/// committed-but-rootless case, which is what a torn write to a superblock
 	/// copy leaves behind.
 	pub fn mount_device(device: Box<dyn BlockDevice>) -> Result<Self> {
+		Self::mount_device_inner(device, false)
+	}
+
+	/// Mount an encrypted volume for reading, with a credential.
+	///
+	/// The read-only counterpart to
+	/// [`Store::open_encrypted`](crate::Store::open_encrypted): it unwraps the
+	/// master key, wraps the device, and mounts through the wrapper, but builds
+	/// no allocator or commit state. That is the shape a forensic or inspection
+	/// tool wants, and `lfs-read` is the one in this repository.
+	///
+	/// A volume that was never encrypted is refused
+	/// ([`Error::VolumeNotEncrypted`]) rather than being opened by this path
+	/// with a credential that means nothing.
+	pub fn mount_encrypted(device: Box<dyn BlockDevice>, credential: crate::UnlockCredential<'_>) -> Result<Self> {
+		let (device, volume, key) = crate::crypto::unlock_device(device, credential)?;
+		let wrapped = crate::EncryptedDevice::new(device, volume.total_blocks(), &key);
+		Self::mount_decrypted(Box::new(wrapped))
+	}
+
+	/// Mount a volume whose blocks have already been placed behind an
+	/// [`EncryptedDevice`](crate::EncryptedDevice), so the superblock's
+	/// encryption flag is answered rather than refused.
+	///
+	/// Not public: a caller that reached the plaintext superblock without a
+	/// credential must be refused, and the correct ways to supply one are
+	/// [`HostFs::mount_encrypted`](Self::mount_encrypted) and
+	/// [`Store::open_encrypted`](crate::Store::open_encrypted), which unwrap the
+	/// master key and build the wrapper before they get here.
+	pub(crate) fn mount_decrypted(device: Box<dyn BlockDevice>) -> Result<Self> {
+		Self::mount_device_inner(device, true)
+	}
+
+	fn mount_device_inner(device: Box<dyn BlockDevice>, key_available: bool) -> Result<Self> {
 		let volume = Volume::mount(device.as_ref())?;
+
+		// The superblock is plaintext by design, so the flag is readable before
+		// any key exists. Without a credential the only honest answer is a
+		// refusal: the mount itself would succeed, and the first object read
+		// would fail as damage.
+		if volume.superblock.is_data_encrypted() && !key_available {
+			return Err(Error::EncryptedVolume {
+				detail: "its object blocks are stored under a volume key, which this open did \
+				         not supply; use Store::open_encrypted with a passphrase or a \
+				         key-encryption key"
+					.to_string(),
+			});
+		}
 
 		let store = DiskObjectStore::new(device, volume.total_blocks(), volume.superblock.max_scan_blocks());
 

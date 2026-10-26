@@ -176,9 +176,19 @@ impl Volume {
 	/// chose, which a later commit does not change.
 	pub fn publish_root(&mut self, root: &Root) {
 		publish_root_into(&mut self.superblock, root);
+		self.refresh_copies();
+	}
 
-		// Every copy, not just the selected one: a successful write puts this
-		// superblock in all four, so that is what the in-memory view should say.
+	/// Make `copies` match `superblock` after a superblock write that did not
+	/// move the root, such as a keyslot change.
+	///
+	/// Separate from [`publish_root`](Self::publish_root) because that one also
+	/// rewrites the active root, which a keyslot change must not do: it would
+	/// report a root as published that this write did not carry.
+	///
+	/// Every copy, not just the selected one: a successful write puts this
+	/// superblock in all four, so that is what the in-memory view should say.
+	pub fn refresh_copies(&mut self) {
 		let published = self.superblock.clone();
 		self.copies = core::array::from_fn(|_| Some(published.clone()));
 	}
@@ -317,6 +327,7 @@ fn selected_copy_index(selection: &MountSelection) -> Option<usize> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::device::MemBlockDevice;
 
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -367,6 +378,76 @@ mod tests {
 			!status.is_healthy(),
 			"three copies lagging the selected one must not read as healthy"
 		);
+
+		Ok(())
+	}
+
+	/// §43.1: a volume whose four copies were written by a newer format has no
+	/// acceptable copy, so the mount refuses it. The block is checksum-clean,
+	/// so the refusal is the version check rather than damage.
+	#[test]
+	fn test_volume_of_a_newer_format_does_not_mount() -> Result<()> {
+		// -- Setup & Fixtures
+		const BLOCKS: u64 = 64;
+		let device = MemBlockDevice::new(BLOCKS);
+		for &lba in &superblock_copy_lbas(BLOCKS) {
+			let mut sb = Superblock::new(BLOCKS);
+			sb.version = ledgerfs::SUPERBLOCK_VERSION + 1;
+			let mut buf = [0u8; BLOCK_SIZE as usize];
+			sb.encode(&mut buf)?;
+			device.write_block(lba, &buf)?;
+		}
+
+		// -- Exec
+		let result = read_superblock_copies(&device);
+
+		// -- Check
+		match result {
+			Err(Error::SuperblockUnreadable { detail, .. }) => {
+				assert!(
+					detail.contains("format version"),
+					"the refusal should name the version, got: {detail}"
+				);
+			}
+			other => panic!("a newer-format volume was read: {other:?}"),
+		}
+
+		Ok(())
+	}
+
+	/// A mixed set can only come from a writer that stopped partway through the
+	/// four copies. The older copies then describe the last complete commit and
+	/// still mount (§43.1).
+	#[test]
+	fn test_volume_with_a_newer_copy_falls_back_to_the_older_ones() -> Result<()> {
+		// -- Setup & Fixtures
+		const BLOCKS: u64 = 64;
+		let device = MemBlockDevice::new(BLOCKS);
+		let lbas = superblock_copy_lbas(BLOCKS);
+
+		let mut committed = Superblock::new(BLOCKS);
+		committed.active_root_id = [7u8; 32];
+		committed.active_commit_seq = 1;
+		for &lba in &lbas {
+			let mut buf = [0u8; BLOCK_SIZE as usize];
+			committed.encode(&mut buf)?;
+			device.write_block(lba, &buf)?;
+		}
+
+		// A newer writer replaced the leading copy, then stopped.
+		let mut newer = Superblock::new(BLOCKS);
+		newer.version = ledgerfs::SUPERBLOCK_VERSION + 1;
+		let mut buf = [0u8; BLOCK_SIZE as usize];
+		newer.encode(&mut buf)?;
+		device.write_block(lbas[0], &buf)?;
+
+		// -- Exec
+		let copies = read_superblock_copies(&device)?;
+		let selection = ledgerfs::superblock::mount_select(&copies)?;
+
+		// -- Check
+		assert_eq!(copies.iter().filter(|c| c.is_some()).count(), 3);
+		assert_eq!(selection.selected_root.commit_seq, 1);
 
 		Ok(())
 	}

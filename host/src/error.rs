@@ -65,6 +65,72 @@ pub enum Error {
 		/// Why the root object could not be located or decoded.
 		detail: String,
 	},
+	/// The volume's superblock declares `FEATURE_INCOMPAT_DATA_ENCRYPTED`, and
+	/// this open supplied no credential.
+	///
+	/// Distinct from [`Mount`](Self::Mount) and from a decode failure because
+	/// nothing is damaged: the volume is intact and unreadable on purpose. The
+	/// caller's next step is [`Store::open_encrypted`](crate::Store::open_encrypted),
+	/// not a repair.
+	EncryptedVolume {
+		/// Where the volume said it was encrypted, and what to do instead.
+		detail: String,
+	},
+
+	// -- Encryption
+	/// An encrypted-volume operation was asked of a store that was opened
+	/// without a key.
+	VolumeNotEncrypted {
+		/// Which operation needed a key, and why this store has none.
+		detail: String,
+	},
+	/// No keyslot opened with the credential that was supplied.
+	///
+	/// Covers a wrong passphrase, a wrong key-encryption key, and a credential
+	/// whose kind has no slot on this volume. Deliberately one answer for all
+	/// three: distinguishing "wrong passphrase" from "no such slot" tells an
+	/// attacker which volumes are worth guessing against.
+	WrongCredential {
+		/// Which credential kind was tried.
+		detail: String,
+	},
+	/// Every keyslot is occupied, so a new credential has nowhere to go.
+	NoFreeKeySlot {
+		/// How many slots the volume has, and what to do instead.
+		detail: String,
+	},
+	/// A keyslot operation named a slot that holds nothing.
+	KeySlotEmpty {
+		/// Index of the empty slot.
+		index: usize,
+	},
+	/// Revoking this slot would leave the volume with no credential at all.
+	LastKeySlot {
+		/// Index of the slot that was refused.
+		index: usize,
+	},
+	/// A write to an encrypted volume was not a whole number of blocks.
+	///
+	/// Reads accept any range; writes do not, because a partial write would
+	/// become a read-modify-write the caller did not ask for. See
+	/// [`EncryptedDevice`](crate::EncryptedDevice).
+	EncryptedWriteMisaligned {
+		/// Byte offset of the refused write.
+		offset: u64,
+		/// Its length in bytes.
+		len: usize,
+		/// The block size it had to be a multiple of.
+		block_size: u32,
+	},
+	/// The operating system's random source failed.
+	///
+	/// Fatal for the operation that needed it (a master key, a salt, a wrap
+	/// IV): falling back to a weaker source would produce a volume that looks
+	/// encrypted and is not.
+	Entropy {
+		/// What the OS reported.
+		detail: String,
+	},
 
 	// -- Object access
 	/// No `ObjectRecord` on the volume carries the requested `ObjectId`.
@@ -216,6 +282,30 @@ impl Display for Error {
 				 it has been initialised but never formatted, so there is nothing to mount"
 			),
 			Self::RootUnreadable { detail } => write!(f, "root object is unreadable: {detail}"),
+			Self::EncryptedVolume { detail } => {
+				write!(f, "this volume is encrypted: {detail}")
+			}
+			Self::VolumeNotEncrypted { detail } => {
+				write!(f, "this volume is not encrypted: {detail}")
+			}
+			Self::WrongCredential { detail } => write!(f, "cannot unlock the volume: {detail}"),
+			Self::NoFreeKeySlot { detail } => write!(f, "no free keyslot: {detail}"),
+			Self::KeySlotEmpty { index } => write!(f, "keyslot {index} is empty"),
+			Self::LastKeySlot { index } => write!(
+				f,
+				"keyslot {index} is the volume's only credential; revoking it would leave the \
+				 volume with no way to unlock"
+			),
+			Self::EncryptedWriteMisaligned {
+				offset,
+				len,
+				block_size,
+			} => write!(
+				f,
+				"a write of {len} bytes at offset {offset} to an encrypted volume is not a whole \
+				 number of {block_size}-byte blocks; reads accept any range, writes do not"
+			),
+			Self::Entropy { detail } => write!(f, "the OS random source failed: {detail}"),
 			Self::ObjectNotFound { object_id } => {
 				write!(f, "no object with id {object_id} on this volume")
 			}

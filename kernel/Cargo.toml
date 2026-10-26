@@ -34,7 +34,7 @@ temper_sealing = ["dep:temper-rs"]
 # volume: a lost or corrupted key makes the volume permanently unreadable, so
 # it is a real user-facing tradeoff rather than a default. Zero cost when the
 # feature is absent from the build at all.
-data-encryption = ["dep:xts-mode", "dep:aes", "dep:zeroize", "dep:spin"]
+data-encryption = ["dep:xts-mode", "dep:aes", "dep:spin"]
 
 # NOTE: `unsafe_code` is NOT forbidden here: `no_std` bare-metal code requires
 # some unsafe operations, but each MUST be documented with a SAFETY comment.
@@ -67,7 +67,6 @@ log = { version = "0.4", default-features = false }
 # never need to interoperate.
 xts-mode = { version = "0.6", default-features = false, optional = true }
 aes = { version = "0.9", default-features = false, optional = true }
-zeroize = { version = "1", default-features = false, features = ["derive"], optional = true }
 
 # -- Temper sealing (optional, only with `temper_sealing`)
 temper-rs = { version = "0.7", default-features = false, features = ["alloc", "signatures"], optional = true }

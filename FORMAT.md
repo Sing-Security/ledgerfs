@@ -47,7 +47,7 @@ every document and in the source.
 | **Root** | The object that names everything else. There is exactly one live root per commit. |
 | **Commit** | One transaction's worth of changes, made durable by the superblock write that names its root. |
 | **RLR** | Root Locator Ring: a ring of recently committed roots inside the superblock. |
-| **Intent log** | A ring buffer of records describing an in-flight commit, used to decide what to replay on mount. |
+| **Intent log** | A ring buffer of records describing an in-flight commit, used to report whether a commit was in flight on mount. |
 | **Deadlist / PendingFree** | Blocks that are no longer reachable from the current root and are candidates for freeing. |
 | **Barrier** | A durability operation: everything written before it is on stable media before anything after it is. |
 
@@ -314,7 +314,7 @@ extensions at absolute offsets so that the earlier fields never move:
 | 3476 | volume label | 4-byte length prefix + up to 256 bytes of text, ending at 3736. Not a field on the struct: written out-of-band, and **cleared by any encode** (see below). |
 | 3736 | `limits` (`LedgerFsLimits`) | 0 = absent, use compiled-in defaults. |
 | 3764 | `active_root_hint` | 0 = absent; see §20. |
-| … | `keyslots` | One 128-byte slot per key, per §36. |
+| 3772 | `keyslots` | Two 128-byte slots (`KEYSLOTS_OFFSET`, `SLOT_SIZE` x `SLOT_COUNT`), ending at 4028; layout in §36.1. |
 | … | `superblock_checksum` | Over the rest of the block. |
 
 `LedgerFsLimits` carries only limits whose value *changes a comparison the
@@ -391,6 +391,11 @@ original numbered-spec revision did not describe: they exist because the
 allocator's state must be recoverable without walking every object, and because
 a freshly formatted volume benefits from an explicit witness of its own
 creation. Both are part of the format.
+
+Block 5 is the one reserved-header block that changes after format: the commit
+engine rewrites the allocator snapshot there on every commit (§15.1, step 4).
+It is therefore plaintext on an encrypted volume as well (§36.2), and what it
+leaks is aggregate allocation state, not object contents.
 
 The intent log is **two blocks**: one 8 KiB ring, not a multi-megabyte region.
 Its small size is a deliberate trade: it is a *tie-breaker* for mount selection
@@ -649,6 +654,13 @@ at 8-byte strides and a record that were not aligned would be invisible to it.
 `PrepareRoot`'s previous-sequence field is what the continuity check in §18.4
 compares against.
 
+The `PrepareRoot` payload is the postcard encoding of the kernel's
+`PrepareRootIntent`, in field order: the root id (32 bytes), the new commit
+sequence, then the previous commit sequence. Postcard varint-encodes the two
+integers and writes the fixed array with no length prefix, so neither sequence
+sits at a fixed byte offset. A reader MUST decode the payload, not read a `u64`
+from offset 0, which holds the first bytes of the root id.
+
 > These discriminants differ from the earlier numbered revision, which started
 > at `0x00` and had no `AddObject`. The values above are the format.
 
@@ -764,6 +776,12 @@ replayed: the objects it staged are unreachable and are left for GC (§22).
 
 The log never causes a root to be adopted. A root becomes current by having its
 superblock written, and by nothing else (§10.3).
+
+An implementation reports the in-flight commit alongside the mount, as an
+observation (the kernel's `ReplayDecision::InFlight`). The mounted root is
+unchanged; the report names the sequence the unfinished commit would have
+carried. A transaction the ring also shows as committed, or as aborted, is not
+in flight and is not reported.
 
 ### 18.6. Replay correctness gates
 
@@ -1143,13 +1161,47 @@ Two layers, deliberately separate:
   above (`cow::operations`, the extent tree, content addressing) never learns
   encryption exists.
 
-A 128-byte slot (`SLOT_SIZE = 128`), repeated `SLOT_COUNT` times, is a field of
-the superblock (§10.1) precisely so it survives the superblock rewrite.
+A 128-byte slot (`SLOT_SIZE = 128`), repeated `SLOT_COUNT = 2` times, is a field
+of the superblock (§10.1) precisely so it survives the superblock rewrite. The
+array starts at byte 3772 (`KEYSLOTS_OFFSET`) and ends at 4028. One slot, in
+order:
+
+| Offset | Field | Notes |
+| --- | --- | --- |
+| 0 | `kind` | 0 empty, 1 passphrase, 2 HSM. Any other value is an **occupied** slot this build does not understand; it is never free space. |
+| 1 | KDF algorithm | 1 = iterated BLAKE3. Recorded so a memory-hard KDF can be added later without guessing. |
+| 2-3 | pad | Zero. |
+| 4 | iteration count | `u32`, little-endian; ignored by an HSM slot. |
+| 8 | salt | 16 bytes, per slot; zero for an HSM slot. |
+| 24 | IV | 16 bytes, CBC initialisation vector. |
+| 40 | `wrapped_key` | 64 bytes, the master key under AES-256-CBC. |
+| 104 | key checksum | `u64` of the *plaintext* master key; recognises a correct unwrap. |
+| 112 | reserved | 16 bytes, zero. |
+
+The master key is 64 bytes because XTS-AES-256 takes two independent AES-256
+keys, and 64 is a whole number of 16-byte CBC blocks, so the wrap needs no
+padding scheme.
 
 ### 36.2. Encryption envelope
 
-**XTS-AES-256**, with the tweak derived deterministically from the LBA. There
-is no per-write nonce and no per-block authentication tag.
+**XTS-AES-256**, with the tweak derived deterministically from the volume's
+relative LBA. There is no per-write nonce and no per-block authentication tag.
+
+Coverage is the object region: every block from `RESERVED_HEADER_BLOCKS` (6) up
+to, not including, `total_blocks - RESERVED_TRAILER_BLOCKS`. Superblock copies
+0-1, the intent log, the genesis record, the allocation snapshot and the two
+trailing superblock copies stay plaintext, because the feature flag that says
+the volume is encrypted lives in the superblock and has to be readable before
+any key exists. Two consequences are format facts, not defects: the superblock,
+the intent log and the allocation snapshot can be read without a credential,
+and block 5 is rewritten on every commit (§15.1), so aggregate allocation state
+is observable. **Contents are protected; metadata is not.**
+
+Two implementation limits are worth stating. Block alignment is part of the
+contract: a write must cover whole 4 KiB blocks starting on a boundary, and it
+is refused rather than emulated with a decrypt-splice-re-encrypt, which would
+turn one write into a hidden read-modify-write. Reads may name any byte range
+and are served from the blocks that cover it.
 
 XTS provides confidentiality only. That is a deliberate trade rather than an
 oversight, and the reasoning belongs in the format document because it is the
@@ -1167,13 +1219,60 @@ already has.
 
 ### 36.3. Key management
 
-The master key is never derived from the disk image. The passphrase KDF is
-iterated BLAKE3 (§5.3).
+The master key is never derived from the disk image: it is 64 random bytes
+generated at format time and wrapped once per populated slot with AES-256-CBC
+and a random 16-byte IV.
+
+A passphrase slot stretches the passphrase into its KEK with iterated BLAKE3
+(§5.3): a first hash over the domain string `LedgerFS.VolumeKeyslot.KEK.v1`,
+the slot salt and the passphrase, then `DEFAULT_KDF_ITERATIONS = 200000` rounds
+that each hash the previous digest together with the salt. The parameters are
+recorded in the slot, so changing the defaults in a later build does not strand
+volumes written with the earlier ones. An HSM slot records zero iterations and
+a zero salt because its KEK is supplied rather than derived.
+
+Unwrapping checks the recovered key against the slot's checksum, the first 8
+bytes of `blake3("LedgerFS.VolumeKeyslot.KeyCheck.v1" || master_key)`, which is
+what separates "wrong credential" from "corrupt slot". The KDF is explicitly
+**not memory-hard**: it raises the cost of guessing linearly in the iteration
+count and is weak against GPU or ASIC attack compared with Argon2. A passphrase
+slot is only as strong as the passphrase behind it, and replacing the KDF is a
+slot-format change.
 
 ### 36.4. Encryption lifecycle
 
-> **Reserved.** No rekeying, adding, or revoking of a slot is implemented at the
-> format level; slots are provisioned at format time.
+Implemented, and driven by the host `Store`:
+
+- **Provision at format time.** `Store::format_encrypted` generates the master
+  key and seals slot 0 under the credential. The encryption flag and the slots
+  are set before the first superblock copy is written, so a crash during format
+  cannot leave a volume that claims to be plaintext while its object region
+  already holds ciphertext.
+- **Add a slot.** `Store::add_slot` seals the current master key into the first
+  free slot. An occupied slot of unknown kind is never treated as free.
+- **Revoke a slot.** `Store::revoke_slot(index)` rewrites it as empty. The
+  volume keeps opening under every other populated slot.
+- **Change a passphrase.** `Store::change_passphrase(old, new)` finds a
+  passphrase slot the old passphrase opens and reseals the master key into that
+  slot under the new one. The master key does not change, so no data block is
+  rewritten.
+
+Each of these rewrites all four superblock copies, because the keyslots are
+superblock fields (§10.1), and each restores the previous in-memory slot if that
+write fails: a slot the write did not carry must not become durable later,
+silently, on an operation that reported an error. All three require the volume
+to be open, which is to say unlocked.
+
+Crash behaviour: the copies are written one at a time, so a crash part-way
+through a keyslot change can leave some copies holding the old credential and
+others the new one. Unlocking tries every decoded copy and every slot, so the
+volume opens with either credential, and the next successful change rewrites all
+four. A copy torn mid-write fails its superblock checksum and was never decoded,
+so it cannot present a half-written slot.
+
+**Not implemented: master-key rekeying.** No operation generates a new master
+key and re-encrypts the object region; that remains Tier C (§44.1). Changing a
+passphrase does not do it, by design.
 
 ## 37. Audit integration + audit chain
 
@@ -1276,10 +1375,26 @@ by a reader willing to search for the tail pair rather than compute its address.
 
 ### 43.1. Version numbering
 
-The superblock carries a `version` field and the `Root` carries a schema
-version and a format version. A reader MUST refuse to mount a version it does
-not know rather than mount it optimistically: an unknown version is an unknown
-*format*, and the fields it does recognise may not mean what it assumes.
+The superblock's `version` field is the on-disk compatibility gate. This
+release writes and accepts version 1 (`SUPERBLOCK_VERSION` in the kernel crate).
+`Superblock::decode` MUST refuse a copy that declares any other value rather
+than mount it optimistically: an unknown version is an unknown *format*, and the
+fields it does recognise may not mean what it assumes. The check runs after the
+checksums, so a damaged block is reported as damage, and before the feature
+flags, so a newer format that also sets an incompat bit is reported by the
+version it declared.
+
+The refusal is per copy. A volume whose copies were all written by a newer
+format has no acceptable copy and the mount fails; the per-copy error is
+`UnsupportedSuperblockVersion`. A conforming writer updates all four copies, so
+a mixed set can arise only when it stopped partway through them, and the older
+copies then describe the last complete commit, which is a state §15 allows a
+crash to leave.
+
+The `Root` descriptor also carries a schema version and a format version. It is
+not written to the volume, so those fields cannot gate a mount: they exist for
+the embedding API and the in-place upgrade story (§43.3), and a reader never
+obtains a `Root` from disk.
 
 ### 43.2. Feature flags
 
@@ -1307,9 +1422,9 @@ component is.
 
 | Tier | Meaning in this release |
 | --- | --- |
-| **A** | Implemented and exercised end to end by the host `Store` and its test suite: object framing, superblock copies and selection, mount and replay (which is what parses the intent log and decides whether a commit was in flight), the commit protocol, CoW reads and writes, directories, extents, compression. |
-| **B** | Implemented in the kernel crate with tests, but not driven by the host `Store` on a live volume: dedupe index, snapshot pinning, chunking, scrubber, GC safety rules, replication, audit chain, keyslots and the block cipher. |
-| **C** | Not implemented: GC *execution*, snapshots, disaster recovery, RAID, quotas, ACLs, IPC, rekeying. |
+| **A** | Implemented and exercised end to end by the host `Store` and its test suite: object framing, superblock copies and selection, mount and replay (which is what parses the intent log and decides whether a commit was in flight), the commit protocol, CoW reads and writes, directories, extents, compression, per-volume encryption (keyslots, the volume block cipher and the slot lifecycle). |
+| **B** | Implemented in the kernel crate with tests, but not driven by the host `Store` on a live volume: dedupe index, snapshot pinning, chunking, scrubber, GC safety rules, replication, audit chain. |
+| **C** | Not implemented: GC *execution*, snapshots, disaster recovery, RAID, quotas, ACLs, IPC, master-key rekeying. |
 
 Tier B is the honest and unusual category: the code exists and is tested, but
 nothing calls it in the shipping path. A reader deciding whether to depend on

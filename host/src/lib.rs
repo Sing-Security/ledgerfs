@@ -101,11 +101,16 @@
 //!
 //! # Boundaries
 //!
-//! - **`data-encryption` is not enabled.** `Superblock::decode` refuses a
-//!   volume whose `features_incompat` names `FEATURE_INCOMPAT_DATA_ENCRYPTED`
-//!   when the cipher is not compiled in, so an encrypted volume fails the
-//!   mount here with a diagnostic rather than decoding ciphertext as data.
-//!   That refusal is the intended behaviour.
+//! - **Encryption is opt-in per volume, and first-class here.** The format
+//!   crate's XTS-AES-256 cipher is compiled in, so
+//!   [`Store::format_encrypted`] and [`Store::open_encrypted`] are ordinary
+//!   operations: the store, the staging tier and every verb run unchanged over
+//!   an [`EncryptedDevice`]. A volume without
+//!   `FEATURE_INCOMPAT_DATA_ENCRYPTED` is untouched by any of it. A volume with
+//!   it refuses [`Store::open`] and a bare [`HostFs`] mount with
+//!   [`Error::EncryptedVolume`], because those paths have no credential to
+//!   offer and decoding ciphertext as objects would report damage that is not
+//!   there.
 //! - **A partition that has only been initialised has nothing to mount.** An
 //!   initialiser lays down four superblock copies with `active_root_id = 0` and
 //!   `active_commit_seq = 0`, no root, because nothing has committed yet, so
@@ -140,6 +145,9 @@
 //! Modules are private and named here as plain text, since nothing outside the
 //! crate can link to them; the types they export are the public surface.
 //!
+//! - `crypto`: the [`VolumeKey`], the credentials that wrap it, and
+//!   [`EncryptedDevice`], the block-device wrapper that encrypts each object
+//!   block at rest.
 //! - `device`: [`BlockDevice`], plus a file-backed and a memory-backed impl.
 //! - `image`: MBR parsing, which partitions an image has.
 //! - `volume`: superblock copies + `mount_select`.
@@ -155,6 +163,7 @@
 
 // region:    --- Modules
 
+mod crypto;
 mod device;
 mod error;
 mod hints;
@@ -170,6 +179,7 @@ mod volume;
 // `HintCache`/`VolumeIdentity` are named in `BlockDevice::hint_cache`, so a
 // caller implementing the trait to put a volume somewhere unusual (or reading
 // the sidecar a file-backed one maintains) has to be able to name them.
+pub use crypto::{EncryptedDevice, UnlockCredential, VolumeKey};
 pub use device::{BlockDevice, FileBlockDevice, HintCache, MemBlockDevice, VolumeIdentity};
 pub use error::{Error, Result};
 pub use image::{Partition, PartitionKind, find_partition, read_partitions};
@@ -198,7 +208,10 @@ pub use volume::{CopyStatus, Volume};
 // dependency, which is exactly the coupling this crate exists to absorb.
 pub use ledgerfs::BLOCK_SIZE;
 pub use ledgerfs::commit::CommitResult;
+// `Store::keyslot_kinds` answers with these, and a caller that acts on the
+// answer has to be able to name the kinds.
 pub use ledgerfs::cow::TxnPlan;
+pub use ledgerfs::keyslot::SlotKind;
 pub use ledgerfs::object::{Chunk, DirEntry, DirNode, ExtentNode, Inode, InodeKind, ObjectId, ObjectRef};
 pub use ledgerfs::record::ObjectRecordHeader;
 

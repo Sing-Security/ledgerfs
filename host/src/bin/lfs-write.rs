@@ -11,23 +11,33 @@
 //! on-disk format; only the device differs.
 //!
 //! ```text
-//! lfs-write <TARGET> mkfs   [--bare] [--blocks N] [--part system|data]
-//! lfs-write <TARGET> info   [--bare] [--part system|data]
-//! lfs-write <TARGET> mkdir  <PATH>   [--bare] [--part system|data]
-//! lfs-write <TARGET> put    <LOCAL> <PATH> [--bare] [--part system|data]
-//! lfs-write <TARGET> append <LOCAL> <PATH> [--bare] [--part system|data]
-//! lfs-write <TARGET> rm     <PATH>   [--bare] [--part system|data]
-//! lfs-write <TARGET> mv     <FROM> <TO> [--bare] [--part system|data]
-//! lfs-write <TARGET> verify <PATH> [LOCAL] [--bare] [--part system|data]
-//! lfs-write <SRC>    compact <DEST>  [--bare]
+//! lfs-write <TARGET> mkfs   [--bare] [--blocks N] [--part system|data] [--encrypt]
+//! lfs-write <TARGET> info   [--bare] [--part system|data] [CREDENTIAL]
+//! lfs-write <TARGET> mkdir  <PATH>   [--bare] [--part system|data] [CREDENTIAL]
+//! lfs-write <TARGET> put    <LOCAL> <PATH> [--bare] [--part system|data] [CREDENTIAL]
+//! lfs-write <TARGET> append <LOCAL> <PATH> [--bare] [--part system|data] [CREDENTIAL]
+//! lfs-write <TARGET> rm     <PATH>   [--bare] [--part system|data] [CREDENTIAL]
+//! lfs-write <TARGET> mv     <FROM> <TO> [--bare] [--part system|data] [CREDENTIAL]
+//! lfs-write <TARGET> verify <PATH> [LOCAL] [--bare] [--part system|data] [CREDENTIAL]
+//! lfs-write <SRC>    compact <DEST>  [--bare] [CREDENTIAL] [--encrypt]
 //! ```
+//!
+//! `CREDENTIAL` is either `--passphrase` (one line from stdin) or
+//! `--key-file PATH` (exactly 32 bytes). It is what opens an encrypted volume
+//! and, for `mkfs`, what a new one is sealed under. `compact` preserves the
+//! source's encryption: an encrypted source is rebuilt into an encrypted
+//! destination under the same credential, a plaintext source into a plaintext
+//! one, and `--encrypt` promotes a plaintext source on the way through.
 //!
 //! [`BlockDevice`]: ledgerfs_host::BlockDevice
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
+use common::{Unlock, UnlockSource};
 use ledgerfs_host::{
-	BLOCK_SIZE, BlockDevice, Error, FileBlockDevice, InodeKind, PartitionKind, Result, Store, find_partition,
+	BLOCK_SIZE, BlockDevice, Error, FileBlockDevice, InodeKind, PartitionKind, Result, Store, Volume, find_partition,
 	rebuild_into,
 };
 
@@ -42,6 +52,11 @@ struct Cli {
 	bare: bool,
 	/// Volume size for `mkfs`, in 4 KiB blocks.
 	blocks: Option<u64>,
+	/// Where the credential comes from, if one was named.
+	unlock: UnlockSource,
+	/// `mkfs`/`compact`: write the destination encrypted, sealed under the
+	/// credential.
+	encrypt: bool,
 }
 
 /// Which partition `mkfs`/`mkdir`/`put` touch when `--bare` is not given.
@@ -50,7 +65,8 @@ struct Cli {
 const DEFAULT_PART: PartitionKind = PartitionKind::Data;
 
 const USAGE: &str = "\
-usage: lfs-write <TARGET> <COMMAND> [ARGS] [--bare] [--part system|data] [--blocks N]
+usage: lfs-write <TARGET> <COMMAND> [ARGS] [--bare] [--part system|data]
+                  [--blocks N] [--encrypt] [--passphrase | --key-file PATH]
 
   mkfs [--blocks N]     format TARGET as a LedgerFS volume
   info                  how the volume was obtained, whether it takes writes, and the space left
@@ -64,7 +80,10 @@ usage: lfs-write <TARGET> <COMMAND> [ARGS] [--bare] [--part system|data] [--bloc
 
   --bare                TARGET is a whole volume file, not a partitioned image
   --part KIND           which partition to write, 'data' (default) or 'system'
-  --blocks N            volume size for --bare mkfs, in 4096-byte blocks";
+  --blocks N            volume size for --bare mkfs, in 4096-byte blocks
+  --encrypt             format the volume encrypted (needs a credential)
+  --passphrase          read the passphrase from one line of stdin
+  --key-file PATH       read a 32-byte key-encryption key from PATH";
 
 fn parse_args(argv: Vec<String>) -> Result<Cli> {
 	let mut target: Option<PathBuf> = None;
@@ -73,6 +92,8 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 	let mut part = DEFAULT_PART;
 	let mut bare = false;
 	let mut blocks = None;
+	let mut unlock = UnlockSource::None;
+	let mut encrypt = false;
 
 	let mut it = argv.into_iter();
 	while let Some(arg) = it.next() {
@@ -101,6 +122,31 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 				);
 				continue;
 			}
+			"--encrypt" => {
+				encrypt = true;
+				continue;
+			}
+			"--passphrase" => {
+				if !unlock.is_none() {
+					return Err(Error::Usage(format!(
+						"give at most one credential, --passphrase or --key-file\n\n{USAGE}"
+					)));
+				}
+				unlock = UnlockSource::Passphrase;
+				continue;
+			}
+			"--key-file" => {
+				if !unlock.is_none() {
+					return Err(Error::Usage(format!(
+						"give at most one credential, --passphrase or --key-file\n\n{USAGE}"
+					)));
+				}
+				let value = it
+					.next()
+					.ok_or_else(|| Error::Usage(format!("--key-file needs a value\n\n{USAGE}")))?;
+				unlock = UnlockSource::KeyFile(PathBuf::from(value));
+				continue;
+			}
 			_ => {}
 		}
 
@@ -125,6 +171,8 @@ fn parse_args(argv: Vec<String>) -> Result<Cli> {
 		part,
 		bare,
 		blocks,
+		unlock,
+		encrypt,
 	})
 }
 
@@ -218,8 +266,26 @@ fn usage_exit(message: &str) -> ! {
 // region:    --- Commands
 
 fn cmd_mkfs(cli: &Cli) -> Result<()> {
+	// Read and validate the credential first: a mistyped key file, or a flag
+	// combination that makes no sense, must be refused before `--bare` creates
+	// or truncates the target file.
+	let unlock = cli.unlock.read()?;
+	if cli.encrypt && unlock.is_none() {
+		return Err(Error::Usage(format!(
+			"mkfs --encrypt needs a credential to seal the new key under; pass --passphrase or --key-file\n\n{USAGE}"
+		)));
+	}
+	if !cli.encrypt && unlock.is_some() {
+		return Err(Error::Usage(format!(
+			"a credential was given but mkfs would write a plaintext volume; add --encrypt\n\n{USAGE}"
+		)));
+	}
+
 	let (device, total_blocks) = open_target(cli, Access::Create)?;
-	let store = Store::format(device, total_blocks)?;
+	let store = match &unlock {
+		Some(unlock) => Store::format_encrypted(device, total_blocks, unlock.credential())?,
+		None => Store::format(device, total_blocks)?,
+	};
 
 	println!("formatted   {}", cli.target.display());
 	println!(
@@ -237,6 +303,14 @@ fn cmd_mkfs(cli: &Cli) -> Result<()> {
 	);
 	println!("  commit    seq {}", store.commit_seq());
 	println!("  root      {}", store.persisted_root_ref().object_id.to_hex());
+	println!(
+		"  encrypted {}",
+		if cli.encrypt {
+			"yes (the master key is sealed into keyslot 0 under the credential)"
+		} else {
+			"no"
+		}
+	);
 
 	Ok(())
 }
@@ -247,17 +321,22 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 	// as well as the volume, so a read-only handle would report every healthy
 	// volume as unwritable: the wrong answer to the question this command is
 	// being asked.
+	let unlock = cli.unlock.read()?;
 	let (device, _) = match open_target(cli, Access::ReadWrite) {
 		Ok(opened) => opened,
 		Err(_) => open_target(cli, Access::ReadOnly)?,
 	};
-	let store = Store::open(device)?;
+	let store = open_store(device, unlock.as_ref())?;
 
 	let volume = &store.fs().volume;
 	println!("target      {}", cli.target.display());
 	println!("  blocks    {}", volume.total_blocks());
 	println!("  commit    seq {}", store.commit_seq());
 	println!("  root      {}", store.persisted_root_ref().object_id.to_hex());
+	println!("  encrypted {}", volume.superblock.is_data_encrypted());
+	if volume.superblock.is_data_encrypted() {
+		println!("  keyslots  {:?}", store.keyslot_kinds());
+	}
 	println!(
 		"  root_hint {}{}",
 		store.persisted_root_ref().hint.0,
@@ -310,8 +389,9 @@ fn cmd_info(cli: &Cli) -> Result<()> {
 
 fn cmd_mkdir(cli: &Cli) -> Result<()> {
 	let path = cli.required_path()?;
+	let unlock = cli.unlock.read()?;
 	let (device, _) = open_target(cli, Access::ReadWrite)?;
-	let mut store = Store::open(device)?;
+	let mut store = open_store(device, unlock.as_ref())?;
 
 	store.mkdir(&path, 0o755)?;
 
@@ -322,9 +402,10 @@ fn cmd_mkdir(cli: &Cli) -> Result<()> {
 fn cmd_put(cli: &Cli) -> Result<()> {
 	let (local, path) = cli.local_and_path()?;
 	let data = std::fs::read(&local).map_err(Error::Io)?;
+	let unlock = cli.unlock.read()?;
 
 	let (device, _) = open_target(cli, Access::ReadWrite)?;
-	let mut store = Store::open(device)?;
+	let mut store = open_store(device, unlock.as_ref())?;
 
 	store.write_new_file(&path, &data, 0o644)?;
 
@@ -342,9 +423,10 @@ fn cmd_put(cli: &Cli) -> Result<()> {
 fn cmd_append(cli: &Cli) -> Result<()> {
 	let (local, path) = cli.local_and_path()?;
 	let data = std::fs::read(&local).map_err(Error::Io)?;
+	let unlock = cli.unlock.read()?;
 
 	let (device, _) = open_target(cli, Access::ReadWrite)?;
-	let mut store = Store::open(device)?;
+	let mut store = open_store(device, unlock.as_ref())?;
 
 	store.append(&path, &data, 0o644)?;
 	let size = store.stat(&path)?.size;
@@ -362,8 +444,9 @@ fn cmd_append(cli: &Cli) -> Result<()> {
 fn cmd_remove(cli: &Cli) -> Result<()> {
 	let path = cli.required_path()?;
 
+	let unlock = cli.unlock.read()?;
 	let (device, _) = open_target(cli, Access::ReadWrite)?;
-	let mut store = Store::open(device)?;
+	let mut store = open_store(device, unlock.as_ref())?;
 
 	store.remove(&path)?;
 
@@ -379,8 +462,9 @@ fn cmd_rename(cli: &Cli) -> Result<()> {
 		_ => return Err(Error::Usage(format!("mv needs a source and a destination\n\n{USAGE}"))),
 	};
 
+	let unlock = cli.unlock.read()?;
 	let (device, _) = open_target(cli, Access::ReadWrite)?;
-	let mut store = Store::open(device)?;
+	let mut store = open_store(device, unlock.as_ref())?;
 
 	store.rename(&from, &to)?;
 
@@ -397,8 +481,9 @@ fn cmd_rename(cli: &Cli) -> Result<()> {
 /// right length, and that is exactly the bug this path was written to catch.
 fn cmd_verify(cli: &Cli) -> Result<()> {
 	let (path, against) = cli.path_and_optional_local()?;
+	let unlock = cli.unlock.read()?;
 	let (device, _) = open_target(cli, Access::ReadOnly)?;
-	let store = Store::open(device)?;
+	let store = open_store(device, unlock.as_ref())?;
 
 	let data = store.read_file(&path)?;
 	let inode = store.stat(&path)?;
@@ -479,23 +564,65 @@ fn cmd_compact(cli: &Cli) -> Result<()> {
 		)));
 	}
 
+	let unlock = cli.unlock.read()?;
+
 	// Read-only source: no write lock, so this works on a volume another
 	// process holds, and on one with no free space left to write into.
-	let src = Store::open(Box::new(FileBlockDevice::open(&cli.target, 0, src_len)?))?;
+	let src_device: BoxedDevice = Box::new(FileBlockDevice::open(&cli.target, 0, src_len)?);
+	let src_encrypted = Volume::mount(src_device.as_ref())?.superblock.is_data_encrypted();
+	if src_encrypted && unlock.is_none() {
+		return Err(Error::Usage(format!(
+			"{} is an encrypted volume; pass --passphrase or --key-file to compact it\n\n{USAGE}",
+			cli.target.display()
+		)));
+	}
+	if cli.encrypt && unlock.is_none() {
+		return Err(Error::Usage(format!(
+			"compact --encrypt needs a credential to seal the new volume's key under; pass --passphrase or --key-file\n\n{USAGE}"
+		)));
+	}
+	if !src_encrypted && !cli.encrypt && unlock.is_some() {
+		return Err(Error::Usage(format!(
+			"{} is not encrypted, so the credential would do nothing; add --encrypt to write the new volume encrypted\n\n{USAGE}",
+			cli.target.display()
+		)));
+	}
+	// An encrypted source stays encrypted. Rebuilding it as a plaintext volume
+	// would declassify every byte while reporting success, so that is not
+	// something this command may do by omission.
+	let dst_encrypted = src_encrypted || cli.encrypt;
+	// The source takes a credential only if it is encrypted; a plaintext source
+	// with --encrypt must still open plainly, or the promotion could never start.
+	let src_credential = if src_encrypted {
+		unlock.as_ref().map(Unlock::credential)
+	} else {
+		None
+	};
+	let dst_credential = if dst_encrypted {
+		unlock.as_ref().map(Unlock::credential)
+	} else {
+		None
+	};
+
+	let src = match src_credential {
+		Some(credential) => Store::open_encrypted(src_device, credential)?,
+		None => Store::open(src_device)?,
+	};
 	let expected = src.walk()?;
 	let free_before = src.free_bytes();
 
-	let mut dst = Store::format(
-		Box::new(FileBlockDevice::create(&dest, src_len)?),
-		src_len / BLOCK_SIZE as u64,
-	)?;
+	let dst_device: BoxedDevice = Box::new(FileBlockDevice::create(&dest, src_len)?);
+	let mut dst = match dst_credential {
+		Some(credential) => Store::format_encrypted(dst_device, src_len / BLOCK_SIZE as u64, credential)?,
+		None => Store::format(dst_device, src_len / BLOCK_SIZE as u64)?,
+	};
 	let stats = rebuild_into(&src, &mut dst)?;
 	let free_after = dst.free_bytes();
 	drop(dst);
 
 	// Verify through a fresh mount before reporting success. The caller is
 	// about to delete the original on the strength of this answer.
-	let check = Store::open(Box::new(FileBlockDevice::open(&dest, 0, src_len)?))?;
+	let check = open_store(Box::new(FileBlockDevice::open(&dest, 0, src_len)?), unlock.as_ref())?;
 	let got = check.walk()?;
 	for (want, have) in expected.iter().zip(got.iter()) {
 		if want.path != have.path || want.kind != have.kind || want.size != have.size {
@@ -546,6 +673,11 @@ fn cmd_compact(cli: &Cli) -> Result<()> {
 		free_before.unwrap_or(0),
 		free_after.unwrap_or(0)
 	);
+	println!(
+		"  encrypted {} -> {}",
+		if src_encrypted { "yes" } else { "no" },
+		if dst_encrypted { "yes" } else { "no" }
+	);
 	println!("  verified  every path, size and byte matches the source");
 	println!("  next      rename {} over {}", dest.display(), cli.target.display());
 	Ok(())
@@ -594,6 +726,20 @@ fn open_target(cli: &Cli, access: Access) -> Result<(BoxedDevice, u64)> {
 		};
 
 		Ok((device, size / BLOCK_SIZE as u64))
+	}
+}
+
+/// Open a store on `device`, unlocking it when the caller supplied a credential.
+///
+/// Every command that touches an existing volume goes through here, so a
+/// credential means the same thing to all of them: unlock the volume, then run
+/// the verb on the plaintext the wrapper produces. A volume that is encrypted
+/// and opened without one fails inside `Store::open` with `EncryptedVolume`,
+/// before any block is read as data.
+fn open_store(device: BoxedDevice, unlock: Option<&Unlock>) -> Result<Store> {
+	match unlock {
+		Some(unlock) => Store::open_encrypted(device, unlock.credential()),
+		None => Store::open(device),
 	}
 }
 

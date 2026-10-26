@@ -190,8 +190,8 @@ pub trait Engine {
 	/// for it, documented on its implementation.
 	fn seal_staged_deferred(&mut self) -> Result<()>;
 
-	/// Complete the publish step of every [`seal_staged_deferred`] since the
-	/// last sync, in one step.
+	/// Complete the publish step of every [`Self::seal_staged_deferred`] since
+	/// the last sync, in one step.
 	fn sync_staged(&mut self) -> Result<()>;
 
 	/// The whole log named `name`, first byte written first.

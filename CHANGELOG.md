@@ -10,6 +10,71 @@ operations, `ledgerfs-host` carries the `std` volume layer. The on-disk
 format has its own version field in the superblock, which is a third number
 again; see [`FORMAT.md`](FORMAT.md).
 
+## [Unreleased]
+
+### Added
+
+- **Encryption is available on the host path.** `ledgerfs-host` now drives the
+  keyslots and the volume block cipher that the kernel crate has carried since
+  the first release: `Store::format_encrypted` and `Store::open_encrypted`,
+  `HostFs::mount_encrypted` for reading, `EncryptedDevice` (an XTS-AES-256
+  `BlockDevice` inserted below the whole volume layer, so path resolution, the
+  commit engine and staging run unchanged above it), and `VolumeKey` /
+  `UnlockCredential`. A passphrase is stretched with the slot's recorded
+  iterated-BLAKE3 parameters; a 32-byte key-encryption key, the kind an HSM
+  supplies, is used directly. Both slot kinds may be populated at once, and the
+  on-disk format is unchanged: a plaintext volume remains an ordinary volume.
+- **The keyslot lifecycle.** `Store::add_slot`, `Store::revoke_slot` and
+  `Store::change_passphrase` add, remove and rewrap credentials without
+  re-encrypting a data block. Each rewrites all four superblock copies and
+  restores the previous in-memory slot if that write fails, so a slot the disk
+  did not receive cannot become durable later on an operation that reported an
+  error. Unlocking searches every decoded copy, so a crash part-way through a
+  change leaves a volume that opens with either the old or the new credential.
+- `lfs-write` and `lfs-read` take `--passphrase` (one line from stdin, never
+  argv) and `--key-file PATH` (exactly 32 bytes). `lfs-write mkfs --encrypt`
+  formats an encrypted volume; `lfs-write compact` preserves the source's
+  encryption, and `--encrypt` promotes a plaintext volume to an encrypted one.
+  Both verify every path, size and byte before reporting success.
+- **`SUPERBLOCK_VERSION` gates the mount (§43.1).** `Superblock::decode` refuses
+  any other version with `Error::UnsupportedSuperblockVersion`: after the
+  checksum, so a damaged block is still reported as damage, and before the
+  feature flags, so a newer format is reported by the version it declared. A
+  mixed set of copies falls back to the copies that decode. New volumes write
+  the constant rather than a literal.
+- **`ledgerfs::data_crypto::deactivate`** ends the ring-0 encryption registry's
+  key lifetime for a partition at unmount. It is a no-op for a different
+  partition, so unmounting one volume cannot disarm another.
+
+### Changed
+
+- **The intent log reports an in-flight commit; it never replays one.**
+  `ReplayDecision::ReplayTo { commit_seq }` is now
+  `ReplayDecision::InFlight { commit_seq }`, and `mount_select` keeps the root
+  the selected superblock names. The format already said that no root is
+  adopted from the log (§10.3, §18.5, §44.2); the old name promised otherwise
+  and the code never did it. A transaction the ring also shows as committed or
+  aborted is not in flight and is not reported.
+- **`PrepareRootIntent` moved from `commit` to `intent_log`, with `encode` and
+  `decode`.** `kernel::commit::PrepareRootIntent` is gone. One encoder now
+  produces the payload for the commit engine, the example and every test, and
+  readers decode the struct.
+- **`block_is_encrypted` requires `total_blocks`.** The parameter was optional
+  and `None` treated the trailing superblock copies as encrypted, which would
+  decrypt plaintext into garbage. Every real caller has just read a superblock,
+  which carries the number.
+- **`SlotKind::Unknown(u8)` reads as occupied.** A slot kind written by a newer
+  build is no longer decoded as `Empty`, because an overwrite on the next
+  `add_slot` would destroy the only credential a newer build could use.
+  `seal_slot` refuses anything that is not `Passphrase` or `Hsm`, so an unknown
+  kind cannot be forged either.
+- **`FORMAT.md` §36 documents what the implementation does.** The keyslot
+  layout at byte 3772, the cipher's exact coverage (object region only;
+  superblock, intent log and allocation snapshot stay plaintext), the
+  key-management construction and domain separators, and the lifecycle, its
+  crash behaviour and its one missing operation (master-key rekeying). Tier A
+  in §44.1 now includes encryption.
+
 ## [0.7.0] / [0.1.0] - 2026-10-23
 
 The first public release of both crates. `### Added` and `### Changed` list the

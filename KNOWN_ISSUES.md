@@ -271,9 +271,10 @@ chain, including record sealing (§37).
 
 No implementation at all: disaster recovery (§26), quotas (§33), ACLs (§34.1),
 capability-flag *enforcement* (§34.3; the flags are stored, and no decision is
-made from them), keyslot lifecycle: adding, revoking, rekeying (§36.4), reflink
-clones (§32), RAID (§42), IPC (§38: LedgerFS is a library, not a daemon), and
-in-place format upgrades (§43.3).
+made from them), master-key rekeying (§36.4; adding, revoking and changing
+slots are implemented and driven by the host `Store`), reflink clones (§32),
+RAID (§42), IPC (§38: LedgerFS is a library, not a daemon), and in-place format
+upgrades (§43.3).
 
 **Four subsystems return success without doing the work**, which is the part
 worth knowing before calling one. Each is annotated where it lives:

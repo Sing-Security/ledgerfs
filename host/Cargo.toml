@@ -19,10 +19,18 @@ unsafe_code = "forbid"
 [dependencies]
 # -- LedgerFS on-disk format (superblock, ObjectRecord framing, object model,
 #    CoW operations). `std` pulls the lz4/zstd decoders that `compression.rs`
-#    gates, so a record written with either policy decodes. Deliberately NOT
-#    `reader` (that compiles ring-0 ATA port I/O into a userspace binary) and
-#    not `data-encryption` (see lib.rs, "Boundaries").
-ledgerfs = { path = "../kernel", version = "0.7", features = ["std"] }
+#    gates, so a record written with either policy decodes. `data-encryption`
+#    is enabled because this crate can now format and open an encrypted volume
+#    as a first-class operation (`Store::format_encrypted` /
+#    `Store::open_encrypted`); without the cipher compiled in, the format crate
+#    would refuse the volume at `Superblock::decode` instead. Deliberately NOT
+#    `reader` (that compiles ring-0 ATA port I/O into a userspace binary).
+ledgerfs = { path = "../kernel", version = "0.7", features = ["std", "data-encryption"] }
+# -- Entropy for the master key, keyslot salts and wrap IVs. `getrandom` asks
+#    the operating system; there is no userspace CSPRNG in `std`.
+getrandom = "0.3"
+# -- Key material is wiped when the store that owns it goes away.
+zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 # The benchmark harness for `benches/store.rs`: one group per `Store` action.

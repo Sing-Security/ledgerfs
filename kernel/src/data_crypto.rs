@@ -56,24 +56,41 @@
 //!
 //! Only the **object region** (blocks at or after
 //! [`crate::RESERVED_HEADER_BLOCKS`]) is encrypted. The reserved header
-//! (superblock copies, intent log, genesis audit record) and the two
+//! (superblock copies at blocks 0 and 1, the intent log at 2 and 3, the
+//! genesis audit record at 4, and the allocation snapshot at 5) and the two
 //! trailing backup superblock copies stay plaintext, for the same reason a
 //! LUKS header does: the superblock is where the
 //! [`FEATURE_INCOMPAT_DATA_ENCRYPTED`](crate::superblock::FEATURE_INCOMPAT_DATA_ENCRYPTED)
 //! flag itself lives, so it has to be readable *before* anything knows
-//! whether to decrypt, and before any key has been derived.
+//! whether to decrypt, and before any key has been derived. The allocation
+//! snapshot shares that region because a mount reads it before it has a
+//! writable view of anything, and because moving it would change the fixed
+//! on-disk layout (FORMAT.md §11).
 //!
 //! **What this leaks, stated plainly:** an attacker with the raw disk can
 //! read the superblock (volume size, `active_root_id`, a BLAKE3 hash of
-//! the root inode, not its contents, and `active_commit_seq`) and the
+//! the root inode, not its contents, and `active_commit_seq`), the
 //! intent log's transaction records (object IDs and the physical LBAs/block
-//! counts they were written to). That is real metadata leakage: it reveals
-//! roughly how many objects exist, how large they are, and how often the
-//! volume is written, though not any object's actual contents. Closing it
-//! would mean relocating the encryption flag out of the superblock into
-//! some other plaintext anchor and encrypting the header too: a larger
-//! format change than this feature warrants, and one that buys little while
-//! file *contents* are what actually matter here.
+//! counts they were written to), the genesis audit record, and the
+//! allocation snapshot (which blocks are in use). That is real metadata
+//! leakage: it reveals roughly how many objects exist, how large they are,
+//! how much of the volume is occupied, and how often the volume is written,
+//! though not any object's actual contents. Closing it would mean relocating
+//! the encryption flag out of the superblock into some other plaintext
+//! anchor and encrypting the header too: a larger format change than this
+//! feature warrants, and one that buys little while file *contents* are what
+//! actually matter here.
+//!
+//! # Key lifetime
+//!
+//! The registry keeps the volume key until [`deactivate`] is called or the
+//! process exits. There is no way to zero the expanded AES key schedules: the
+//! `aes` crate exposes no destructor for them, and this module cannot reach
+//! the bytes behind `Xts128`. Callers must therefore treat unmount as an
+//! explicit step ([`deactivate`]), and must zeroize their own copy of the raw
+//! key material. A host that owns the device wrapper has a much better story
+//! available: `ledgerfs_host::EncryptedDevice` owns the cipher for exactly as
+//! long as the volume is open, so dropping the store drops the key.
 
 extern crate alloc;
 
@@ -84,19 +101,19 @@ use xts_mode::{Xts128, get_tweak_default};
 /// Whether a given partition-relative block index falls in the encrypted
 /// (object) region rather than the plaintext reserved header/trailer.
 ///
-/// `total_blocks` is the volume's size in LedgerFS blocks, needed to
-/// identify the trailing backup superblock copies
-/// ([`crate::RESERVED_TRAILER_BLOCKS`]). Pass `None` when the caller
-/// genuinely doesn't know the volume size: the trailing copies are then
-/// treated as encrypted, which is wrong; every real caller (which has just
-/// read the superblock to learn the volume is encrypted at all) knows it.
-pub fn block_is_encrypted(block_lba: u64, total_blocks: Option<u64>) -> bool {
+/// `total_blocks` is the volume's size in LedgerFS blocks, and it is required
+/// rather than optional: the trailing backup superblock copies
+/// ([`crate::RESERVED_TRAILER_BLOCKS`]) sit at the *end of the volume*, so a
+/// caller that does not know the volume size cannot answer this question
+/// correctly. Treating those copies as encrypted would decrypt plaintext
+/// superblocks into garbage, and every real caller has just read a superblock
+/// (which carries `total_blocks`) in order to know the volume is encrypted at
+/// all.
+pub fn block_is_encrypted(block_lba: u64, total_blocks: u64) -> bool {
 	if block_lba < crate::RESERVED_HEADER_BLOCKS {
 		return false;
 	}
-	if let Some(total) = total_blocks
-		&& block_lba >= total.saturating_sub(crate::RESERVED_TRAILER_BLOCKS)
-	{
+	if block_lba >= total_blocks.saturating_sub(crate::RESERVED_TRAILER_BLOCKS) {
 		return false;
 	}
 	true
@@ -226,6 +243,24 @@ pub fn is_active_for(partition_start_lba: u32) -> bool {
 		.is_some_and(|v| v.partition_start_lba == partition_start_lba)
 }
 
+/// Drop the volume key for `partition_start_lba`, ending transparent
+/// encryption for that partition.
+///
+/// Call this at unmount: the registry is process-global and would otherwise
+/// hold the key, and the expanded AES key schedules it owns, for the life of
+/// the process. A no-op when the active volume is a different partition, so an
+/// unmount of one volume cannot disarm another.
+///
+/// This releases the key that can still be zeroed (the `Xts128` inside the
+/// cipher). The expanded schedules are dropped with the cipher; see this
+/// module's "Key lifetime" note for what that does and does not guarantee.
+pub fn deactivate(partition_start_lba: u32) {
+	let mut slot = ACTIVE.lock();
+	if slot.as_ref().is_some_and(|v| v.partition_start_lba == partition_start_lba) {
+		*slot = None;
+	}
+}
+
 /// Encrypt one block in place if `partition_start_lba` has an active
 /// volume key *and* `block_lba` falls in the encrypted object region.
 /// A no-op otherwise, which is exactly what makes every non-data-volume
@@ -233,7 +268,7 @@ pub fn is_active_for(partition_start_lba: u32) -> bool {
 pub fn maybe_encrypt_block(partition_start_lba: u32, block_lba: u64, buf: &mut [u8]) {
 	let slot = ACTIVE.lock();
 	let Some(v) = slot.as_ref() else { return };
-	if v.partition_start_lba != partition_start_lba || !block_is_encrypted(block_lba, Some(v.total_blocks)) {
+	if v.partition_start_lba != partition_start_lba || !block_is_encrypted(block_lba, v.total_blocks) {
 		return;
 	}
 	v.cipher.encrypt_block(buf, block_lba);
@@ -245,7 +280,7 @@ pub fn maybe_encrypt_block(partition_start_lba: u32, block_lba: u64, buf: &mut [
 pub fn maybe_decrypt_block(partition_start_lba: u32, block_lba: u64, buf: &mut [u8]) {
 	let slot = ACTIVE.lock();
 	let Some(v) = slot.as_ref() else { return };
-	if v.partition_start_lba != partition_start_lba || !block_is_encrypted(block_lba, Some(v.total_blocks)) {
+	if v.partition_start_lba != partition_start_lba || !block_is_encrypted(block_lba, v.total_blocks) {
 		return;
 	}
 	v.cipher.decrypt_block(buf, block_lba);
@@ -361,12 +396,12 @@ mod tests {
 	#[test]
 	fn test_reserved_header_and_trailer_blocks_are_never_encrypted() -> TestResult<()> {
 		// -- Setup & Fixtures: a 1000-block volume.
-		let total = Some(1000u64);
+		let total = 1000u64;
 
 		// -- Check: the plaintext header (superblock copies, intent log,
-		// genesis audit) must never be encrypted: the superblock is where
-		// the "this volume is encrypted" flag itself lives, so encrypting
-		// it would be unreadable-by-construction.
+		// genesis audit, allocation snapshot) must never be encrypted: the
+		// superblock is where the "this volume is encrypted" flag itself
+		// lives, so encrypting it would be unreadable-by-construction.
 		for lba in 0..crate::RESERVED_HEADER_BLOCKS {
 			assert!(
 				!block_is_encrypted(lba, total),
@@ -384,6 +419,17 @@ mod tests {
 		assert!(block_is_encrypted(crate::RESERVED_HEADER_BLOCKS, total));
 		assert!(block_is_encrypted(500, total));
 		assert!(block_is_encrypted(1000 - crate::RESERVED_TRAILER_BLOCKS - 1, total));
+
+		// A volume smaller than the trailer reservation encrypts nothing
+		// rather than underflowing the boundary: `format` refuses such a
+		// volume, but the predicate must still answer, because it runs on
+		// every block of every read.
+		for lba in 0..8 {
+			assert!(
+				!block_is_encrypted(lba, 4),
+				"no block of a 4-block volume is object space"
+			);
+		}
 
 		Ok(())
 	}
@@ -429,6 +475,24 @@ mod tests {
 
 		assert!(is_active_for(DATA_PART));
 		assert!(!is_active_for(SYSTEM_PART));
+
+		// -- Unmount: deactivating another partition must not disarm this
+		// volume, and deactivating this one must make every subsequent block
+		// pass through untouched.
+		deactivate(SYSTEM_PART);
+		assert!(
+			is_active_for(DATA_PART),
+			"deactivating a different partition must be a no-op"
+		);
+
+		deactivate(DATA_PART);
+		assert!(!is_active_for(DATA_PART));
+		let mut after = plaintext.clone();
+		maybe_encrypt_block(DATA_PART, 100, &mut after);
+		assert_eq!(
+			after, plaintext,
+			"a deactivated partition must pass blocks through untouched"
+		);
 
 		Ok(())
 	}

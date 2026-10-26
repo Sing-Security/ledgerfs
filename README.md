@@ -179,7 +179,7 @@ Two crates are published.
 | crate | runtime | contents |
 |---|---|---|
 | [`ledgerfs`](https://crates.io/crates/ledgerfs) | `no_std` + `alloc` | the format: record framing, encoding, the object model, the allocator, placement, the commit engine, and the copy-on-write operations. No I/O. |
-| [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host) | `std` | an `ObjectStore` over a `BlockDevice`, mount and path handling, `Store` (format, open, mutation verbs, staging), and the `lfs-read` and `lfs-write` tools. |
+| [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host) | `std` | an `ObjectStore` over a `BlockDevice`, mount and path handling, `Store` (format, open, mutation verbs, staging), per-volume encryption, and the `lfs-read` and `lfs-write` tools. |
 
 The kernel crate defines [`ObjectStore`](kernel/src/cow/object_store.rs) as the
 seam between the format and the medium. The host crate supplies a disk-backed
@@ -288,7 +288,16 @@ them, which leaks space on a recovery and never produces a wrong answer.
   the audit chain are present in the format crate with no caller. Four
   subsystems return success without performing the work; `KNOWN_ISSUES.md` §11
   lists which. Quotas, ACLs, disaster recovery, capability enforcement and
-  keyslot lifecycle have no implementation at all.
+  master-key rekeying have no implementation at all. Per-volume encryption is
+  not in that list: keyslots, the block cipher and the slot lifecycle are driven
+  by `ledgerfs-host`, and only replacing the master key is missing.
+- **Encryption protects contents, not metadata.** On an encrypted volume the
+  object region is XTS-AES-256; the superblock, the intent log and the
+  allocation snapshot stay plaintext so the volume can be identified before it
+  is unlocked. Allocation state and file-system structure are therefore visible
+  to an attacker holding the disk. The passphrase KDF is iterated BLAKE3 and not
+  memory-hard, and losing every credential loses the volume: there is no
+  recovery path and no back door.
 
 ## 9. Applicability
 

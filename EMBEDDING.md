@@ -372,8 +372,17 @@ Stated plainly so an app plans around them rather than discovering them:
 - **No `rmdir` / recursive delete.** `remove` deletes files; directories are
   refused.
 - **No in-place truncate.** Replace the file instead.
-- **No GC, no encryption** on the host write path (an encrypted volume fails the
-  mount with a clear message rather than decoding garbage).
+- **No GC** on the host write path. Encryption *is* available: an encrypted
+  volume is formatted with `Store::format_encrypted`, opened with
+  `Store::open_encrypted`, and reads and writes above the wrapper are ordinary.
+  Two costs belong in the plan. Unlocking a passphrase slot stretches it
+  200000 rounds of iterated BLAKE3 (about a tenth of a second on the hardware
+  this targets), once per open rather than per operation. And an encrypted
+  device reports no hint sidecar, because an object id is a BLAKE3 of the
+  plaintext; an open pays the linear scan (`FORMAT.md` §20) instead of reading
+  hints. Use
+  `--key-file` / a key-encryption key for unattended mounts; a passphrase is for
+  an operator.
 - **A staging session is RAM only until its seal.** Closing the process, or
   losing power, before `seal_staged` loses everything the session staged; the
   session is a durability *choice*, not a durability guarantee, and the

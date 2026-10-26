@@ -75,6 +75,17 @@ pub enum SlotKind {
 	Passphrase,
 	/// KEK supplied by the HSM co-processor.
 	Hsm,
+	/// A kind this build does not implement, carrying the byte that was
+	/// stored.
+	///
+	/// Distinguishing this from [`SlotKind::Empty`] is not bookkeeping. An
+	/// unknown kind is an *occupied* slot: a newer build put credential
+	/// material there. Decoding it as empty would make a lifecycle operation
+	/// that looks for free space overwrite a slot it does not understand, which
+	/// would destroy the only credential on a volume the newer build could
+	/// open. Unmountable-because-unknown is a refusal; overwritten is data
+	/// loss.
+	Unknown(u8),
 }
 
 impl SlotKind {
@@ -83,18 +94,16 @@ impl SlotKind {
 			SlotKind::Empty => 0,
 			SlotKind::Passphrase => 1,
 			SlotKind::Hsm => 2,
+			SlotKind::Unknown(v) => v,
 		}
 	}
 
 	fn from_u8(v: u8) -> Self {
 		match v {
+			0 => SlotKind::Empty,
 			1 => SlotKind::Passphrase,
 			2 => SlotKind::Hsm,
-			// Anything unrecognised reads as empty rather than erroring: an
-			// unknown slot kind means this volume was written by a newer
-			// build, and refusing to parse the superblock over it would make
-			// the volume unmountable instead of merely that slot unusable.
-			_ => SlotKind::Empty,
+			other => SlotKind::Unknown(other),
 		}
 	}
 }
@@ -255,8 +264,8 @@ pub fn seal_slot(
 	iv: [u8; 16],
 	master_key: &[u8; MASTER_KEY_LEN],
 ) -> Result<KeySlot> {
-	if kind == SlotKind::Empty {
-		return Err(Error::custom("keyslot: cannot seal an Empty slot"));
+	if !matches!(kind, SlotKind::Passphrase | SlotKind::Hsm) {
+		return Err(Error::custom("keyslot: only a Passphrase or Hsm slot can be sealed"));
 	}
 	let mut wrapped = *master_key;
 	wrap::cbc_encrypt(kek, &iv, &mut wrapped);
@@ -440,6 +449,21 @@ mod tests {
 		);
 	}
 
+	/// Only the two credential kinds describe a slot this build can produce.
+	/// Sealing `Empty` would write key material into a slot that reads as
+	/// free, and sealing `Unknown` would forge a newer build's slot type.
+	#[cfg(feature = "data-encryption")]
+	#[test]
+	fn test_only_credential_slot_kinds_can_be_sealed() {
+		let kek = [0u8; 32];
+		for kind in [SlotKind::Empty, SlotKind::Unknown(7)] {
+			assert!(
+				seal_slot(kind, params(4), &kek, [0u8; 16], &master()).is_err(),
+				"{kind:?} must not be sealable"
+			);
+		}
+	}
+
 	#[cfg(feature = "data-encryption")]
 	#[test]
 	fn test_seal_then_open_recovers_the_master_key() -> TestResult<()> {
@@ -618,6 +642,29 @@ mod tests {
 		slots[1].kind = SlotKind::Hsm;
 		assert_eq!(find_slot(&slots, SlotKind::Hsm), Some(1));
 		assert_eq!(find_slot(&slots, SlotKind::Passphrase), None);
+		Ok(())
+	}
+
+	/// A slot kind written by a newer build must read as occupied, never as
+	/// free. See [`SlotKind::Unknown`] for what decoding it as empty would
+	/// cost.
+	#[test]
+	fn test_an_unknown_slot_kind_is_occupied_not_empty() -> TestResult<()> {
+		let mut buf = alloc::vec![0u8; SLOT_SIZE];
+		buf[0] = 7;
+		let slot = KeySlot::decode(&buf)?;
+
+		assert_eq!(slot.kind, SlotKind::Unknown(7));
+		assert!(!slot.is_empty(), "an unknown kind must never read as free space");
+		assert_eq!(find_slot(&[slot; SLOT_COUNT], SlotKind::Empty), None);
+
+		// And it must survive an encode, so re-emitting the region preserves
+		// what the newer build wrote.
+		let mut out = alloc::vec![0u8; SLOT_SIZE];
+		slot.encode(&mut out)?;
+		assert_eq!(out[0], 7);
+		assert_eq!(KeySlot::decode(&out)?.kind, SlotKind::Unknown(7));
+
 		Ok(())
 	}
 }

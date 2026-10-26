@@ -54,11 +54,13 @@ use ledgerfs::alloc_state::{AllocationState, PhysicalExtent};
 use ledgerfs::allocator::{Allocator, AllocatorConfig};
 use ledgerfs::commit::{CommitEngine, CommitResult};
 use ledgerfs::cow::{InMemoryObjectStore, ObjectStore, TxnPlan, mkdir};
+use ledgerfs::keyslot::{KeySlot, SLOT_COUNT, SlotKind, derive_kek, open_slot};
 use ledgerfs::object::{Inode, InodeKind, ObjectRef, Root, StorageHint};
 use ledgerfs::superblock::Superblock;
 use ledgerfs::{ALLOC_SNAPSHOT_BLOCK, BLOCK_SIZE, RESERVED_HEADER_BLOCKS, RESERVED_TRAILER_BLOCKS};
 use ledgerfs::{Error as LedgerFsError, Result as LedgerFsResult};
 
+use crate::crypto::{self, EncryptedDevice, UnlockCredential, VolumeKey};
 use crate::device::BlockDevice;
 use crate::error::{Error, Result};
 use crate::image::PartitionKind;
@@ -69,6 +71,8 @@ use crate::staging::{StagedFold, StagedState};
 use crate::volume::{publish_root_into, superblock_copy_lbas};
 
 use std::path::Path;
+use std::sync::Arc;
+use zeroize::Zeroizing;
 
 /// How a volume was obtained, which is what tells a caller whether it can be
 /// written to.
@@ -104,6 +108,15 @@ pub struct Store {
 	allocator: Option<Allocator>,
 
 	origin: Origin,
+
+	/// The volume's master key, when this store was opened or formatted with
+	/// one. `None` on a plaintext volume, which is what makes the keyslot
+	/// lifecycle methods refusable rather than silently ineffective.
+	///
+	/// The `EncryptedDevice` under `fs.store` holds its own cipher built from
+	/// these bytes; this copy exists so a credential can be rewrapped without
+	/// re-encrypting anything.
+	encryption: Option<Arc<VolumeKey>>,
 
 	/// An open staging session, if any. See [`Store::begin_staging`].
 	staged: Option<StagedState>,
@@ -223,6 +236,62 @@ impl Store {
 	/// candidate list from copies with `active_commit_seq > 0` and a
 	/// freshly-initialised volume has none.
 	pub fn format(device: Box<dyn BlockDevice>, total_blocks: u64) -> Result<Self> {
+		Self::format_configured(device, total_blocks, |_| Ok(()))
+	}
+
+	/// Format `device` as an encrypted volume, generating a fresh master key
+	/// and sealing it into slot 0 under `credential`.
+	///
+	/// From here on the volume is ordinary: every verb, the staging tier, the
+	/// commit protocol and the read path run unchanged, on top of an
+	/// [`EncryptedDevice`] that encrypts each object block at rest. The caller
+	/// keeps the credential, not the key. [`open_encrypted`](Self::open_encrypted)
+	/// is the way back in.
+	///
+	/// The format refuses a credential that cannot unlock what it seals (an
+	/// empty passphrase), and takes no plaintext path: there is no way to
+	/// format an encrypted volume and then write the master key anywhere except
+	/// inside a keyslot.
+	pub fn format_encrypted(
+		device: Box<dyn BlockDevice>,
+		total_blocks: u64,
+		credential: UnlockCredential<'_>,
+	) -> Result<Self> {
+		let key = Arc::new(VolumeKey::generate()?);
+		let slots = crypto::initial_slots(&key, credential)?;
+
+		// A sidecar left by a plaintext volume this device used to hold maps
+		// object ids to blocks. An encrypted volume never reads one, so it
+		// would be stale metadata lying beside the new volume in the clear
+		// rather than an accelerator. The wrapper reports no cache, so this has
+		// to be removed from the device underneath, before it is wrapped.
+		if let Some(cache) = device.hint_cache() {
+			crate::hints::remove(&cache.path);
+		}
+
+		let wrapped = EncryptedDevice::new(device, total_blocks, &key);
+		let mut store = Self::format_configured(Box::new(wrapped), total_blocks, |superblock| {
+			superblock.set_data_encrypted();
+			superblock.keyslots = slots;
+			Ok(())
+		})?;
+		store.encryption = Some(key);
+		Ok(store)
+	}
+
+	/// The body of [`format`](Self::format), with one hook that lets
+	/// [`format_encrypted`](Self::format_encrypted) put the encryption flag and
+	/// the keyslots into the superblock before the first copy is written.
+	///
+	/// Configuring the superblock before step 1 rather than patching it after
+	/// step 5 matters: a crash part-way through an encrypted format must not
+	/// leave a volume that says it is plaintext while its object region already
+	/// holds ciphertext.
+	fn format_configured(
+		device: Box<dyn BlockDevice>,
+		total_blocks: u64,
+		configure: impl FnOnce(&mut Superblock) -> Result<()>,
+	) -> Result<Self> {
 		if total_blocks <= RESERVED_HEADER_BLOCKS + RESERVED_TRAILER_BLOCKS {
 			return Err(Error::Format(LedgerFsError::custom(
 				"format: volume is too small to hold any object data past the reserved header and trailer blocks",
@@ -255,6 +324,7 @@ impl Store {
 
 		// -- Step 1: an empty superblock, in all four copies.
 		let mut superblock = Superblock::new(total_blocks);
+		configure(&mut superblock)?;
 		let max_object_bytes = superblock.max_object_bytes();
 		write_all_superblock_copies(device.as_ref(), &superblock)?;
 		device.barrier()?;
@@ -296,8 +366,14 @@ impl Store {
 		persist_superblock(device.as_ref(), &superblock)?;
 
 		// -- Step 6: mount what was just written, so the read half sees
-		// exactly what the commit half published.
-		let fs = HostFs::mount_device(device)?;
+		// exactly what the commit half published. The superblock says whether
+		// the device is already wrapped; an encrypted volume was written through
+		// the wrapper, so the mount has to go through it too.
+		let fs = if superblock.is_data_encrypted() {
+			HostFs::mount_decrypted(device)?
+		} else {
+			HostFs::mount_device(device)?
+		};
 
 		Ok(Self {
 			fs,
@@ -306,6 +382,7 @@ impl Store {
 			alloc_node: Some(alloc_node),
 			allocator: Some(allocator),
 			origin: Origin::Formatted,
+			encryption: None,
 			staged: None,
 			max_object_bytes,
 			sb_pending: false,
@@ -323,7 +400,34 @@ impl Store {
 	/// [`VolumeUncommitted`](Error::VolumeUncommitted), which names the actual
 	/// state rather than reporting a mount failure.
 	pub fn open(device: Box<dyn BlockDevice>) -> Result<Self> {
+		// `mount_device` refuses a volume that declares itself encrypted, so
+		// this path cannot decode ciphertext as objects. See
+		// `open_encrypted`.
 		let fs = HostFs::mount_device(device)?;
+		Self::from_mounted(fs, None)
+	}
+
+	/// Open an existing encrypted volume with a credential.
+	///
+	/// The superblocks are read and decoded first, without any key: that is how
+	/// the volume says it is encrypted, and how the wrapper learns its size.
+	/// Then the credential is stretched, a slot is unwrapped, and the master
+	/// key becomes the cipher under which the object region is read.
+	///
+	/// A credential is tried against **every** decoded superblock copy, not
+	/// just the selected one. A crash during a keyslot change leaves copies
+	/// holding different credentials, and the volume must open with either; see
+	/// the `crypto` module.
+	pub fn open_encrypted(device: Box<dyn BlockDevice>, credential: UnlockCredential<'_>) -> Result<Self> {
+		let (device, volume, key) = crypto::unlock_device(device, credential)?;
+		let wrapped = EncryptedDevice::new(device, volume.total_blocks(), &key);
+		let fs = HostFs::mount_decrypted(Box::new(wrapped))?;
+		Self::from_mounted(fs, Some(key))
+	}
+
+	/// The part of an open that is the same whether or not a key was supplied:
+	/// restore the allocator, rebuild the root descriptor, construct the store.
+	fn from_mounted(fs: HostFs, encryption: Option<Arc<VolumeKey>>) -> Result<Self> {
 		let total_blocks = fs.volume.total_blocks();
 		let superblock = fs.volume.superblock.clone();
 
@@ -354,6 +458,7 @@ impl Store {
 			alloc_node,
 			allocator,
 			origin,
+			encryption,
 			staged: None,
 			max_object_bytes,
 			sb_pending: false,
@@ -1212,6 +1317,207 @@ impl Store {
 }
 
 // endregion: --- Space
+
+// region:    --- Encryption
+
+impl Store {
+	/// Whether this store is reading and writing an encrypted volume.
+	pub fn is_encrypted(&self) -> bool {
+		self.encryption.is_some()
+	}
+
+	/// What unlocks each of the volume's two keyslots, in slot order.
+	///
+	/// `Empty` means free space. [`SlotKind::Unknown`] means a newer build
+	/// wrote a credential this one does not understand; it is reported rather
+	/// than hidden because such a slot is occupied, and
+	/// [`add_slot`](Self::add_slot) will not overwrite it.
+	pub fn keyslot_kinds(&self) -> [SlotKind; SLOT_COUNT] {
+		core::array::from_fn(|i| self.fs.volume.superblock.keyslots[i].kind)
+	}
+
+	/// Seal a second credential into a free keyslot, and return the slot used.
+	///
+	/// The new credential wraps the **same** master key, so both it and the
+	/// existing one unlock the volume, and revoking either leaves the other
+	/// working. Nothing is re-encrypted: this is the point of wrapping a master
+	/// key rather than deriving the volume key from a passphrase.
+	///
+	/// Refuses a volume with no key, an empty passphrase, and a volume whose
+	/// slots are both occupied ([`Error::NoFreeKeySlot`]).
+	pub fn add_slot(&mut self, credential: UnlockCredential<'_>) -> Result<usize> {
+		let key = crypto::require_encrypted(&self.encryption)?;
+
+		let index = self
+			.fs
+			.volume
+			.superblock
+			.keyslots
+			.iter()
+			.position(KeySlot::is_empty)
+			.ok_or_else(|| Error::NoFreeKeySlot {
+				detail: format!(
+					"this volume has {SLOT_COUNT} keyslots and all of them hold a credential; \
+					 revoke one before adding another"
+				),
+			})?;
+
+		// Sealed before anything is written, so an entropy or KDF failure leaves
+		// the slot as it was. A failed superblock write is rolled back below: the
+		// next ordinary commit rewrites the whole superblock from this struct, so
+		// an in-memory slot that the write did not carry would become durable
+		// later, silently, on an operation that reported an error.
+		let slot = crypto::seal_credential(credential, &key)?;
+		let previous = self.fs.volume.superblock.keyslots[index];
+		self.fs.volume.superblock.keyslots[index] = slot;
+		match self.persist_keyslots() {
+			Ok(()) => Ok(index),
+			Err(e) => {
+				self.fs.volume.superblock.keyslots[index] = previous;
+				Err(e)
+			}
+		}
+	}
+
+	/// Empty a keyslot, so the credential it held no longer unlocks the volume.
+	///
+	/// Refuses an empty slot ([`Error::KeySlotEmpty`]) and the volume's last
+	/// remaining credential ([`Error::LastKeySlot`]): revoking that would leave
+	/// a volume whose object region no one can decrypt, which is
+	/// indistinguishable from destroying it.
+	pub fn revoke_slot(&mut self, index: usize) -> Result<()> {
+		// The key is not needed to empty a slot, but a store without one has no
+		// keyslots to manage and should say so rather than pretend.
+		let _key = crypto::require_encrypted(&self.encryption)?;
+
+		if index >= SLOT_COUNT {
+			return Err(Error::Usage(format!(
+				"keyslot index {index} is out of range: this volume has {SLOT_COUNT} slots"
+			)));
+		}
+
+		let slots = &self.fs.volume.superblock.keyslots;
+		if slots[index].is_empty() {
+			return Err(Error::KeySlotEmpty { index });
+		}
+		if slots.iter().filter(|slot| !slot.is_empty()).count() == 1 {
+			return Err(Error::LastKeySlot { index });
+		}
+
+		let previous = self.fs.volume.superblock.keyslots[index];
+		self.fs.volume.superblock.keyslots[index] = KeySlot::empty();
+		match self.persist_keyslots() {
+			Ok(()) => Ok(()),
+			Err(e) => {
+				// A credential the volume still holds on disk must not disappear
+				// from the in-memory copy of a write that failed; see `add_slot`.
+				self.fs.volume.superblock.keyslots[index] = previous;
+				Err(e)
+			}
+		}
+	}
+
+	/// Replace the passphrase that unlocks this volume.
+	///
+	/// `old` must open one of the volume's passphrase slots; the new credential
+	/// is sealed into that same slot, under a fresh salt and IV. Writing the new
+	/// slot over the old one is what keeps every intermediate state openable:
+	/// the four superblock copies are rewritten one at a time, so a crash can
+	/// leave some holding the old slot and some the new, and
+	/// [`open_encrypted`](Self::open_encrypted) tries all of them.
+	///
+	/// The master key does not change, so no object block is rewritten.
+	pub fn change_passphrase(&mut self, old: &[u8], new: &[u8]) -> Result<()> {
+		let key = crypto::require_encrypted(&self.encryption)?;
+		if new.is_empty() {
+			return Err(Error::Usage(
+				"an empty passphrase is not a credential: it would protect the volume with nothing".to_string(),
+			));
+		}
+
+		// Which passphrase slot the old credential opens, rather than "the
+		// first one": a volume may hold two passphrase slots, and only the one
+		// the caller proved knowledge of may be replaced.
+		let Some(index) = self.passphrase_slot_opened_by(old) else {
+			return Err(Error::WrongCredential {
+				detail: "change_passphrase: the old passphrase does not open any passphrase slot \
+				         on this volume"
+					.to_string(),
+			});
+		};
+
+		// Sealed before anything is written, so a KDF or entropy failure leaves
+		// the old credential in place rather than an empty slot. Writing the new
+		// slot over the old one in every copy is what keeps each intermediate
+		// state openable after a crash; see this method's docs.
+		let slot = crypto::seal_credential(UnlockCredential::Passphrase(new), &key)?;
+		let previous = self.fs.volume.superblock.keyslots[index];
+		self.fs.volume.superblock.keyslots[index] = slot;
+		match self.persist_keyslots() {
+			Ok(()) => Ok(()),
+			Err(e) => {
+				// The old credential must survive a write that did not land; see
+				// `add_slot`.
+				self.fs.volume.superblock.keyslots[index] = previous;
+				Err(e)
+			}
+		}
+	}
+
+	/// Index of a passphrase slot that `passphrase` opens, searching every
+	/// decoded superblock copy and stopping at the first match.
+	///
+	/// The extra copies matter for one case: a crash part-way through
+	/// [`change_passphrase`](Self::change_passphrase) leaves copies holding the
+	/// old slot and others the new one, and [`open_encrypted`](Self::open_encrypted)
+	/// opens the volume with either. Without this search, a caller who got in
+	/// with a credential that only a *non-selected* copy holds would be told
+	/// that the passphrase which just opened the volume opens nothing.
+	///
+	/// Copies of one slot are identical, so equal slots are tried once; that is
+	/// what keeps four copies of the same slot to a single stretching.
+	fn passphrase_slot_opened_by(&self, passphrase: &[u8]) -> Option<usize> {
+		let mut tried: Vec<KeySlot> = Vec::new();
+
+		for copy in core::iter::once(&self.fs.volume.superblock).chain(self.fs.volume.copies.iter().flatten()) {
+			for (index, slot) in copy.keyslots.iter().enumerate() {
+				if slot.kind != SlotKind::Passphrase || tried.contains(slot) {
+					continue;
+				}
+				tried.push(*slot);
+
+				let Ok(kek) = derive_kek(passphrase, &slot.kdf) else {
+					continue;
+				};
+				let kek = Zeroizing::new(kek);
+				if let Ok(mut master) = open_slot(slot, &kek) {
+					master.fill(0);
+					return Some(index);
+				}
+			}
+		}
+
+		None
+	}
+
+	/// Write the superblock, keyslots included, to all four copies and flush.
+	///
+	/// This also publishes whatever root the superblock names, because a
+	/// superblock write is the only thing in this format that adopts a root
+	/// (§10.3) and there is no way to write the keyslots without it. After a
+	/// deferred seal that root is the sealed one, so `sb_pending` is cleared
+	/// here: the seal has just become durable, exactly as an ordinary commit
+	/// after it would have made it. Leaving the flag set would tell the caller
+	/// that `sync` still has work when it does not.
+	fn persist_keyslots(&mut self) -> Result<()> {
+		persist_superblock(self.fs.store.device(), &self.fs.volume.superblock)?;
+		self.fs.volume.refresh_copies();
+		self.sb_pending = false;
+		Ok(())
+	}
+}
+
+// endregion: --- Encryption
 
 // region:    --- Commit device bridge
 
