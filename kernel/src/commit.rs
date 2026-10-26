@@ -19,7 +19,7 @@ use crate::alloc_node::AllocNode;
 use crate::allocator::Allocator;
 use crate::cow::TxnPlan;
 use crate::error::{Error, Result};
-use crate::intent_log::{IntentLogRecord, IntentRecordType};
+use crate::intent_log::{IntentLogRecord, IntentRecordType, PrepareRootIntent};
 use crate::object::ObjectId;
 use crate::placement::PlacementEngine;
 use crate::record::ObjectRecord;
@@ -199,19 +199,6 @@ pub struct AddObjectIntent {
 
 	/// Size in blocks
 	pub block_count: u32,
-}
-
-/// Intent log entry for PREPARE_ROOT
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrepareRootIntent {
-	/// New root object ID
-	pub root_id: ObjectId,
-
-	/// Commit sequence number
-	pub commit_seq: CommitSeq,
-
-	/// Previous commit_seq (for continuity check)
-	pub base_commit_seq: CommitSeq,
 }
 
 /// Commit operation result
@@ -435,7 +422,7 @@ impl CommitEngine {
 			base_commit_seq: current_commit_seq,
 		};
 
-		let payload = postcard::to_allocvec(&prepare_intent)?;
+		let payload = prepare_intent.encode()?;
 		let intent = IntentLogRecord::new(self.next_seq, tx_id, IntentRecordType::PrepareRoot, payload);
 		self.next_seq += 1;
 		intent_records.push(intent);

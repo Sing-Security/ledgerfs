@@ -9,7 +9,8 @@
 use ledgerfs::{
 	FsMode,
 	compression::CompressionAlgorithm,
-	intent_log::{IntentLog, IntentLogRecord, IntentRecordType, parse_ring},
+	intent_log::{IntentLog, IntentLogRecord, IntentRecordType, PrepareRootIntent, parse_ring},
+	object::ObjectId,
 	record::{ObjectRecordReader, ObjectRecordWriter, ObjectType},
 	superblock::{RlrEntry, Superblock, mount_select},
 };
@@ -85,9 +86,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let mut ring = vec![0u8; 4096];
 	let log = IntentLog::new(4096);
 
-	// Create and write a PREPARE_ROOT record
-	let mut payload = vec![0u8; 8];
-	payload[0..8].copy_from_slice(&101u64.to_le_bytes()); // commit_seq
+	// Create and write a PREPARE_ROOT record. The payload is built through
+	// `PrepareRootIntent`, the same encoder the commit engine uses, so the
+	// example cannot drift from the format.
+	let payload = PrepareRootIntent {
+		root_id: ObjectId::from_bytes(&[42u8; 32]),
+		commit_seq: 101,
+		base_commit_seq: 100,
+	}
+	.encode()?;
 
 	let record = IntentLogRecord::new(
 		1,  // seq

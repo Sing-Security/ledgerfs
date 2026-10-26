@@ -8,6 +8,7 @@
 
 use crate::{
 	BLAKE3_HASH_SIZE, BLOCK_SIZE, Error, FsMode, NUM_SUPERBLOCK_COPIES, RLR_SIZE, Result, SUPERBLOCK_MAGIC,
+	SUPERBLOCK_VERSION,
 	encoding::{blake3_checksum, read_u32, read_u64, verify_checksum, write_u32, write_u64},
 	intent_log::ReplayDecision,
 };
@@ -386,7 +387,7 @@ impl Superblock {
 	pub fn new(total_blocks: u64) -> Self {
 		let mut sb = Self {
 			magic: SUPERBLOCK_MAGIC,
-			version: 1,
+			version: SUPERBLOCK_VERSION,
 			block_size: BLOCK_SIZE,
 			total_blocks,
 			active_root_id: [0u8; BLAKE3_HASH_SIZE],
@@ -609,6 +610,20 @@ impl Superblock {
 		let expected_sb_checksum = sb.compute_superblock_checksum(buf);
 		if superblock_checksum != expected_sb_checksum {
 			return Err(Error::SuperblockChecksumInvalid);
+		}
+
+		// Refuse a format version this build does not implement (§43.1).
+		//
+		// After the checksums, so a damaged block is reported as damage rather
+		// than as a version mismatch; before the feature flags, so a newer
+		// format that also sets an incompat bit is reported by the version it
+		// declared. An unknown version is an unknown format: the fields this
+		// build does recognise may not mean what it assumes.
+		if version != SUPERBLOCK_VERSION {
+			return Err(Error::UnsupportedSuperblockVersion {
+				found: version,
+				supported: SUPERBLOCK_VERSION,
+			});
 		}
 
 		// Refuse a volume declaring an incompat feature this build lacks.
@@ -991,6 +1006,34 @@ mod tests {
 		Ok(())
 	}
 
+	/// §43.1: a version this build does not implement is refused, not decoded
+	/// optimistically. The block is checksum-clean, so the refusal is the
+	/// version check rather than damage.
+	#[test]
+	fn test_superblock_unknown_version_is_refused() -> TestResult<()> {
+		for version in [0u32, SUPERBLOCK_VERSION + 1] {
+			// -- Setup & Fixtures
+			let mut buf = vec![0u8; BLOCK_SIZE as usize];
+			let mut sb = Superblock::new(1000);
+			sb.version = version;
+			sb.encode(&mut buf)?;
+
+			// -- Exec
+			let result = Superblock::decode(&buf);
+
+			// -- Check
+			match result {
+				Err(Error::UnsupportedSuperblockVersion { found, supported }) => {
+					assert_eq!(found, version);
+					assert_eq!(supported, SUPERBLOCK_VERSION);
+				}
+				other => panic!("version {version} was not refused: {other:?}"),
+			}
+		}
+
+		Ok(())
+	}
+
 	#[test]
 	fn test_data_encrypted_flag_defaults_off_and_round_trips_when_set() -> TestResult<()> {
 		// -- Setup & Fixtures
@@ -1323,9 +1366,9 @@ mod tests {
 	}
 
 	#[test]
-	fn test_superblock_mount_select_with_replay() -> TestResult<()> {
-		use crate::encoding::write_u64;
-		use crate::intent_log::{IntentLog, IntentLogRecord, IntentRecordType};
+	fn test_superblock_mount_select_reports_in_flight_commit() -> TestResult<()> {
+		use crate::intent_log::{IntentLog, IntentLogRecord, IntentRecordType, PrepareRootIntent};
+		use crate::object::ObjectId;
 
 		// -- Setup & Fixtures
 		let mut sb = Superblock::new(1000000);
@@ -1343,9 +1386,16 @@ mod tests {
 		let begin = IntentLogRecord::new(1, 42, IntentRecordType::Begin, vec![]);
 		log.write_record(&mut ring, 0, &begin)?;
 
-		// PREPARE_ROOT with commit_seq = 101 (N+1 where N=100)
-		let mut payload = vec![0u8; 8];
-		write_u64(&mut payload, 101)?;
+		// PREPARE_ROOT with commit_seq = 101 (N+1 where N=100), encoded the way
+		// `CommitEngine` encodes it, so the parser is tested against the
+		// producer rather than against a hand-built byte layout.
+		let payload = PrepareRootIntent {
+			root_id: ObjectId::from_bytes(&[42u8; BLAKE3_HASH_SIZE]),
+			commit_seq: 101,
+			base_commit_seq: 100,
+		}
+		.encode()
+		.expect("prepare-root payload");
 		let prepare = IntentLogRecord::new(2, 42, IntentRecordType::PrepareRoot, payload);
 		log.write_record(&mut ring, 128, &prepare)?;
 
@@ -1355,7 +1405,10 @@ mod tests {
 		// -- Check (should trigger replay to 101)
 		assert_eq!(selection.selected_root.commit_seq, 100);
 		assert_eq!(selection.mode, FsMode::ReadWrite);
-		assert_eq!(selection.replay_decision, ReplayDecision::ReplayTo { commit_seq: 101 });
+		// The log reports the interrupted commit and nothing more: the mount
+		// stays on the root the superblock names (§10.3, §18.5).
+		assert_eq!(selection.replay_decision, ReplayDecision::InFlight { commit_seq: 101 });
+		assert_eq!(selection.selected_root.commit_seq, 100);
 
 		Ok(())
 	}

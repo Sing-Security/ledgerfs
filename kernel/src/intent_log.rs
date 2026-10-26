@@ -10,8 +10,10 @@ use crate::{
 	BLAKE3_HASH_SIZE, Error, INTENT_LOG_MAGIC, MIN_RECORD_LEN, Result,
 	encoding::{blake3_hash, read_u16, read_u32, read_u64, verify_hash, write_u16, write_u32, write_u64},
 	nt_write::{nt_write_payload, sfence},
+	object::ObjectId,
 };
 use alloc::{collections::BTreeMap, vec, vec::Vec};
+use serde::{Deserialize, Serialize};
 
 /// Intent record types (§16.2)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +50,41 @@ impl IntentRecordType {
 	/// The on-disk discriminant for this record type.
 	pub fn to_u16(self) -> u16 {
 		self as u16
+	}
+}
+
+/// Payload of a `PrepareRoot` record (§16.2).
+///
+/// The payload is this struct's postcard encoding, so the field order is the
+/// wire format: root id, new commit sequence, previous commit sequence.
+/// Postcard varint-encodes integers and writes fixed arrays without a length
+/// prefix, so the sequence fields do not sit at fixed byte offsets. A parser
+/// decodes the struct; it must not read the sequence from offset 0, which is
+/// the root id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrepareRootIntent {
+	/// Root the transaction prepares. This is the object id of the in-memory
+	/// `Root` descriptor, which is not written to the volume; the superblock's
+	/// `active_root_id` names the root directory's `Inode` instead.
+	pub root_id: ObjectId,
+
+	/// Commit sequence the prepared root would carry.
+	pub commit_seq: u64,
+
+	/// Commit sequence the prepared root builds on, compared by the
+	/// continuity check in §18.4.
+	pub base_commit_seq: u64,
+}
+
+impl PrepareRootIntent {
+	/// Encode this payload for a `PrepareRoot` intent record (§16.2).
+	pub fn encode(&self) -> Result<Vec<u8>> {
+		postcard::to_allocvec(self).map_err(Error::from)
+	}
+
+	/// Decode a `PrepareRoot` payload (§16.2).
+	pub fn decode(payload: &[u8]) -> Result<Self> {
+		postcard::from_bytes(payload).map_err(Error::from)
 	}
 }
 
@@ -212,6 +249,9 @@ pub struct TxView {
 	pub prepare_root_seq: Option<u64>,
 	/// Root commit sequence carried in that `PrepareRoot` payload, if present.
 	pub prepare_root_commit_seq: Option<u64>,
+	/// Previous commit sequence carried in that `PrepareRoot` payload, if
+	/// present: the sequence the prepared root builds on (§18.4).
+	pub prepare_root_base_commit_seq: Option<u64>,
 	/// Sequence of the latest `CommitRoot` record, if one was seen.
 	pub commit_root_seq: Option<u64>,
 	/// Sequence of the latest `Abort` record, if one was seen.
@@ -226,6 +266,7 @@ impl TxView {
 			begin_seq: None,
 			prepare_root_seq: None,
 			prepare_root_commit_seq: None,
+			prepare_root_base_commit_seq: None,
 			commit_root_seq: None,
 			abort_seq: None,
 		}
@@ -242,14 +283,23 @@ impl TxView {
 	}
 }
 
-/// Replay decision for mount
+/// What the intent log contributes to a mount (§18.5).
+///
+/// The log never causes a root to be adopted: the superblock alone decides what
+/// is current (§10.3, §44.2). This type reports the no-replay outcome and,
+/// separately, an in-flight commit that the ring still describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayDecision {
 	/// The mounted root is current; the intent log holds nothing to replay.
 	NoReplay,
-	/// The root at `commit_seq` should be adopted (§18.5).
-	ReplayTo {
-		/// Commit sequence of the root to replay to.
+	/// A commit above the mounted root was prepared and did not complete.
+	///
+	/// The prepared root is **not** adopted: no superblock names it. The
+	/// observation is informational, so an operator can see the interrupted
+	/// commit; mount keeps the selected root and the objects the commit staged
+	/// are left for GC (§18.5, §22).
+	InFlight {
+		/// Commit sequence the prepared root would have carried.
 		commit_seq: u64,
 	},
 }
@@ -452,11 +502,14 @@ pub fn build_tx_views(records: &[IntentLogRecord]) -> BTreeMap<u64, TxView> {
 			}
 			IntentRecordType::PrepareRoot => {
 				view.prepare_root_seq = Some(record.seq);
-				// Extract commit_seq from payload if available
-				if record.payload.len() >= 8
-					&& let Ok(commit_seq) = read_u64(&record.payload)
-				{
-					view.prepare_root_commit_seq = Some(commit_seq);
+				// The payload is the postcard encoding of `PrepareRootIntent`
+				// (§16.2), so decode the struct rather than reading fields at
+				// offsets. Postcard varint-encodes the sequence numbers, and
+				// the root id comes first, so a fixed-offset read of offset 0
+				// reads the root id's bytes instead of the commit sequence.
+				if let Ok(intent) = PrepareRootIntent::decode(&record.payload) {
+					view.prepare_root_commit_seq = Some(intent.commit_seq);
+					view.prepare_root_base_commit_seq = Some(intent.base_commit_seq);
 				}
 			}
 			IntentRecordType::CommitRoot => {
@@ -472,7 +525,12 @@ pub fn build_tx_views(records: &[IntentLogRecord]) -> BTreeMap<u64, TxView> {
 	tx_views
 }
 
-/// Determine replay decision based on mounted commit_seq and intent log (§18.5)
+/// Determine what the intent log reports for a mount (§18.5).
+///
+/// Returns [`ReplayDecision::InFlight`] when the ring holds a `PrepareRoot` for
+/// `mounted_seq + 1` with no matching `CommitRoot` and no `Abort`. That commit
+/// did not finish, so its root is not adopted; the observation is all the log
+/// contributes. Every other case is `NoReplay`.
 pub fn determine_replay(mounted_seq: u64, tx_views: &BTreeMap<u64, TxView>) -> Result<ReplayDecision> {
 	// Look for a PREPARE_ROOT with commit_seq = mounted_seq + 1
 	for view in tx_views.values() {
@@ -482,19 +540,17 @@ pub fn determine_replay(mounted_seq: u64, tx_views: &BTreeMap<u64, TxView>) -> R
 			// Check base binding matches
 			// (Simplified: full base-binding verification is deferred)
 
-			// Check that transaction is not aborted
-			if view.is_aborted() {
+			// A completed or aborted transaction is not in flight.
+			if view.is_aborted() || view.is_committed() {
 				continue;
 			}
 
-			// Valid replay candidate
-			return Ok(ReplayDecision::ReplayTo {
+			return Ok(ReplayDecision::InFlight {
 				commit_seq: mounted_seq + 1,
 			});
 		}
 	}
 
-	// No valid replay found
 	Ok(ReplayDecision::NoReplay)
 }
 
@@ -635,8 +691,19 @@ mod tests {
 	#[test]
 	fn test_intent_log_build_tx_views() -> TestResult<()> {
 		// -- Setup & Fixtures
-		let mut payload = vec![0u8; 8];
-		write_u64(&mut payload, 101)?; // commit_seq for PREPARE_ROOT
+		let payload = PrepareRootIntent {
+			root_id: ObjectId::from_bytes(&[0xAB; BLAKE3_HASH_SIZE]),
+			commit_seq: 101,
+			base_commit_seq: 100,
+		}
+		.encode()
+		.expect("prepare-root payload");
+
+		// 32-byte root id plus two varint-encoded sequences (101 and 100 are
+		// one byte each). A fixed-width payload would be 48 bytes, and the old
+		// reader assumed the commit sequence sat at offset 0.
+		assert_eq!(payload.len(), 34);
+		assert_ne!(u64::from_le_bytes(payload[..8].try_into().expect("8 bytes")), 101);
 
 		let records = vec![
 			IntentLogRecord::new(1, 42, IntentRecordType::Begin, vec![]),
@@ -653,8 +720,28 @@ mod tests {
 		assert_eq!(view.begin_seq, Some(1));
 		assert_eq!(view.prepare_root_seq, Some(2));
 		assert_eq!(view.prepare_root_commit_seq, Some(101));
+		assert_eq!(view.prepare_root_base_commit_seq, Some(100));
 		assert_eq!(view.commit_root_seq, Some(3));
 		assert!(view.is_committed());
+
+		Ok(())
+	}
+
+	/// A payload that is not a `PrepareRootIntent` leaves the sequence fields
+	/// absent rather than being read as if it were one.
+	#[test]
+	fn test_intent_log_prepare_root_rejects_a_foreign_payload() -> TestResult<()> {
+		// -- Setup & Fixtures
+		let records = vec![IntentLogRecord::new(1, 42, IntentRecordType::PrepareRoot, vec![1, 2, 3])];
+
+		// -- Exec
+		let tx_views = build_tx_views(&records);
+
+		// -- Check
+		let view = &tx_views[&42];
+		assert_eq!(view.prepare_root_seq, Some(1));
+		assert_eq!(view.prepare_root_commit_seq, None);
+		assert_eq!(view.prepare_root_base_commit_seq, None);
 
 		Ok(())
 	}
@@ -671,7 +758,26 @@ mod tests {
 		let decision = determine_replay(100, &tx_views)?;
 
 		// -- Check
-		assert_eq!(decision, ReplayDecision::ReplayTo { commit_seq: 101 });
+		assert_eq!(decision, ReplayDecision::InFlight { commit_seq: 101 });
+
+		Ok(())
+	}
+
+	/// A transaction the ring also shows as committed is not in flight.
+	#[test]
+	fn test_intent_log_no_in_flight_when_committed() -> TestResult<()> {
+		// -- Setup & Fixtures
+		let mut tx_views = BTreeMap::new();
+		let mut view = TxView::new(42);
+		view.prepare_root_commit_seq = Some(101);
+		view.commit_root_seq = Some(3);
+		tx_views.insert(42, view);
+
+		// -- Exec
+		let decision = determine_replay(100, &tx_views)?;
+
+		// -- Check
+		assert_eq!(decision, ReplayDecision::NoReplay);
 
 		Ok(())
 	}

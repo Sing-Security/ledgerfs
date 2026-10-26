@@ -47,6 +47,13 @@ pub enum Error {
 	// -- Superblock Errors
 	/// Superblock checksum invalid
 	SuperblockChecksumInvalid,
+	/// Superblock format version this build does not implement (§43.1)
+	UnsupportedSuperblockVersion {
+		/// Version the superblock declares.
+		found: u32,
+		/// Version this build writes and accepts.
+		supported: u32,
+	},
 	/// No valid superblock found
 	NoValidSuperblock,
 	/// RLR entry checksum invalid
@@ -145,6 +152,13 @@ impl fmt::Display for Error {
 			Self::StoredHashMismatch => write!(f, "Stored hash does not match computed hash"),
 			Self::ObjectIdMismatch => write!(f, "Object ID verification failed"),
 			Self::SuperblockChecksumInvalid => write!(f, "Superblock checksum invalid"),
+			Self::UnsupportedSuperblockVersion { found, supported } => {
+				write!(
+					f,
+					"Superblock format version {} is not supported by this build (which writes and accepts {})",
+					found, supported
+				)
+			}
 			Self::NoValidSuperblock => write!(f, "No valid superblock found"),
 			Self::RlrEntryChecksumInvalid { index } => {
 				write!(f, "RLR entry {} checksum invalid", index)

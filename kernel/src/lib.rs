@@ -145,6 +145,16 @@ pub const OBJECT_RECORD_MAGIC: u64 = 0x004C_4547_4552_4653; // "LEGERFS"
 /// Magic number for Superblock (8 bytes fitting in u64)
 pub const SUPERBLOCK_MAGIC: u64 = 0x5355504552424C4B; // "SUPERBLK"
 
+/// Superblock format version this build writes and accepts (§43.1).
+///
+/// This is the on-disk compatibility gate. `Superblock::decode` refuses a
+/// copy that declares any other value, so a volume written by a newer format
+/// is refused rather than decoded optimistically. A change that alters the
+/// meaning or layout of any persisted field bumps this constant; additive
+/// changes that an older reader can ignore belong in the feature flags
+/// instead (§43.2).
+pub const SUPERBLOCK_VERSION: u32 = 1;
+
 /// Magic number for Intent Log Record (8 bytes fitting in u64)
 pub const INTENT_LOG_MAGIC: u64 = 0x494E54454E544C47; // "INTENTLG"
 
