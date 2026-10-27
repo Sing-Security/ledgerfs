@@ -5,7 +5,7 @@
 The `std` host of LedgerFS: a volume formatted, opened and modified inside the
 calling process.
 
-## Abstract
+## Overview
 
 This crate supplies the parts of the system that the format crate leaves
 abstract. It implements `ObjectStore` over a `BlockDevice`, provides device

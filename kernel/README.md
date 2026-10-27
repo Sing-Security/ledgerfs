@@ -5,7 +5,7 @@
 The `no_std` implementation of the LedgerFS on-disk format and of the
 copy-on-write operations that produce it.
 
-## Abstract
+## Overview
 
 This crate defines every byte a LedgerFS volume contains: the superblock and its
 four copies, the Root Locator Ring, object framing, the object model, the block

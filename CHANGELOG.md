@@ -74,14 +74,18 @@ again; see [`FORMAT.md`](FORMAT.md).
   key-management construction and domain separators, and the lifecycle, its
   crash behaviour and its one missing operation (master-key rekeying). Tier A
   in §44.1 now includes encryption.
-- **The root README is a technical report scoped to this release.** It states
-  the research question, the supported claims with their tests and
-  measurements, the boundary against the research chapter's claims C1 to C5,
-  the design decisions with their costs, the threat model, and the current
-  limitations. It no longer claims crates.io availability: the crates are
-  consumed from this repository until the release gate in `RELEASING.md` is
-  met. The kernel README and crate documentation now link to this repository
-  instead of a registry entry that does not exist.
+- **The root README is a release landing page, and the design rationale has its
+  own document.** The README now covers what LedgerFS is, the dependency form
+  that works today, the quick-start program, the command line tools, the
+  staging and encryption API, the feature flags, the headline measurements, the
+  limits and a map of the documentation. The research question, the commit and
+  crash argument, the design decisions with their costs, the threat model,
+  related work and the boundary against the research chapter's claims C1 to C5
+  moved to `DESIGN.md`. The README no longer claims crates.io availability, and
+  the kernel README and crate documentation link to this repository instead of
+  a registry entry that does not exist. The root README snippets are pinned by
+  `host/tests/readme_examples.rs`, which now also covers the encryption
+  example.
 
 ### Fixed
 
