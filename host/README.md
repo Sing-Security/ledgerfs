@@ -45,8 +45,10 @@ fn main() -> Result<()> {
 ```
 
 `FileBlockDevice` in place of `MemBlockDevice` drives a file or a partition with
-the same calls. A `FileBlockDevice` opened for writing takes an advisory
-exclusive lock and refuses a second writer. A `MemBlockDevice` is a `Vec<u8>`
+the same calls. A `FileBlockDevice` opened for writing takes an exclusive OS
+file lock and refuses a second writer. On Unix the lock is advisory, so a
+read-only handle reads a live volume; on Windows it is mandatory and refuses
+that read (`KNOWN_ISSUES.md` §13). A `MemBlockDevice` is a `Vec<u8>`
 behind an `Arc<Mutex<...>>` that can be snapshotted to bytes and rebuilt, which
 is how the durability tests simulate a power loss.
 

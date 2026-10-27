@@ -131,7 +131,7 @@ corruption, not a contention problem. An app's shared copy lives behind one
 `Mutex<Store>`.
 
 **This is enforced, not merely documented.** Every writable `FileBlockDevice`
-takes an advisory exclusive OS file lock on the image at open time, so a second
+takes an exclusive OS file lock on the image at open time, so a second
 writable handle (another process, or a second open in the same one) fails
 fast with `Error::Locked` instead of placing objects on blocks the first handle
 still counts as free. The lock is per *file*, which is coarser than per volume:
@@ -139,8 +139,11 @@ a device cannot see where one volume's allocator ends and the next partition
 begins, so two writable windows on one image are refused too. Serialise them.
 
 Read-only opens (`FileBlockDevice::open`, the default for every reader in this
-crate) take **no** lock and coexist freely; that is what lets a CLI read a
-volume a running app still holds. So an app owes its operators two entry
+crate) take **no** lock. On Unix the writer's lock is `flock`, which is
+advisory, so a reader coexists freely and a CLI can read a volume a running app
+still holds. On Windows the same lock is mandatory at the OS level, so a read
+through another handle is refused while the writer exists; see
+`KNOWN_ISSUES.md` §13. On either platform an app owes its operators two entry
 points: a writable one for the app, and a read-only one for everything else.
 
 A *second* handle opened on the same device reads a **snapshot**, not a peer: it

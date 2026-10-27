@@ -75,6 +75,20 @@ again; see [`FORMAT.md`](FORMAT.md).
   crash behaviour and its one missing operation (master-key rekeying). Tier A
   in §44.1 now includes encryption.
 
+### Fixed
+
+- **The host test suite compiles on Windows, and its one Windows-only
+  behaviour is documented.** `readpath.rs` imported
+  `std::os::unix::fs::PermissionsExt` unconditionally, so the native Windows
+  job stopped at compile time and had never run the suite. The restore is
+  platform-split now. Compiling it surfaced that `File::try_lock` is mandatory
+  on Windows and refuses a read through a second handle, which contradicts the
+  advisory-lock promise the documents made. `KNOWN_ISSUES.md` §13 states the
+  limitation, `EMBEDDING.md`, `README.md`, `host/README.md` and the device and
+  error documentation qualify the promise, and the device test pins the refusal
+  on Windows rather than failing on it. The Windows job compiles the suite
+  instead of running tests that encode the Unix lock semantics.
+
 ## [0.7.0] / [0.1.0] - 2026-10-23
 
 The first public release of both crates. `### Added` and `### Changed` list the

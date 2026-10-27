@@ -277,8 +277,10 @@ them, which leaks space on a recovery and never produces a wrong answer.
   error, not a slowdown.
 - **No in-place update.** `write_at` may append past the end of a file but
   cannot rewrite stored bytes. A file is replaced whole or extended.
-- **One writer per volume.** A writable file device takes an advisory exclusive
-  lock. Readers take none and read the root they opened.
+- **One writer per volume.** A writable file device takes an exclusive lock.
+  Readers take none and read the root they opened. On Unix the lock is advisory
+  and a reader coexists with a live writer; on Windows it is mandatory and a
+  second handle's read is refused (`KNOWN_ISSUES.md` §13).
 - **No VFS integration.** Nothing registers with the host operating system, so
   no path on the host resolves into a volume. An OS adopts the library by
   writing the service layer above it, as CrucibleOS does.

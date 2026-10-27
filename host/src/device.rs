@@ -388,12 +388,18 @@ impl FileBlockDevice {
 			});
 		}
 
-		// One writer per volume. A writable open takes an advisory exclusive
-		// lock on the file; a second writable handle (another process, or a
-		// second open in this one) is refused with `Error::Locked` rather than
-		// allowed to place objects on blocks the first handle still counts as
-		// free. Read-only opens take no lock and coexist freely, which is what
-		// lets a read-only inspector read a volume a live writer holds.
+		// One writer per volume. A writable open takes an exclusive OS file
+		// lock; a second writable handle (another process, or a second open in
+		// this one) is refused with `Error::Locked` rather than allowed to
+		// place objects on blocks the first handle still counts as free.
+		//
+		// Read-only opens take no lock. On Unix that lock is `flock`, which is
+		// advisory, so a read-only inspector reads a volume a live writer
+		// holds. On Windows the same call is `LockFileEx`, whose locks are
+		// mandatory, so a read through a second handle is refused while the
+		// writer exists (`KNOWN_ISSUES.md` §13). The refusal is the OS's, not
+		// this crate's, and it is pinned by the unit test below rather than
+		// left to this comment.
 		if writable {
 			match file.try_lock() {
 				Ok(()) => {}
@@ -686,12 +692,26 @@ mod tests {
 		device.write_block(3, b"file-backed")?;
 		device.barrier()?;
 
-		// -- Check: legible through a second, independent handle. Read-only
-		// opens take no lock, so a reader may coexist with the writer.
+		// -- Check: legible through a second, independent handle. On Unix a
+		// read-only open takes no lock, so a reader coexists with the writer.
+		// On Windows the writer's lock is mandatory and the read is refused
+		// (`KNOWN_ISSUES.md` §13); both outcomes are asserted where they hold,
+		// so a Windows run sees the documented limitation as a pass rather
+		// than as an unexplained I/O error.
 		let reopened = FileBlockDevice::open(&path, 0, device.size_bytes())?;
 		let mut buf = [0u8; BLOCK_SIZE as usize];
-		reopened.read_block(3, &mut buf)?;
-		assert_eq!(&buf[..11], b"file-backed");
+		#[cfg(unix)]
+		{
+			reopened.read_block(3, &mut buf)?;
+			assert_eq!(&buf[..11], b"file-backed");
+		}
+		#[cfg(windows)]
+		{
+			let e = reopened
+				.read_block(3, &mut buf)
+				.expect_err("a mandatory lock must refuse the read");
+			assert!(matches!(e, Error::Io(_)), "got {e:?}");
+		}
 
 		// ...but a second *writable* handle on the same image is refused while
 		// this one is held. One writer per volume, and the device cannot tell

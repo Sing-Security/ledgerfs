@@ -4,7 +4,10 @@
 //! single-process, single-threaded design never has to answer: several threads
 //! inside one embedding application, and several processes over one file (a
 //! live writer appending while a reader inspects it: the case that made
-//! read-only opens lock-free in the first place).
+//! read-only opens lock-free in the first place). That second case is Unix-only
+//! in this release: on Windows the writer's file lock is mandatory and a read
+//! through another handle is refused, so the tests below that mount a reader
+//! beside a writer do not apply there (`KNOWN_ISSUES.md` §13).
 //!
 //! # The rules this file pins
 //!

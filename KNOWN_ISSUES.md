@@ -243,9 +243,11 @@ on-disk encode path, and this release is a documents-and-harness release.
 - **One physical disk.** No RAID, no mirroring, no erasure coding
   (`FORMAT.md` §42). The redundancy story is the four superblock copies and
   nothing below them.
-- **One writer.** Writers take an advisory exclusive lock on the image;
-  readers take none. The lock is advisory because a library cannot enforce it;
-  see `FORMAT.md` §12.1.
+- **One writer.** Writers take an exclusive lock on the image; readers take
+  none. On Unix the lock is advisory, because a library cannot enforce it, and
+  a read-only handle reads a live volume. On Windows the OS makes the same lock
+  mandatory and refuses a second handle's reads; see entry 13. `FORMAT.md`
+  §12.1 states the format's part.
 - **ATA PIO, in the kernel crate.** The in-tree block device talks to the
   primary bus with programmed I/O, one sector at a time, which is why the
   per-commit fixed cost is what it is. The host crate's `FileBlockDevice` does
@@ -313,6 +315,34 @@ nobody else.
 
 The nearest thing to a tool is `lfs-read` and `lfs-write` in `host/src/bin/`,
 which look at and mutate a volume's bytes and directory tree from a shell.
+
+---
+
+## 13. On Windows, a reader cannot read a volume a writer holds.
+
+`FileBlockDevice` enforces one writer per file with `std::fs::File::try_lock`.
+On Unix that is `flock`, which is advisory: a read-only handle takes no lock and
+reads alongside the writer. Windows implements the same call with `LockFileEx`,
+and Windows file locks are mandatory over the locked range, so a read through a
+second handle fails with `ERROR_LOCK_VIOLATION` (code 33) while a writable
+handle exists. The one-writer rule itself is unaffected: a second writable open
+is still refused with `Error::Locked`.
+
+**Consequence.** On Windows, `lfs-read` cannot inspect a volume while
+`lfs-write` (or any embedding process) holds it open for writing; the read fails
+with an I/O error. A second handle opened after the writer closes is unaffected.
+The unit test in `host/src/device.rs` pins the refusal on Windows and the
+read-through on Unix, and the CI Windows job compiles the host test suite
+instead of running it, because several integration tests build on the advisory
+behaviour.
+
+**Cause, and what would fix it.** A range lock placed beyond the volume's data
+would leave reads unblocked, but that needs `LockFileEx` directly, which is
+`unsafe`, and this crate forbids unsafe code. The safe alternative is a sidecar
+`<image>.lock` file that writers lock instead of the image; it is not in this
+release because Windows is not a supported deployment today.
+
+**Workaround.** Close the writer before reading, or read a copy of the image.
 
 ---
 

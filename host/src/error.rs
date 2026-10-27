@@ -240,9 +240,11 @@ pub enum Error {
 	/// A second writer tried to open a volume an existing writer already holds.
 	/// LedgerFS is **one writer per volume**: the allocator snapshot is not
 	/// shareable, so two writable handles would place objects on the same
-	/// "free" blocks. The lock that enforces this is an advisory OS file lock,
-	/// taken by every writable [`FileBlockDevice`](crate::FileBlockDevice);
-	/// a read-only open takes no lock and is always allowed.
+	/// "free" blocks. The lock that enforces this is an OS file lock taken by
+	/// every writable [`FileBlockDevice`](crate::FileBlockDevice); a read-only
+	/// open takes no lock. On Unix the lock is advisory, so a reader coexists
+	/// with a writer; on Windows it is mandatory and a read through a second
+	/// handle is refused (`KNOWN_ISSUES.md` §13).
 	Locked {
 		/// The volume file another handle already holds open for writing.
 		path: PathBuf,
