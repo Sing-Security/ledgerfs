@@ -10,7 +10,7 @@
 //! `Vec<u8>`. The same format code therefore executes in a kernel, in a
 //! userspace process and in a test harness.
 //!
-//! [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host) is the crate to
+//! [`ledgerfs-host`](https://github.com/Sing-Security/ledgerfs/tree/main/host) is the crate to
 //! select for an application that opens a volume and writes files to it; it
 //! supplies the `ObjectStore` implementation, the mount and the `Store`
 //! methods. This crate is for a consumer that already owns a byte-addressed

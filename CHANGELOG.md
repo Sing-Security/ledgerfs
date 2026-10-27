@@ -74,6 +74,14 @@ again; see [`FORMAT.md`](FORMAT.md).
   key-management construction and domain separators, and the lifecycle, its
   crash behaviour and its one missing operation (master-key rekeying). Tier A
   in §44.1 now includes encryption.
+- **The root README is a technical report scoped to this release.** It states
+  the research question, the supported claims with their tests and
+  measurements, the boundary against the research chapter's claims C1 to C5,
+  the design decisions with their costs, the threat model, and the current
+  limitations. It no longer claims crates.io availability: the crates are
+  consumed from this repository until the release gate in `RELEASING.md` is
+  met. The kernel README and crate documentation now link to this repository
+  instead of a registry entry that does not exist.
 
 ### Fixed
 

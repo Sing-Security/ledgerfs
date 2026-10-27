@@ -35,6 +35,7 @@ fn main() -> Result<()> {
 	store.begin_staging(1024 * 1024)?;
 	store.staged_append("/log.jsonl", b"{\"turn\":2}\n", 0o644)?;
 	assert_eq!(store.read_file_committed("/log.jsonl")?, b"{\"turn\":1}\n");
+	assert_eq!(store.read_file("/log.jsonl")?, b"{\"turn\":1}\n{\"turn\":2}\n");
 	let _seal = store.seal_staged()?;
 
 	let bytes = mirror.bytes_snapshot();
@@ -137,7 +138,7 @@ cargo run --example app_store -p ledgerfs-host
 ## License
 
 Dual-licensed: Apache-2.0 or MIT, at your option. The license texts ship inside
-the published crate as `LICENSE-APACHE`, `LICENSE-MIT` and `NOTICE`, and are
+the crate package as `LICENSE-APACHE`, `LICENSE-MIT` and `NOTICE`, and are
 also at
 [LICENSE-APACHE](https://github.com/Sing-Security/ledgerfs/blob/main/host/LICENSE-APACHE),
 [LICENSE-MIT](https://github.com/Sing-Security/ledgerfs/blob/main/host/LICENSE-MIT)

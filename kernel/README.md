@@ -11,7 +11,7 @@ This crate defines every byte a LedgerFS volume contains: the superblock and its
 four copies, the Root Locator Ring, object framing, the object model, the block
 allocator, the commit engine and the copy-on-write operations. It performs no
 I/O. Reads and writes are expressed through an `ObjectStore` trait, which the
-companion crate [`ledgerfs-host`](https://crates.io/crates/ledgerfs-host)
+companion crate [`ledgerfs-host`](https://github.com/Sing-Security/ledgerfs/tree/main/host)
 implements over a block device and which a kernel can implement over the disk it
 owns.
 
@@ -124,7 +124,7 @@ Both are stated where they are defined, in `src/lib.rs`, and in
 ## License
 
 Dual-licensed: Apache-2.0 or MIT, at your option. The license texts ship inside
-the published crate as `LICENSE-APACHE`, `LICENSE-MIT` and `NOTICE`, and are
+the crate package as `LICENSE-APACHE`, `LICENSE-MIT` and `NOTICE`, and are
 also at
 [LICENSE-APACHE](https://github.com/Sing-Security/ledgerfs/blob/main/kernel/LICENSE-APACHE),
 [LICENSE-MIT](https://github.com/Sing-Security/ledgerfs/blob/main/kernel/LICENSE-MIT)

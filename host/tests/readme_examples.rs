@@ -39,6 +39,7 @@ fn host_readme_example() -> Result<()> {
 	store.begin_staging(1024 * 1024)?;
 	store.staged_append("/log.jsonl", b"{\"turn\":2}\n", 0o644)?;
 	assert_eq!(store.read_file_committed("/log.jsonl")?, b"{\"turn\":1}\n");
+	assert_eq!(store.read_file("/log.jsonl")?, b"{\"turn\":1}\n{\"turn\":2}\n");
 	let _seal = store.seal_staged()?;
 
 	let bytes = mirror.bytes_snapshot();
