@@ -73,7 +73,8 @@ writer is refused.
 
 ## Command line
 
-The host crate ships two tools. From a clone of this repository:
+The host crate ships two tools. They are development and debugging aids, not a
+supported production interface. From a clone of this repository:
 
 ```sh
 cargo run -p ledgerfs-host --bin lfs-write -- <TARGET> <COMMAND>
